@@ -171,6 +171,44 @@ function salvaConversazioni() {
   try { fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations)); } catch(e) {}
 }
 
+// ─── Memoria persistente ─────────────────────────────────────────────────────
+
+const MEMORY_FILE = 'memories.json';
+let memories = {};
+try { memories = JSON.parse(fs.readFileSync(MEMORY_FILE)); } catch(e) {}
+
+function salvaMemorie() {
+  try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(memories, null, 2)); } catch(e) {}
+}
+
+function addMemory(userId, content, tags) {
+  if (!memories[userId]) memories[userId] = [];
+  memories[userId].push({
+    id: Date.now().toString(36),
+    content: content,
+    tags: tags || [],
+    created: new Date().toISOString(),
+  });
+  salvaMemorie();
+}
+
+function searchMemories(userId, query) {
+  if (!memories[userId]) return [];
+  const q = query.toLowerCase();
+  return memories[userId].filter(function(m) {
+    return m.content.toLowerCase().includes(q) ||
+      m.tags.some(function(t) { return t.toLowerCase().includes(q); });
+  });
+}
+
+function deleteMemory(userId, memoryId) {
+  if (!memories[userId]) return false;
+  const before = memories[userId].length;
+  memories[userId] = memories[userId].filter(function(m) { return m.id !== memoryId; });
+  if (memories[userId].length < before) { salvaMemorie(); return true; }
+  return false;
+}
+
 // ─── Standup asincrono ───────────────────────────────────────────────────────
 
 const STANDUP_FILE = 'standup_data.json';
@@ -392,16 +430,66 @@ const tools = [
       required: ['message_id', 'to'],
     },
   },
-  // Google Drive
+  // Memoria
   {
-    name: 'search_drive',
-    description: 'Cerca file su Google Drive dell\'utente per nome o contenuto.',
+    name: 'save_memory',
+    description: 'Salva un\'informazione importante nella memoria permanente dell\'utente. Usalo PROATTIVAMENTE quando l\'utente dice qualcosa che vale la pena ricordare: preferenze clienti, decisioni prese, info di progetto, contatti, procedure.',
     input_schema: {
       type: 'object',
       properties: {
-        query:     { type: 'string', description: 'Testo da cercare nel nome o contenuto dei file' },
-        mime_type: { type: 'string', description: 'Filtra per tipo MIME (es. "application/vnd.google-apps.document", "application/pdf"). Opzionale.' },
-        max:       { type: 'number', description: 'Numero massimo risultati (default 10)' },
+        content: { type: 'string', description: 'Informazione da ricordare' },
+        tags:    { type: 'array', items: { type: 'string' }, description: 'Tag per categorizzare (es. "cliente", "progetto-x", "procedura", "contatto")' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'recall_memory',
+    description: 'Cerca nella memoria permanente dell\'utente. Usalo SEMPRE prima di rispondere a domande su clienti, progetti, procedure, decisioni passate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo o tag da cercare nella memoria' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'list_memories',
+    description: 'Elenca tutte le memorie dell\'utente, opzionalmente filtrate per tag.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string', description: 'Filtra per tag specifico (opzionale)' },
+      },
+    },
+  },
+  {
+    name: 'delete_memory',
+    description: 'Cancella una memoria specifica per ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'string', description: 'ID della memoria da cancellare' },
+      },
+      required: ['memory_id'],
+    },
+  },
+  // Google Drive
+  {
+    name: 'search_drive',
+    description: 'Cerca file su Google Drive. Supporta ricerca full-text (dentro i documenti), per nome, per tipo, per cartella e per data.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query:       { type: 'string', description: 'Testo da cercare (cerca nel nome E nel contenuto dei file)' },
+        name_only:   { type: 'boolean', description: 'Se true, cerca solo nel nome del file (default: false, cerca anche nel contenuto)' },
+        mime_type:   { type: 'string', description: 'Filtra per tipo: "document" (Google Docs), "spreadsheet" (Sheets), "presentation" (Slides), "pdf", "image", "folder", oppure MIME completo' },
+        folder_name: { type: 'string', description: 'Cerca solo dentro questa cartella (nome cartella)' },
+        modified_after:  { type: 'string', description: 'Solo file modificati dopo questa data ISO 8601 (es. "2025-01-01")' },
+        modified_before: { type: 'string', description: 'Solo file modificati prima di questa data ISO 8601' },
+        shared_with: { type: 'string', description: 'Filtra file condivisi con questa email' },
+        max:         { type: 'number', description: 'Numero massimo risultati (default 10)' },
       },
       required: ['query'],
     },
@@ -482,6 +570,30 @@ async function eseguiTool(toolName, input, userId) {
       notifiche_enabled: prefs.notifiche_enabled,
       standup_enabled:   prefs.standup_enabled,
     };
+  }
+
+  // Tool Memoria
+  if (toolName === 'save_memory') {
+    addMemory(userId, input.content, input.tags || []);
+    return { success: true, message: 'Memorizzato.' };
+  }
+
+  if (toolName === 'recall_memory') {
+    const results = searchMemories(userId, input.query);
+    return { memories: results, count: results.length };
+  }
+
+  if (toolName === 'list_memories') {
+    const userMems = memories[userId] || [];
+    const filtered = input.tag
+      ? userMems.filter(function(m) { return m.tags.some(function(t) { return t.toLowerCase().includes(input.tag.toLowerCase()); }); })
+      : userMems;
+    return { memories: filtered, count: filtered.length };
+  }
+
+  if (toolName === 'delete_memory') {
+    const deleted = deleteMemory(userId, input.memory_id);
+    return deleted ? { success: true } : { error: 'Memoria non trovata.' };
   }
 
   // Tool Calendar
@@ -676,12 +788,81 @@ async function eseguiTool(toolName, input, userId) {
     try {
       if (toolName === 'search_drive') {
         const max = input.max || 10;
-        let q = "name contains '" + input.query.replace(/'/g, "\\'") + "' and trashed = false";
-        if (input.mime_type) q += " and mimeType = '" + input.mime_type + "'";
-        const res = await drv.files.list({ q: q, fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners)', pageSize: max, orderBy: 'modifiedTime desc' });
+        const escaped = input.query.replace(/'/g, "\\'");
+        var qParts = [];
+
+        // Full-text vs name-only search
+        if (input.name_only) {
+          qParts.push("name contains '" + escaped + "'");
+        } else {
+          qParts.push("fullText contains '" + escaped + "'");
+        }
+        qParts.push("trashed = false");
+
+        // MIME type shortcuts
+        if (input.mime_type) {
+          var mimeMap = {
+            'document': 'application/vnd.google-apps.document',
+            'spreadsheet': 'application/vnd.google-apps.spreadsheet',
+            'presentation': 'application/vnd.google-apps.presentation',
+            'pdf': 'application/pdf',
+            'image': 'application/vnd.google-apps.photo',
+            'folder': 'application/vnd.google-apps.folder',
+          };
+          var resolvedMime = mimeMap[input.mime_type] || input.mime_type;
+          if (input.mime_type === 'image') {
+            qParts.push("(mimeType contains 'image/')");
+          } else {
+            qParts.push("mimeType = '" + resolvedMime + "'");
+          }
+        }
+
+        // Date filters
+        if (input.modified_after) {
+          qParts.push("modifiedTime > '" + new Date(input.modified_after).toISOString() + "'");
+        }
+        if (input.modified_before) {
+          qParts.push("modifiedTime < '" + new Date(input.modified_before).toISOString() + "'");
+        }
+
+        // Shared with filter
+        if (input.shared_with) {
+          qParts.push("'" + input.shared_with + "' in readers or '" + input.shared_with + "' in writers");
+        }
+
+        var q = qParts.join(' and ');
+
+        // Folder search: first find folder ID, then search inside it
+        if (input.folder_name) {
+          try {
+            var folderRes = await drv.files.list({
+              q: "name = '" + input.folder_name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+              fields: 'files(id)',
+              pageSize: 1,
+            });
+            if (folderRes.data.files && folderRes.data.files.length > 0) {
+              q += " and '" + folderRes.data.files[0].id + "' in parents";
+            }
+          } catch(e) { logger.error('Drive folder search error:', e.message); }
+        }
+
+        const res = await drv.files.list({
+          q: q,
+          fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, parents, description)',
+          pageSize: max,
+          orderBy: 'modifiedTime desc',
+        });
         return {
           files: (res.data.files || []).map(function(f) {
-            return { id: f.id, name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime, owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null };
+            return {
+              id: f.id,
+              name: f.name,
+              type: f.mimeType,
+              link: f.webViewLink,
+              modified: f.modifiedTime,
+              owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null,
+              description: f.description || null,
+            };
           }),
         };
       }
@@ -921,7 +1102,7 @@ const SYSTEM_PROMPT =
   "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
   "Non usare # o ** che Slack non renderizza.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Google Drive (cercare file, leggere docs, condividere), Gmail (leggere, cercare, rispondere, inviare, inoltrare), Google Calendar (tutte le operazioni), Google Docs (creare e leggere documenti), Slack (cercare messaggi, utenti)\n\n" +
+  "Memoria permanente, Google Drive (ricerca full-text, per cartella, per data), Gmail (leggere, cercare, rispondere, inviare, inoltrare), Google Calendar (tutte le operazioni), Google Docs (creare e leggere documenti), Slack (cercare messaggi, utenti)\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
@@ -933,8 +1114,18 @@ const SYSTEM_PROMPT =
   "Per qualsiasi operazione usa i tool. Timezone: Europe/Rome.\n" +
   "Per modificare/eliminare usa prima find_event per l'ID.\n" +
   "Per invitare qualcuno per nome, usa get_slack_users per trovare l'email.\n\n" +
+  "MEMORIA (tool use):\n" +
+  "Hai una memoria permanente per ogni utente. DEVI usarla:\n" +
+  "- save_memory: salva PROATTIVAMENTE info importanti dette dall'utente (preferenze clienti, decisioni, procedure, contatti, info progetti). Non chiedere, salva e basta. Usa tag pertinenti.\n" +
+  "- recall_memory: SEMPRE prima di rispondere su clienti, progetti, procedure, decisioni passate. Cerca prima nella memoria.\n" +
+  "- list_memories: per mostrare cosa ricordi dell'utente.\n" +
+  "- delete_memory: per cancellare una memoria su richiesta.\n" +
+  "Sii proattivo: se l'utente dice 'il cliente Rossi vuole il sito in blu', salva subito senza chiedere.\n\n" +
   "GOOGLE DRIVE (tool use):\n" +
-  "Per cercare file usa search_drive. Per leggere un Google Doc usa read_doc. Per creare documenti usa create_doc. Per condividere file usa share_file (serve l'ID file da search_drive e l'email da get_slack_users).\n\n" +
+  "search_drive ora cerca full-text DENTRO i documenti, non solo nel nome.\n" +
+  "Filtri disponibili: mime_type (document/spreadsheet/pdf/image), folder_name, modified_after, modified_before, shared_with.\n" +
+  "Usa name_only: true solo se cerchi per nome file esatto.\n" +
+  "Per leggere un Google Doc usa read_doc. Per creare documenti usa create_doc. Per condividere file usa share_file.\n\n" +
   "SLACK SEARCH (tool use):\n" +
   "Per cercare messaggi nei canali usa search_slack_messages. Supporta operatori Slack (in:#canale, from:@utente, has:link, before:, after:).\n\n" +
   "PREFERENZE:\n" +
@@ -969,6 +1160,15 @@ async function askGiuno(userId, userMessage, options) {
 
   if (options.mentionedBy) {
     contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
+  }
+
+  // Inietta memorie rilevanti automaticamente
+  var relevantMemories = searchMemories(userId, resolvedMessage);
+  if (relevantMemories.length > 0) {
+    contextData += '\nMEMORIE RILEVANTI:\n';
+    relevantMemories.slice(0, 5).forEach(function(m) {
+      contextData += '[' + m.tags.join(', ') + '] ' + m.content + '\n';
+    });
   }
 
   const messageWithContext = contextData
