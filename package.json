@@ -7,9 +7,10 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "@slack/bolt": "^3.17.0",
     "@anthropic-ai/sdk": "^0.24.0",
-    "dotenv": "^16.0.0"
+    "@slack/bolt": "^3.17.0",
+    "dotenv": "^16.0.0",
+    "googleapis": "^171.4.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"

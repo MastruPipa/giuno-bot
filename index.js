@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { App } = require('@slack/bolt');
 const Anthropic = require('@anthropic-ai/sdk');
+const { google } = require('googleapis');
+const fs = require('fs');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -11,25 +13,153 @@ const app = new App({
 
 const client = new Anthropic();
 
+// Google Auth
+const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS || fs.readFileSync('credentials.json'));
+const { client_secret, client_id, redirect_uris } = credentials.installed;
+const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+oAuth2Client.setCredentials(JSON.parse(process.env.GOOGLE_TOKEN || fs.readFileSync('token.json')));
+
+const drive = google.drive({ version: 'v3', auth: oAuth2Client });
+const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
+const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
+const docs = google.docs({ version: 'v1', auth: oAuth2Client });
+
+// Funzioni Google
+async function cercaSuDrive(query) {
+  const res = await drive.files.list({
+    q: `name contains '${query}' and trashed = false`,
+    fields: 'files(id, name, webViewLink, modifiedTime)',
+    pageSize: 5,
+  });
+  return res.data.files;
+}
+
+async function leggiEmailRecenti(max = 5) {
+  const res = await gmail.users.messages.list({ userId: 'me', maxResults: max, q: 'is:unread' });
+  if (!res.data.messages) return [];
+  const emails = await Promise.all(res.data.messages.map(async (m) => {
+    const msg = await gmail.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+    const headers = msg.data.payload.headers;
+    return {
+      subject: headers.find(h => h.name === 'Subject')?.value,
+      from: headers.find(h => h.name === 'From')?.value,
+      date: headers.find(h => h.name === 'Date')?.value,
+    };
+  }));
+  return emails;
+}
+
+async function leggiCalendario(giorni = 7) {
+  const now = new Date();
+  const fine = new Date();
+  fine.setDate(fine.getDate() + giorni);
+  const res = await calendar.events.list({
+    calendarId: 'primary',
+    timeMin: now.toISOString(),
+    timeMax: fine.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+    maxResults: 10,
+  });
+  return res.data.items || [];
+}
+
+async function creaDocumento(titolo, contenuto) {
+  const doc = await docs.documents.create({ requestBody: { title: titolo } });
+  const docId = doc.data.documentId;
+  await docs.documents.batchUpdate({
+    documentId: docId,
+    requestBody: {
+      requests: [{ insertText: { location: { index: 1 }, text: contenuto } }]
+    }
+  });
+  return `https://docs.google.com/document/d/${docId}/edit`;
+}
+
 const SYSTEM_PROMPT = `Ti chiami Giuno.
 Sei l'assistente interno di Katania Studio, agenzia digitale di Catania.
 Siciliano nell'anima, non nella caricatura. Usi "mbare" ogni tanto.
 Frasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.
 Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.
 Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.
-Rispondi sempre in italiano. Non inventare mai dati.`;
+Rispondi sempre in italiano. Non inventare mai dati.
+
+HAI ACCESSO A:
+- Google Drive: puoi cercare file e documenti
+- Gmail: puoi leggere le email non lette
+- Google Calendar: puoi vedere gli eventi dei prossimi giorni
+- Google Docs: puoi creare nuovi documenti
+
+Quando l'utente chiede di cercare file, email o eventi, dì che stai cercando e usa i dati che ti vengono forniti nel messaggio.`;
 
 const conversations = {};
 
+async function buildContext(userMessage) {
+  let context = '';
+  const msg = userMessage.toLowerCase();
+
+  if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
+    const query = userMessage.replace(/cerca|drive|file|documento/gi, '').trim();
+    const files = await cercaSuDrive(query);
+    if (files.length > 0) {
+      context += '\nFILE TROVATI SU DRIVE:\n';
+      files.forEach(f => { context += `- ${f.name}: ${f.webViewLink}\n`; });
+    } else {
+      context += '\nNessun file trovato su Drive per questa ricerca.\n';
+    }
+  }
+
+  if (msg.includes('email') || msg.includes('mail') || msg.includes('posta')) {
+    const emails = await leggiEmailRecenti(5);
+    if (emails.length > 0) {
+      context += '\nEMAIL NON LETTE:\n';
+      emails.forEach(e => { context += `- Da: ${e.from} | Oggetto: ${e.subject}\n`; });
+    } else {
+      context += '\nNessuna email non letta.\n';
+    }
+  }
+
+  if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani')) {
+    const eventi = await leggiCalendario(7);
+    if (eventi.length > 0) {
+      context += '\nEVENTI IN CALENDARIO:\n';
+      eventi.forEach(e => {
+        const data = e.start?.dateTime || e.start?.date;
+        context += `- ${e.summary} | ${new Date(data).toLocaleString('it-IT')}\n`;
+      });
+    } else {
+      context += '\nNessun evento in calendario per i prossimi 7 giorni.\n';
+    }
+  }
+
+  if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
+    const titolo = `Documento Giuno - ${new Date().toLocaleDateString('it-IT')}`;
+    const url = await creaDocumento(titolo, `Documento creato da Giuno\nRichiesta: ${userMessage}\n\n`);
+    context += `\nDOCUMENTO CREATO: ${url}\n`;
+  }
+
+  return context;
+}
+
 async function askGiuno(userId, userMessage) {
   if (!conversations[userId]) conversations[userId] = [];
-  conversations[userId].push({ role: 'user', content: userMessage });
+
+  let contextData = '';
+  try { contextData = await buildContext(userMessage); } catch (e) { console.error('Errore Google:', e.message); }
+
+  const messageWithContext = contextData
+    ? `${userMessage}\n\n[DATI RECUPERATI:${contextData}]`
+    : userMessage;
+
+  conversations[userId].push({ role: 'user', content: messageWithContext });
+
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: conversations[userId],
   });
+
   const reply = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   conversations[userId].push({ role: 'assistant', content: reply });
   if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
