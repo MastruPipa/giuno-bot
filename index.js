@@ -23,6 +23,9 @@ oAuth2Client.setCredentials({
   refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
 });
 
+console.log('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN);
+console.log('Google client ID presente:', !!process.env.GOOGLE_CLIENT_ID);
+
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
