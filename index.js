@@ -123,7 +123,17 @@ const oauthServer = http.createServer(async function(req, res) {
 
 // ─── Calendar tool definitions ───────────────────────────────────────────────
 
-const calendarTools = [
+const tools = [
+  {
+    name: 'get_slack_users',
+    description: 'Ottieni la lista degli utenti Slack con nome, ID e email. Usalo per trovare l\'email di un collega prima di invitarlo a un evento Calendar, o per ottenere l\'ID per taggarlo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name_filter: { type: 'string', description: 'Filtra per nome o parte del nome (opzionale)' },
+      },
+    },
+  },
   {
     name: 'list_events',
     description: 'Elenca gli eventi del calendario nei prossimi N giorni',
@@ -327,6 +337,23 @@ async function eseguiTool(toolName, input, userId) {
   }
 }
 
+async function eseguiToolSlack(toolName, input) {
+  try {
+    if (toolName === 'get_slack_users') {
+      const utenti = await getUtenti();
+      let filtered = utenti;
+      if (input.name_filter) {
+        const filter = input.name_filter.toLowerCase();
+        filtered = utenti.filter(function(u) { return u.name.toLowerCase().includes(filter); });
+      }
+      return { users: filtered };
+    }
+    return null; // non è un tool Slack
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
 // ─── Drive / Gmail / Docs helpers ────────────────────────────────────────────
 
 async function cercaSuDrive(query) {
@@ -375,8 +402,14 @@ async function leggiCanaleSlack(channelId, limit) {
 async function getUtenti() {
   const res = await app.client.users.list();
   return (res.members || [])
-    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT'; })
-    .map(function(u) { return { id: u.id, name: u.real_name || u.name }; });
+    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted; })
+    .map(function(u) {
+      return {
+        id: u.id,
+        name: u.real_name || u.name,
+        email: (u.profile && u.profile.email) || null,
+      };
+    });
 }
 
 // ─── Context builder (Drive, Gmail, Slack) ───────────────────────────────────
@@ -451,7 +484,9 @@ async function buildContext(userMessage, userId) {
     try {
       const utenti = await getUtenti();
       context += '\nMEMBRI DEL WORKSPACE:\n';
-      utenti.forEach(function(u) { context += u.name + ': <@' + u.id + '>\n'; });
+      utenti.forEach(function(u) {
+        context += u.name + ': <@' + u.id + '>' + (u.email ? ' | ' + u.email : '') + '\n';
+      });
     } catch(e) { context += '\nErrore utenti: ' + e.message + '\n'; }
   }
 
@@ -479,12 +514,16 @@ const SYSTEM_PROMPT = "Ti chiami Giuno.\n" +
   "Gmail: leggere email non lette dell'utente\n" +
   "Google Calendar: creare, modificare, spostare, eliminare eventi e gestire invitati (via tool)\n" +
   "Google Docs: creare documenti\n" +
-  "Slack: leggere canali e taggare utenti con <@USERID>\n\n" +
+  "Slack: leggere canali, taggare utenti con <@USERID>, cercare persone per nome o email\n\n" +
+  "TAGGING SLACK:\n" +
+  "Quando qualcuno ti menziona in un canale, rispondi sempre taggandolo con <@USERID>.\n" +
+  "Per trovare l'ID o l'email di un collega usa il tool get_slack_users.\n" +
+  "Quando crei o modifichi eventi Calendar con colleghi, usa get_slack_users per trovare le loro email Slack.\n\n" +
   "GESTIONE CALENDAR (tool use):\n" +
   "Usa i tool per qualsiasi operazione sul calendario. Non inventare eventi.\n" +
   "Per creare eventi chiedi data/ora se non specificate. Timezone: Europe/Rome.\n" +
   "Per modificare o eliminare, usa find_event per trovare l'ID, poi agisci.\n" +
-  "Quando aggiungi invitati e manca l'email, chiedi all'utente prima di procedere.\n" +
+  "Quando aggiungi invitati, usa get_slack_users per trovare l'email se l'utente indica solo il nome.\n" +
   "Se un tool risponde con errore di autenticazione, di' di scrivere 'collega il mio Google'.\n\n" +
   "GESTIONE AUTH:\n" +
   "Se nei dati vedi LINK_OAUTH, manda il link e di' di cliccare per autorizzare Giuno.\n" +
@@ -494,12 +533,17 @@ const SYSTEM_PROMPT = "Ti chiami Giuno.\n" +
 
 const conversations = {};
 
-async function askGiuno(userId, userMessage) {
+async function askGiuno(userId, userMessage, options) {
+  options = options || {};
   if (!conversations[userId]) conversations[userId] = [];
 
   let contextData = '';
   try { contextData = await buildContext(userMessage, userId); } catch(e) {
     contextData = '\nErrore: ' + e.message + '\n';
+  }
+
+  if (options.mentionedBy) {
+    contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Rispondendo in canale, taggalo sempre nella risposta.]\n';
   }
 
   const messageWithContext = contextData
@@ -518,7 +562,7 @@ async function askGiuno(userId, userMessage) {
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       messages: messages,
-      tools: calendarTools,
+      tools: tools,
     });
 
     if (response.stop_reason !== 'tool_use') {
@@ -536,7 +580,8 @@ async function askGiuno(userId, userMessage) {
       response.content
         .filter(function(b) { return b.type === 'tool_use'; })
         .map(async function(toolUse) {
-          const result = await eseguiTool(toolUse.name, toolUse.input, userId);
+          const slackResult = await eseguiToolSlack(toolUse.name, toolUse.input);
+          const result = slackResult !== null ? slackResult : await eseguiTool(toolUse.name, toolUse.input, userId);
           return {
             type: 'tool_result',
             tool_use_id: toolUse.id,
@@ -563,7 +608,7 @@ app.event('app_mention', async function(args) {
   const say = args.say;
   try {
     const text = event.text.replace(/<@[^>]+>/g, '').trim();
-    const reply = await askGiuno(event.user, text);
+    const reply = await askGiuno(event.user, text, { mentionedBy: event.user });
     await say({ text: reply, thread_ts: event.thread_ts || event.ts });
   } catch (err) {
     await say({ text: 'Errore: ' + err.message, thread_ts: event.thread_ts || event.ts });
