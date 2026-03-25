@@ -159,6 +159,7 @@ if (msg.includes('canale') || msg.includes('slack') || msg.includes('messaggi') 
     const channelList = channels.channels || [];
     const targetChannel = channelList.find(c => msg.includes(c.name));
     if (targetChannel) {
+	await app.client.conversations.join({ channel: targetChannel.id });
       const messages = await leggiCanaleSlack(targetChannel.id, 10);
       context += `\nULTIMI MESSAGGI IN #${targetChannel.name}:\n`;
       messages.forEach(m => {
