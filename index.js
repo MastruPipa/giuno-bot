@@ -28,7 +28,10 @@ const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI ||
   ('http://localhost:3000/oauth/callback');
 
 const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
-const CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar'];
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/gmail.modify',
+];
 
 // Client condiviso per Drive, Gmail, Docs (token del bot owner da .env)
 const oAuth2Client = new google.auth.OAuth2(
@@ -68,13 +71,13 @@ function generaLinkOAuth(slackUserId) {
   );
   return authClient.generateAuthUrl({
     access_type: 'offline',
-    scope: CALENDAR_SCOPES,
+    scope: GOOGLE_SCOPES,
     state: slackUserId,
     prompt: 'consent',
   });
 }
 
-function getCalendarPerUtente(slackUserId) {
+function getAuthPerUtente(slackUserId) {
   const refreshToken = userTokens[slackUserId];
   if (!refreshToken) return null;
   const auth = new google.auth.OAuth2(
@@ -83,7 +86,19 @@ function getCalendarPerUtente(slackUserId) {
     OAUTH_REDIRECT_URI
   );
   auth.setCredentials({ refresh_token: refreshToken });
+  return auth;
+}
+
+function getCalendarPerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  if (!auth) return null;
   return google.calendar({ version: 'v3', auth: auth });
+}
+
+function getGmailPerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  if (!auth) return null;
+  return google.gmail({ version: 'v1', auth: auth });
 }
 
 // Server HTTP per callback OAuth
@@ -127,7 +142,7 @@ const oauthServer = http.createServer(async function(req, res) {
     try {
       await app.client.chat.postMessage({
         channel: slackUserId,
-        text: 'Google Calendar collegato, mbare! Da ora vedo i tuoi eventi.',
+        text: 'Google collegato, mbare! Da ora vedo il tuo calendario e le tue email.',
       });
     } catch(e) {
       console.error('Errore DM Slack post-auth:', e.message);
@@ -151,12 +166,14 @@ async function cercaSuDrive(query) {
   return res.data.files;
 }
 
-async function leggiEmailRecenti(max) {
+async function leggiEmailRecenti(max, slackUserId) {
   max = max || 5;
-  const res = await gmail.users.messages.list({ userId: 'me', maxResults: max, q: 'is:unread' });
+  const userGmail = getGmailPerUtente(slackUserId);
+  if (!userGmail) throw new Error('NESSUN_TOKEN');
+  const res = await userGmail.users.messages.list({ userId: 'me', maxResults: max, q: 'is:unread' });
   if (!res.data.messages) return [];
   const emails = await Promise.all(res.data.messages.map(async function(m) {
-    const msg = await gmail.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+    const msg = await userGmail.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
     const headers = msg.data.payload.headers;
     return {
       subject: (headers.find(function(h) { return h.name === 'Subject'; }) || {}).value,
@@ -210,7 +227,7 @@ async function getUtenti() {
     .map(function(u) { return { id: u.id, name: u.real_name || u.name }; });
 }
 
-const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nGESTIONE CALENDARIO:\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO, di' all'utente che non ha ancora collegato il suo Google Calendar e che puo' farlo scrivendo 'collega il mio Google Calendar'.\nSe nei dati recuperati vedi LINK_OAUTH, manda quel link all'utente e digli di cliccarlo per autorizzare Giuno ad accedere al suo calendario. Spiega che dopo il reindirizzamento tornera' su Slack con il calendario attivo.";
+const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nGESTIONE GOOGLE:\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO o GMAIL NON AUTORIZZATO, di' all'utente che non ha ancora collegato il suo account Google e che puo' farlo scrivendo 'collega il mio Google'.\nSe nei dati recuperati vedi LINK_OAUTH, manda quel link all'utente e digli di cliccarlo per autorizzare Giuno. Un solo link autorizza sia Calendar che Gmail. Dopo il reindirizzamento tornera' su Slack con tutto attivo.";
 
 const conversations = {};
 
@@ -218,9 +235,9 @@ async function buildContext(userMessage, userId) {
   let context = '';
   const msg = userMessage.toLowerCase();
 
-  // Richiesta di collegare Google Calendar
+  // Richiesta di collegare Google
   if ((msg.includes('collega') || msg.includes('connetti') || msg.includes('autorizza')) &&
-      (msg.includes('calendar') || msg.includes('google') || msg.includes('account'))) {
+      (msg.includes('calendar') || msg.includes('gmail') || msg.includes('google') || msg.includes('account') || msg.includes('email') || msg.includes('mail'))) {
     const oauthLink = generaLinkOAuth(userId);
     context += '\nLINK_OAUTH: ' + oauthLink + '\n';
     return context;
@@ -241,14 +258,20 @@ async function buildContext(userMessage, userId) {
 
   if (msg.includes('email') || msg.includes('mail') || msg.includes('posta')) {
     try {
-      const emails = await leggiEmailRecenti(5);
+      const emails = await leggiEmailRecenti(5, userId);
       if (emails.length > 0) {
         context += '\nEMAIL NON LETTE:\n';
         emails.forEach(function(e) { context += 'Da: ' + e.from + ' | ' + e.subject + '\n'; });
       } else {
         context += '\nNessuna email non letta.\n';
       }
-    } catch(e) { context += '\nErrore Gmail: ' + e.message + '\n'; }
+    } catch(e) {
+      if (e.message === 'NESSUN_TOKEN') {
+        context += '\nGMAIL NON AUTORIZZATO: questo utente non ha ancora collegato il suo Gmail.\n';
+      } else {
+        context += '\nErrore Gmail: ' + e.message + '\n';
+      }
+    }
   }
 
   if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani') || msg.includes('eventi')) {
