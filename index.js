@@ -7,6 +7,19 @@ const http = require('http');
 const url = require('url');
 const cron = require('node-cron');
 
+// ─── Logger ───────────────────────────────────────────────────────────────────
+
+function log(level, ...args) {
+  process.stdout.write('[' + new Date().toISOString() + '] [' + level + '] ' + args.join(' ') + '\n');
+}
+const logger = {
+  info:  function(...a) { log('INFO ', ...a); },
+  warn:  function(...a) { log('WARN ', ...a); },
+  error: function(...a) { log('ERROR', ...a); },
+};
+
+// ─── Slack + Anthropic ────────────────────────────────────────────────────────
+
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -16,34 +29,34 @@ const app = new App({
 
 const client = new Anthropic();
 
-// Credenziali OAuth web (da file locale o env vars su Railway)
+// ─── Google OAuth config ──────────────────────────────────────────────────────
+
 let webCreds = null;
 try { webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web; } catch(e) {}
 
-const GOOGLE_CLIENT_ID = (webCreds && webCreds.client_id) || process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_ID     = (webCreds && webCreds.client_id)     || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = (webCreds && webCreds.client_secret) || process.env.GOOGLE_CLIENT_SECRET;
-const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI ||
+const OAUTH_REDIRECT_URI   = process.env.OAUTH_REDIRECT_URI ||
   (webCreds && webCreds.redirect_uris && webCreds.redirect_uris[0]) ||
   'http://localhost:3000/oauth/callback';
-
 const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
+
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/gmail.modify',
 ];
 
-// Client condiviso per Drive e Docs (token del bot owner da .env)
 const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
 oAuth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
-console.log('Google client ID presente:', !!GOOGLE_CLIENT_ID);
-console.log('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN);
-console.log('OAuth redirect URI:', OAUTH_REDIRECT_URI);
+logger.info('Google client ID presente:', !!GOOGLE_CLIENT_ID);
+logger.info('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN);
+logger.info('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
-const docs = google.docs({ version: 'v1', auth: oAuth2Client });
+const docs  = google.docs({ version: 'v1', auth: oAuth2Client });
 
-// ─── Token per utente ────────────────────────────────────────────────────────
+// ─── Token per utente ─────────────────────────────────────────────────────────
 
 const USER_TOKENS_FILE = 'user_tokens.json';
 let userTokens = {};
@@ -54,14 +67,15 @@ function salvaTokenUtente(slackUserId, refreshToken) {
   fs.writeFileSync(USER_TOKENS_FILE, JSON.stringify(userTokens, null, 2));
 }
 
+function rimuoviTokenUtente(slackUserId) {
+  delete userTokens[slackUserId];
+  fs.writeFileSync(USER_TOKENS_FILE, JSON.stringify(userTokens, null, 2));
+  logger.warn('Token rimosso per utente:', slackUserId);
+}
+
 function generaLinkOAuth(slackUserId) {
   const authClient = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
-  return authClient.generateAuthUrl({
-    access_type: 'offline',
-    scope: GOOGLE_SCOPES,
-    state: slackUserId,
-    prompt: 'consent',
-  });
+  return authClient.generateAuthUrl({ access_type: 'offline', scope: GOOGLE_SCOPES, state: slackUserId, prompt: 'consent' });
 }
 
 function getAuthPerUtente(slackUserId) {
@@ -82,7 +96,70 @@ function getGmailPerUtente(slackUserId) {
   return auth ? google.gmail({ version: 'v1', auth: auth }) : null;
 }
 
-// ─── Server OAuth callback ───────────────────────────────────────────────────
+// Gestione token scaduto: rimuove il token e avvisa l'utente via DM
+async function handleTokenScaduto(slackUserId, err) {
+  const msg = (err.message || '') + (err.code || '');
+  const scaduto = msg.includes('invalid_grant') || msg.includes('Token has been expired') ||
+    msg.includes('invalid_rapt') || String(err.code) === '401';
+  if (!scaduto) return false;
+  rimuoviTokenUtente(slackUserId);
+  try {
+    await app.client.chat.postMessage({
+      channel: slackUserId,
+      text: 'Il tuo token Google è scaduto. Scrivi "collega il mio Google" per riautenticarti.',
+    });
+  } catch(e) { logger.error('Errore DM token scaduto:', e.message); }
+  return true;
+}
+
+// ─── Preferenze utente ────────────────────────────────────────────────────────
+
+const USER_PREFS_FILE = 'user_prefs.json';
+let userPrefs = {};
+try { userPrefs = JSON.parse(fs.readFileSync(USER_PREFS_FILE)); } catch(e) {}
+
+function salvaPrefs() {
+  try { fs.writeFileSync(USER_PREFS_FILE, JSON.stringify(userPrefs, null, 2)); } catch(e) {}
+}
+
+function getPrefs(userId) {
+  return Object.assign({ routine_enabled: true, notifiche_enabled: true }, userPrefs[userId] || {});
+}
+
+function setPrefs(userId, prefs) {
+  userPrefs[userId] = Object.assign(getPrefs(userId), prefs);
+  salvaPrefs();
+}
+
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+
+const rateLimits = new Map();
+const RATE_LIMIT  = 20;
+const RATE_WINDOW = 60 * 1000;
+
+function checkRateLimit(userId) {
+  const now   = Date.now();
+  const entry = rateLimits.get(userId);
+  if (!entry || now > entry.resetAt) {
+    rateLimits.set(userId, { count: 1, resetAt: now + RATE_WINDOW });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT) return false;
+  entry.count++;
+  return true;
+}
+
+// ─── Persistenza conversazioni ────────────────────────────────────────────────
+
+const CONVERSATIONS_FILE = 'conversations.json';
+let conversations = {};
+try { conversations = JSON.parse(fs.readFileSync(CONVERSATIONS_FILE)); } catch(e) {}
+
+function salvaConversazioni() {
+  try { fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations)); } catch(e) {}
+}
+
+// ─── Server OAuth callback ────────────────────────────────────────────────────
 
 const oauthServer = http.createServer(async function(req, res) {
   const parsed = url.parse(req.url, true);
@@ -99,270 +176,348 @@ const oauthServer = http.createServer(async function(req, res) {
 
     if (!tokens.refresh_token) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<html><body><h2>Errore: nessun refresh token.</h2><p>Vai su <a href="https://myaccount.google.com/permissions">account Google</a>, rimuovi l\'accesso a questa app e riprova.</p></body></html>');
+      res.end('<html><body><h2>Errore: nessun refresh token.</h2><p>Vai su <a href="https://myaccount.google.com/permissions">account Google</a>, rimuovi l\'accesso e riprova.</p></body></html>');
       return;
     }
 
     salvaTokenUtente(slackUserId, tokens.refresh_token);
-    console.log('Token salvato per:', slackUserId);
+    logger.info('Token salvato per:', slackUserId);
 
     try {
       await app.client.chat.postMessage({
         channel: slackUserId,
         text: 'Google collegato, mbare! Da ora vedo il tuo calendario e le tue email.',
       });
-    } catch(e) { console.error('Errore DM:', e.message); }
+    } catch(e) { logger.error('Errore DM post-auth:', e.message); }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>Autorizzazione completata!</h2><p>Puoi chiudere questa finestra e tornare su Slack.</p></body></html>');
   } catch(e) {
-    console.error('Errore OAuth:', e.message);
+    logger.error('Errore OAuth callback:', e.message);
     res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><body><h2>Errore</h2><p>' + e.message + '</p></body></html>');
   }
 });
 
-// ─── Calendar tool definitions ───────────────────────────────────────────────
+// ─── Tool definitions ─────────────────────────────────────────────────────────
 
 const tools = [
+  // Slack
   {
     name: 'get_slack_users',
-    description: 'Ottieni la lista degli utenti Slack con nome, ID e email. Usalo per trovare l\'email di un collega prima di invitarlo a un evento Calendar, o per ottenere l\'ID per taggarlo.',
+    description: 'Ottieni utenti Slack con nome, ID e email. Usalo per trovare email di colleghi o ID per taggarli.',
     input_schema: {
       type: 'object',
       properties: {
-        name_filter: { type: 'string', description: 'Filtra per nome o parte del nome (opzionale)' },
+        name_filter: { type: 'string', description: 'Filtra per nome (opzionale)' },
       },
     },
   },
+  // Preferenze utente
   {
-    name: 'list_events',
-    description: 'Elenca gli eventi del calendario nei prossimi N giorni',
+    name: 'set_user_prefs',
+    description: 'Aggiorna le preferenze dell\'utente per Giuno (routine mattutina, notifiche proattive).',
     input_schema: {
       type: 'object',
       properties: {
-        days: { type: 'number', description: 'Numero di giorni da oggi (default 7)' },
+        routine_enabled:    { type: 'boolean', description: 'Abilita/disabilita la routine del mattino' },
+        notifiche_enabled:  { type: 'boolean', description: 'Abilita/disabilita le notifiche proattive (riunioni imminenti, mail urgenti)' },
+      },
+    },
+  },
+  // Calendar
+  {
+    name: 'list_events',
+    description: 'Elenca gli eventi del calendario nei prossimi N giorni.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        days: { type: 'number', description: 'Giorni da oggi (default 7)' },
       },
     },
   },
   {
     name: 'find_event',
-    description: 'Cerca eventi nel calendario per titolo o in un intervallo di date. Usalo prima di update_event, add_attendees o delete_event per ottenere l\'ID.',
+    description: 'Cerca eventi nel calendario per titolo o intervallo di date. Usalo prima di update/delete per trovare l\'ID.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Testo da cercare nel titolo (opzionale)' },
-        date_from: { type: 'string', description: 'Inizio ricerca ISO 8601 (opzionale, default oggi)' },
-        date_to: { type: 'string', description: 'Fine ricerca ISO 8601 (opzionale, default +30 giorni)' },
+        query:     { type: 'string', description: 'Testo nel titolo (opzionale)' },
+        date_from: { type: 'string', description: 'Inizio ricerca ISO 8601 (opzionale)' },
+        date_to:   { type: 'string', description: 'Fine ricerca ISO 8601 (opzionale)' },
       },
     },
   },
   {
     name: 'create_event',
-    description: 'Crea un nuovo evento nel calendario. Le date devono essere ISO 8601 con timezone (es. 2025-03-25T10:00:00+01:00).',
+    description: 'Crea un nuovo evento nel calendario. Date in ISO 8601 con timezone (es. 2025-03-25T10:00:00+01:00).',
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Titolo dell\'evento' },
-        start: { type: 'string', description: 'Data e ora di inizio ISO 8601' },
-        end: { type: 'string', description: 'Data e ora di fine ISO 8601' },
+        title:       { type: 'string', description: 'Titolo' },
+        start:       { type: 'string', description: 'Inizio ISO 8601' },
+        end:         { type: 'string', description: 'Fine ISO 8601' },
         description: { type: 'string', description: 'Descrizione (opzionale)' },
-        location: { type: 'string', description: 'Luogo (opzionale)' },
-        attendees: { type: 'array', items: { type: 'string' }, description: 'Email degli invitati (opzionale)' },
+        location:    { type: 'string', description: 'Luogo (opzionale)' },
+        attendees:   { type: 'array', items: { type: 'string' }, description: 'Email invitati (opzionale)' },
       },
       required: ['title', 'start', 'end'],
     },
   },
   {
     name: 'update_event',
-    description: 'Modifica titolo, orario, luogo o descrizione di un evento esistente. Usa find_event prima per ottenere l\'ID.',
+    description: 'Modifica titolo, orario, luogo o descrizione di un evento. Usa find_event prima per l\'ID.',
     input_schema: {
       type: 'object',
       properties: {
-        event_id: { type: 'string', description: 'ID dell\'evento' },
-        title: { type: 'string', description: 'Nuovo titolo (opzionale)' },
-        start: { type: 'string', description: 'Nuova data/ora inizio ISO 8601 (opzionale)' },
-        end: { type: 'string', description: 'Nuova data/ora fine ISO 8601 (opzionale)' },
+        event_id:    { type: 'string', description: 'ID evento' },
+        title:       { type: 'string', description: 'Nuovo titolo (opzionale)' },
+        start:       { type: 'string', description: 'Nuovo inizio ISO 8601 (opzionale)' },
+        end:         { type: 'string', description: 'Nuova fine ISO 8601 (opzionale)' },
         description: { type: 'string', description: 'Nuova descrizione (opzionale)' },
-        location: { type: 'string', description: 'Nuovo luogo (opzionale)' },
+        location:    { type: 'string', description: 'Nuovo luogo (opzionale)' },
       },
       required: ['event_id'],
     },
   },
   {
     name: 'add_attendees',
-    description: 'Aggiunge invitati a un evento e manda notifiche email. Usa find_event prima per ottenere l\'ID.',
+    description: 'Aggiunge invitati a un evento e manda notifiche email. Usa find_event prima per l\'ID.',
     input_schema: {
       type: 'object',
       properties: {
-        event_id: { type: 'string', description: 'ID dell\'evento' },
-        attendees: { type: 'array', items: { type: 'string' }, description: 'Email degli invitati da aggiungere' },
+        event_id:  { type: 'string', description: 'ID evento' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email da aggiungere' },
       },
       required: ['event_id', 'attendees'],
     },
   },
   {
     name: 'delete_event',
-    description: 'Elimina un evento dal calendario. Usa find_event prima per ottenere l\'ID.',
+    description: 'Elimina un evento. Usa find_event prima per l\'ID.',
     input_schema: {
       type: 'object',
       properties: {
-        event_id: { type: 'string', description: 'ID dell\'evento da eliminare' },
+        event_id: { type: 'string', description: 'ID evento da eliminare' },
       },
       required: ['event_id'],
     },
   },
+  // Gmail
+  {
+    name: 'find_emails',
+    description: 'Cerca email nella casella Gmail dell\'utente con una query.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Query Gmail (es. "from:mario is:unread", "subject:preventivo")' },
+        max:   { type: 'number', description: 'Numero massimo risultati (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_email',
+    description: 'Legge il contenuto completo di un\'email dato l\'ID. Usalo prima di reply_email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'ID del messaggio Gmail' },
+      },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'reply_email',
+    description: 'Risponde a un\'email. Usa read_email prima per leggere il contesto.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'ID del messaggio a cui rispondere' },
+        body:       { type: 'string', description: 'Testo della risposta' },
+      },
+      required: ['message_id', 'body'],
+    },
+  },
 ];
 
-// ─── Calendar tool execution ─────────────────────────────────────────────────
+// ─── Tool execution ───────────────────────────────────────────────────────────
 
 async function eseguiTool(toolName, input, userId) {
-  const cal = getCalendarPerUtente(userId);
-  if (!cal) {
-    return { error: 'Google Calendar non collegato. Scrivi "collega il mio Google" per autorizzare.' };
-  }
-
-  try {
-    if (toolName === 'list_events') {
-      const giorni = input.days || 7;
-      const now = new Date();
-      const fine = new Date();
-      fine.setDate(fine.getDate() + giorni);
-      const res = await cal.events.list({
-        calendarId: 'primary',
-        timeMin: now.toISOString(),
-        timeMax: fine.toISOString(),
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 15,
-      });
-      return {
-        events: (res.data.items || []).map(function(e) {
-          return {
-            id: e.id,
-            title: e.summary,
-            start: e.start.dateTime || e.start.date,
-            end: e.end.dateTime || e.end.date,
-            location: e.location || null,
-            attendees: (e.attendees || []).map(function(a) { return a.email; }),
-          };
-        }),
-      };
-    }
-
-    if (toolName === 'find_event') {
-      const from = input.date_from ? new Date(input.date_from) : new Date();
-      const to = input.date_to ? new Date(input.date_to) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      const res = await cal.events.list({
-        calendarId: 'primary',
-        timeMin: from.toISOString(),
-        timeMax: to.toISOString(),
-        q: input.query || undefined,
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 10,
-      });
-      return {
-        events: (res.data.items || []).map(function(e) {
-          return {
-            id: e.id,
-            title: e.summary,
-            start: e.start.dateTime || e.start.date,
-            end: e.end.dateTime || e.end.date,
-            location: e.location || null,
-            attendees: (e.attendees || []).map(function(a) { return a.email; }),
-          };
-        }),
-      };
-    }
-
-    if (toolName === 'create_event') {
-      const event = {
-        summary: input.title,
-        start: { dateTime: input.start, timeZone: 'Europe/Rome' },
-        end: { dateTime: input.end, timeZone: 'Europe/Rome' },
-      };
-      if (input.description) event.description = input.description;
-      if (input.location) event.location = input.location;
-      if (input.attendees && input.attendees.length > 0) {
-        event.attendees = input.attendees.map(function(email) { return { email: email }; });
-      }
-      const res = await cal.events.insert({
-        calendarId: 'primary',
-        requestBody: event,
-        sendUpdates: (input.attendees && input.attendees.length > 0) ? 'all' : 'none',
-      });
-      return { success: true, event_id: res.data.id, link: res.data.htmlLink };
-    }
-
-    if (toolName === 'update_event') {
-      const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
-      const event = existing.data;
-      if (input.title) event.summary = input.title;
-      if (input.start) event.start = { dateTime: input.start, timeZone: 'Europe/Rome' };
-      if (input.end) event.end = { dateTime: input.end, timeZone: 'Europe/Rome' };
-      if (input.description !== undefined) event.description = input.description;
-      if (input.location !== undefined) event.location = input.location;
-      await cal.events.update({
-        calendarId: 'primary',
-        eventId: input.event_id,
-        requestBody: event,
-        sendUpdates: 'all',
-      });
-      return { success: true };
-    }
-
-    if (toolName === 'add_attendees') {
-      const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
-      const event = existing.data;
-      const currentEmails = (event.attendees || []).map(function(a) { return a.email; });
-      const nuovi = input.attendees.filter(function(e) { return !currentEmails.includes(e); });
-      event.attendees = (event.attendees || []).concat(nuovi.map(function(e) { return { email: e }; }));
-      await cal.events.update({
-        calendarId: 'primary',
-        eventId: input.event_id,
-        requestBody: event,
-        sendUpdates: 'all',
-      });
-      return { success: true, added: nuovi };
-    }
-
-    if (toolName === 'delete_event') {
-      await cal.events.delete({ calendarId: 'primary', eventId: input.event_id });
-      return { success: true };
-    }
-
-    return { error: 'Tool sconosciuto: ' + toolName };
-  } catch(e) {
-    return { error: e.message };
-  }
-}
-
-async function eseguiToolSlack(toolName, input) {
-  try {
-    if (toolName === 'get_slack_users') {
+  // Tool Slack (non richiedono auth Google)
+  if (toolName === 'get_slack_users') {
+    try {
       const utenti = await getUtenti();
       let filtered = utenti;
       if (input.name_filter) {
-        const filter = input.name_filter.toLowerCase();
-        filtered = utenti.filter(function(u) { return u.name.toLowerCase().includes(filter); });
+        const f = input.name_filter.toLowerCase();
+        filtered = utenti.filter(function(u) { return u.name.toLowerCase().includes(f); });
       }
       return { users: filtered };
-    }
-    return null; // non è un tool Slack
-  } catch(e) {
-    return { error: e.message };
+    } catch(e) { return { error: e.message }; }
   }
+
+  if (toolName === 'set_user_prefs') {
+    setPrefs(userId, input);
+    const prefs = getPrefs(userId);
+    return {
+      success: true,
+      routine_enabled:   prefs.routine_enabled,
+      notifiche_enabled: prefs.notifiche_enabled,
+    };
+  }
+
+  // Tool Calendar
+  const CALENDAR_TOOLS = ['list_events', 'find_event', 'create_event', 'update_event', 'add_attendees', 'delete_event'];
+  if (CALENDAR_TOOLS.includes(toolName)) {
+    const cal = getCalendarPerUtente(userId);
+    if (!cal) return { error: 'Google Calendar non collegato. Scrivi "collega il mio Google".' };
+    try {
+      if (toolName === 'list_events') {
+        const giorni = input.days || 7;
+        const now = new Date(); const fine = new Date();
+        fine.setDate(fine.getDate() + giorni);
+        const res = await cal.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: fine.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 15 });
+        return { events: (res.data.items || []).map(mapEvent) };
+      }
+
+      if (toolName === 'find_event') {
+        const from = input.date_from ? new Date(input.date_from) : new Date();
+        const to   = input.date_to   ? new Date(input.date_to)   : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const res  = await cal.events.list({ calendarId: 'primary', timeMin: from.toISOString(), timeMax: to.toISOString(), q: input.query || undefined, singleEvents: true, orderBy: 'startTime', maxResults: 10 });
+        return { events: (res.data.items || []).map(mapEvent) };
+      }
+
+      if (toolName === 'create_event') {
+        const event = {
+          summary: input.title,
+          start: { dateTime: input.start, timeZone: 'Europe/Rome' },
+          end:   { dateTime: input.end,   timeZone: 'Europe/Rome' },
+        };
+        if (input.description) event.description = input.description;
+        if (input.location)    event.location    = input.location;
+        if (input.attendees && input.attendees.length > 0) {
+          event.attendees = input.attendees.map(function(e) { return { email: e }; });
+        }
+        const res = await cal.events.insert({ calendarId: 'primary', requestBody: event, sendUpdates: (input.attendees && input.attendees.length > 0) ? 'all' : 'none' });
+        return { success: true, event_id: res.data.id, link: res.data.htmlLink };
+      }
+
+      if (toolName === 'update_event') {
+        const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
+        const event = existing.data;
+        if (input.title)                 event.summary     = input.title;
+        if (input.start)                 event.start       = { dateTime: input.start, timeZone: 'Europe/Rome' };
+        if (input.end)                   event.end         = { dateTime: input.end,   timeZone: 'Europe/Rome' };
+        if (input.description !== undefined) event.description = input.description;
+        if (input.location    !== undefined) event.location    = input.location;
+        await cal.events.update({ calendarId: 'primary', eventId: input.event_id, requestBody: event, sendUpdates: 'all' });
+        return { success: true };
+      }
+
+      if (toolName === 'add_attendees') {
+        const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
+        const event = existing.data;
+        const currentEmails = (event.attendees || []).map(function(a) { return a.email; });
+        const nuovi = input.attendees.filter(function(e) { return !currentEmails.includes(e); });
+        event.attendees = (event.attendees || []).concat(nuovi.map(function(e) { return { email: e }; }));
+        await cal.events.update({ calendarId: 'primary', eventId: input.event_id, requestBody: event, sendUpdates: 'all' });
+        return { success: true, added: nuovi };
+      }
+
+      if (toolName === 'delete_event') {
+        await cal.events.delete({ calendarId: 'primary', eventId: input.event_id });
+        return { success: true };
+      }
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
+      return { error: e.message };
+    }
+  }
+
+  // Tool Gmail
+  const GMAIL_TOOLS = ['find_emails', 'read_email', 'reply_email'];
+  if (GMAIL_TOOLS.includes(toolName)) {
+    const gm = getGmailPerUtente(userId);
+    if (!gm) return { error: 'Gmail non collegato. Scrivi "collega il mio Google".' };
+    try {
+      if (toolName === 'find_emails') {
+        const max = input.max || 5;
+        const res = await gm.users.messages.list({ userId: 'me', maxResults: max, q: input.query });
+        if (!res.data.messages) return { emails: [] };
+        const emails = await Promise.all(res.data.messages.map(async function(m) {
+          const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'To', 'Subject', 'Date'] });
+          const h = msg.data.payload.headers;
+          return { id: m.id, subject: getHeader(h, 'Subject'), from: getHeader(h, 'From'), to: getHeader(h, 'To'), date: getHeader(h, 'Date') };
+        }));
+        return { emails: emails };
+      }
+
+      if (toolName === 'read_email') {
+        const msg = await gm.users.messages.get({ userId: 'me', id: input.message_id, format: 'full' });
+        const h = msg.data.payload.headers;
+        let body = '';
+        function extractText(part) {
+          if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+            body += Buffer.from(part.body.data, 'base64').toString('utf-8');
+          }
+          if (part.parts) part.parts.forEach(extractText);
+        }
+        extractText(msg.data.payload);
+        return {
+          id: msg.data.id,
+          thread_id: msg.data.threadId,
+          subject: getHeader(h, 'Subject'),
+          from:    getHeader(h, 'From'),
+          to:      getHeader(h, 'To'),
+          date:    getHeader(h, 'Date'),
+          body:    body.substring(0, 2000),
+        };
+      }
+
+      if (toolName === 'reply_email') {
+        const orig = await gm.users.messages.get({ userId: 'me', id: input.message_id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Message-Id', 'References'] });
+        const h = orig.data.payload.headers;
+        const origFrom      = getHeader(h, 'From');
+        const origSubject   = getHeader(h, 'Subject');
+        const origMessageId = getHeader(h, 'Message-Id');
+        const origRefs      = getHeader(h, 'References');
+        const replySubject  = origSubject.startsWith('Re:') ? origSubject : 'Re: ' + origSubject;
+        const raw = [
+          'To: ' + origFrom,
+          'Subject: ' + replySubject,
+          'In-Reply-To: ' + origMessageId,
+          'References: ' + (origRefs ? origRefs + ' ' : '') + origMessageId,
+          'Content-Type: text/plain; charset=utf-8',
+          'MIME-Version: 1.0',
+          '',
+          input.body,
+        ].join('\r\n');
+        const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded, threadId: orig.data.threadId } });
+        return { success: true };
+      }
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
+      return { error: e.message };
+    }
+  }
+
+  return { error: 'Tool sconosciuto: ' + toolName };
 }
 
-// ─── Drive / Gmail / Docs helpers ────────────────────────────────────────────
+// Helper
+function mapEvent(e) {
+  return { id: e.id, title: e.summary, start: e.start.dateTime || e.start.date, end: e.end.dateTime || e.end.date, location: e.location || null, attendees: (e.attendees || []).map(function(a) { return a.email; }) };
+}
+function getHeader(headers, name) {
+  return (headers.find(function(h) { return h.name === name; }) || {}).value || '';
+}
+
+// ─── Drive / Docs / Slack helpers ─────────────────────────────────────────────
 
 async function cercaSuDrive(query) {
-  const res = await drive.files.list({
-    q: "name contains '" + query + "' and trashed = false",
-    fields: 'files(id, name, webViewLink, modifiedTime)',
-    pageSize: 5,
-  });
+  const res = await drive.files.list({ q: "name contains '" + query + "' and trashed = false", fields: 'files(id, name, webViewLink, modifiedTime)', pageSize: 5 });
   return res.data.files;
 }
 
@@ -372,48 +527,17 @@ async function leggiEmailRecenti(max, slackUserId) {
   if (!userGmail) throw new Error('NESSUN_TOKEN');
   const res = await userGmail.users.messages.list({ userId: 'me', maxResults: max, q: 'is:unread' });
   if (!res.data.messages) return [];
-  const emails = await Promise.all(res.data.messages.map(async function(m) {
+  return Promise.all(res.data.messages.map(async function(m) {
     const msg = await userGmail.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
-    const headers = msg.data.payload.headers;
-    return {
-      subject: (headers.find(function(h) { return h.name === 'Subject'; }) || {}).value,
-      from: (headers.find(function(h) { return h.name === 'From'; }) || {}).value,
-    };
+    const h = msg.data.payload.headers;
+    return { subject: getHeader(h, 'Subject'), from: getHeader(h, 'From') };
   }));
-  return emails;
-}
-
-// Espande <@USERID> nel testo con "Nome (email)" per dare contesto a Claude
-async function resolveSlackMentions(text) {
-  const matches = [];
-  const pattern = /<@([A-Z0-9]+)>/g;
-  let m;
-  while ((m = pattern.exec(text)) !== null) {
-    if (!matches.find(function(x) { return x === m[1]; })) matches.push(m[1]);
-  }
-  if (matches.length === 0) return text;
-  let resolved = text;
-  for (let i = 0; i < matches.length; i++) {
-    const slackId = matches[i];
-    try {
-      const res = await app.client.users.info({ user: slackId });
-      const u = res.user;
-      const name = u.real_name || u.name;
-      const email = (u.profile && u.profile.email) || '';
-      const label = '@' + name + (email ? ' (' + email + ')' : '');
-      resolved = resolved.split('<@' + slackId + '>').join(label);
-    } catch(e) { /* lascia il tag originale se fallisce */ }
-  }
-  return resolved;
 }
 
 async function creaDocumento(titolo, contenuto) {
   const doc = await docs.documents.create({ requestBody: { title: titolo } });
   const docId = doc.data.documentId;
-  await docs.documents.batchUpdate({
-    documentId: docId,
-    requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] },
-  });
+  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] } });
   return 'https://docs.google.com/document/d/' + docId + '/edit';
 }
 
@@ -428,27 +552,39 @@ async function getUtenti() {
   const res = await app.client.users.list();
   return (res.members || [])
     .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted; })
-    .map(function(u) {
-      return {
-        id: u.id,
-        name: u.real_name || u.name,
-        email: (u.profile && u.profile.email) || null,
-      };
-    });
+    .map(function(u) { return { id: u.id, name: u.real_name || u.name, email: (u.profile && u.profile.email) || null }; });
 }
 
-// ─── Context builder (Drive, Gmail, Slack) ───────────────────────────────────
-// Il Calendar è gestito interamente via tool use da Claude
+async function resolveSlackMentions(text) {
+  const pattern = /<@([A-Z0-9]+)>/g;
+  const ids = [];
+  let m;
+  while ((m = pattern.exec(text)) !== null) {
+    if (!ids.includes(m[1])) ids.push(m[1]);
+  }
+  if (ids.length === 0) return text;
+  let resolved = text;
+  for (const slackId of ids) {
+    try {
+      const res = await app.client.users.info({ user: slackId });
+      const u = res.user;
+      const name  = u.real_name || u.name;
+      const email = (u.profile && u.profile.email) || '';
+      resolved = resolved.split('<@' + slackId + '>').join('@' + name + (email ? ' (' + email + ')' : ''));
+    } catch(e) {}
+  }
+  return resolved;
+}
+
+// ─── Context builder ──────────────────────────────────────────────────────────
 
 async function buildContext(userMessage, userId) {
   let context = '';
   const msg = userMessage.toLowerCase();
 
-  // Richiesta collegamento Google
   if ((msg.includes('collega') || msg.includes('connetti') || msg.includes('autorizza')) &&
       (msg.includes('calendar') || msg.includes('gmail') || msg.includes('google') || msg.includes('account') || msg.includes('email') || msg.includes('mail'))) {
-    context += '\nLINK_OAUTH: ' + generaLinkOAuth(userId) + '\n';
-    return context;
+    return '\nLINK_OAUTH: ' + generaLinkOAuth(userId) + '\n';
   }
 
   if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
@@ -458,9 +594,7 @@ async function buildContext(userMessage, userId) {
       if (files.length > 0) {
         context += '\nFILE SU DRIVE:\n';
         files.forEach(function(f) { context += f.name + ': ' + f.webViewLink + '\n'; });
-      } else {
-        context += '\nNessun file trovato su Drive.\n';
-      }
+      } else { context += '\nNessun file trovato su Drive.\n'; }
     } catch(e) { context += '\nErrore Drive: ' + e.message + '\n'; }
   }
 
@@ -470,34 +604,30 @@ async function buildContext(userMessage, userId) {
       if (emails.length > 0) {
         context += '\nEMAIL NON LETTE:\n';
         emails.forEach(function(e) { context += 'Da: ' + e.from + ' | ' + e.subject + '\n'; });
-      } else {
-        context += '\nNessuna email non letta.\n';
-      }
+      } else { context += '\nNessuna email non letta.\n'; }
     } catch(e) {
-      if (e.message === 'NESSUN_TOKEN') {
-        context += '\nGMAIL NON AUTORIZZATO: questo utente non ha ancora collegato il suo Gmail.\n';
-      } else {
-        context += '\nErrore Gmail: ' + e.message + '\n';
-      }
+      context += (e.message === 'NESSUN_TOKEN')
+        ? '\nGMAIL NON AUTORIZZATO: utente non autenticato.\n'
+        : '\nErrore Gmail: ' + e.message + '\n';
     }
   }
 
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
     try {
       const titolo = 'Documento Giuno - ' + new Date().toLocaleDateString('it-IT');
-      const url2 = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
-      context += '\nDOCUMENTO CREATO: ' + url2 + '\n';
+      const docUrl = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
+      context += '\nDOCUMENTO CREATO: ' + docUrl + '\n';
     } catch(e) { context += '\nErrore Docs: ' + e.message + '\n'; }
   }
 
   if (msg.includes('canale') || msg.includes('leggi') || msg.includes('messaggi') || msg.includes('thread')) {
     try {
-      const channels = await app.client.conversations.list({ limit: 50 });
+      const channels  = await app.client.conversations.list({ limit: 50 });
       const channelList = channels.channels || [];
-      const targetChannel = channelList.find(function(c) { return msg.includes(c.name); });
-      if (targetChannel) {
-        const messages = await leggiCanaleSlack(targetChannel.id, 10);
-        context += '\nMESSAGGI IN #' + targetChannel.name + ':\n';
+      const target    = channelList.find(function(c) { return msg.includes(c.name); });
+      if (target) {
+        const messages = await leggiCanaleSlack(target.id, 10);
+        context += '\nMESSAGGI IN #' + target.name + ':\n';
         messages.forEach(function(m) { if (m.text) context += m.text + '\n'; });
       } else {
         context += '\nCanali disponibili: ' + channelList.map(function(c) { return '#' + c.name; }).join(', ') + '\n';
@@ -509,60 +639,58 @@ async function buildContext(userMessage, userId) {
     try {
       const utenti = await getUtenti();
       context += '\nMEMBRI DEL WORKSPACE:\n';
-      utenti.forEach(function(u) {
-        context += u.name + ': <@' + u.id + '>' + (u.email ? ' | ' + u.email : '') + '\n';
-      });
+      utenti.forEach(function(u) { context += u.name + ': <@' + u.id + '>' + (u.email ? ' | ' + u.email : '') + '\n'; });
     } catch(e) { context += '\nErrore utenti: ' + e.message + '\n'; }
   }
 
   return context;
 }
 
-// ─── System prompt ───────────────────────────────────────────────────────────
+// ─── System prompt ────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = "Ti chiami Giuno.\n" +
+const SYSTEM_PROMPT =
+  "Ti chiami Giuno.\n" +
   "Sei l'assistente interno di Katania Studio, agenzia digitale di Catania.\n" +
   "Siciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\n" +
   "Frasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\n" +
   "Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\n" +
   "Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\n" +
   "Rispondi sempre in italiano. Non inventare mai dati.\n\n" +
-  "REGOLE DI FORMATTAZIONE SLACK:\n" +
+  "FORMATTAZIONE SLACK:\n" +
   "Risposte brevi e dirette. Mai paragrafi lunghi.\n" +
-  "Niente trattini per le liste. Usa numeri o vai a capo semplicemente.\n" +
-  "Massimo 3-4 righe per risposta salvo richieste complesse.\n" +
-  "Tono conversazionale, non da report.\n" +
-  "Per il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\n" +
-  "Non usare mai markdown standard come # o ** che Slack non renderizza.\n\n" +
+  "Niente trattini per le liste. Usa numeri o vai a capo.\n" +
+  "Massimo 3-4 righe salvo richieste complesse.\n" +
+  "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
+  "Non usare # o ** che Slack non renderizza.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Google Drive: cercare file e documenti\n" +
-  "Gmail: leggere email non lette dell'utente\n" +
-  "Google Calendar: creare, modificare, spostare, eliminare eventi e gestire invitati (via tool)\n" +
-  "Google Docs: creare documenti\n" +
-  "Slack: leggere canali, taggare utenti con <@USERID>, cercare persone per nome o email\n\n" +
+  "Google Drive, Gmail (leggere, cercare, rispondere), Google Calendar (tutte le operazioni), Google Docs, Slack\n\n" +
   "TAGGING SLACK:\n" +
-  "Quando qualcuno ti menziona in un canale, rispondi sempre taggandolo con <@USERID>.\n" +
-  "Per trovare l'ID o l'email di un collega usa il tool get_slack_users.\n" +
-  "Quando crei o modifichi eventi Calendar con colleghi, usa get_slack_users per trovare le loro email Slack.\n\n" +
-  "GESTIONE CALENDAR (tool use):\n" +
-  "Usa i tool per qualsiasi operazione sul calendario. Non inventare eventi.\n" +
-  "Per creare eventi chiedi data/ora se non specificate. Timezone: Europe/Rome.\n" +
-  "Per modificare o eliminare, usa find_event per trovare l'ID, poi agisci.\n" +
-  "Quando aggiungi invitati, usa get_slack_users per trovare l'email se l'utente indica solo il nome.\n" +
-  "Se un tool risponde con errore di autenticazione, di' di scrivere 'collega il mio Google'.\n\n" +
-  "GESTIONE AUTH:\n" +
-  "Se nei dati vedi LINK_OAUTH, manda il link e di' di cliccare per autorizzare Giuno.\n" +
-  "Se nei dati vedi GMAIL NON AUTORIZZATO, di' di scrivere 'collega il mio Google'.";
+  "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
+  "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
+  "GMAIL (tool use):\n" +
+  "Per cercare email usa find_emails con query Gmail. Per leggere il testo usa read_email. Per rispondere usa reply_email.\n" +
+  "Prima di rispondere a un'email, leggila sempre con read_email per avere il contesto.\n\n" +
+  "CALENDAR (tool use):\n" +
+  "Per qualsiasi operazione usa i tool. Timezone: Europe/Rome.\n" +
+  "Per modificare/eliminare usa prima find_event per l'ID.\n" +
+  "Per invitare qualcuno per nome, usa get_slack_users per trovare l'email.\n\n" +
+  "PREFERENZE:\n" +
+  "Se l'utente chiede di disabilitare/abilitare routine o notifiche, usa set_user_prefs.\n\n" +
+  "AUTH:\n" +
+  "Se nei dati vedi LINK_OAUTH, manda il link per autorizzare.\n" +
+  "Se vedi GMAIL NON AUTORIZZATO o un tool risponde con errore auth, di' di scrivere 'collega il mio Google'.";
 
-// ─── Core: askGiuno con tool use loop ────────────────────────────────────────
-
-const conversations = {};
+// ─── askGiuno ─────────────────────────────────────────────────────────────────
 
 async function askGiuno(userId, userMessage, options) {
   options = options || {};
+
+  if (!checkRateLimit(userId)) {
+    return 'Piano piano, mbare. Troppe richieste. Aspetta un minuto.';
+  }
+
   if (!conversations[userId]) conversations[userId] = [];
 
-  // Risolve <@USERID> in nomi ed email reali prima di tutto il resto
   const resolvedMessage = await resolveSlackMentions(userMessage);
 
   let contextData = '';
@@ -571,19 +699,17 @@ async function askGiuno(userId, userMessage, options) {
   }
 
   if (options.mentionedBy) {
-    contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Rispondendo in canale, taggalo sempre nella risposta.]\n';
+    contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
   }
 
   const messageWithContext = contextData
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
     : resolvedMessage;
 
-  // Array messaggi per questo turno (history + messaggio corrente)
   const messages = conversations[userId].concat([{ role: 'user', content: messageWithContext }]);
 
   let finalReply = '';
 
-  // Tool use loop: Claude chiama tool finché non ha la risposta finale
   while (true) {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
@@ -594,91 +720,107 @@ async function askGiuno(userId, userMessage, options) {
     });
 
     if (response.stop_reason !== 'tool_use') {
-      finalReply = response.content
-        .filter(function(b) { return b.type === 'text'; })
-        .map(function(b) { return b.text; })
-        .join('\n');
+      finalReply = response.content.filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('\n');
       break;
     }
 
-    // Aggiungi risposta assistant (con tool_use blocks) e risultati
     messages.push({ role: 'assistant', content: response.content });
 
     const toolResults = await Promise.all(
-      response.content
-        .filter(function(b) { return b.type === 'tool_use'; })
-        .map(async function(toolUse) {
-          const slackResult = await eseguiToolSlack(toolUse.name, toolUse.input);
-          const result = slackResult !== null ? slackResult : await eseguiTool(toolUse.name, toolUse.input, userId);
-          return {
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: JSON.stringify(result),
-          };
-        })
+      response.content.filter(function(b) { return b.type === 'tool_use'; }).map(async function(tu) {
+        const result = await eseguiTool(tu.name, tu.input, userId);
+        logger.info('Tool:', tu.name, '| User:', userId, '| Result:', JSON.stringify(result).substring(0, 80));
+        return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) };
+      })
     );
 
     messages.push({ role: 'user', content: toolResults });
   }
 
-  // Salva nella history il messaggio con mention risolte (senza blocchi tool)
   conversations[userId].push({ role: 'user', content: messageWithContext });
   conversations[userId].push({ role: 'assistant', content: finalReply });
   if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
+  salvaConversazioni();
 
   return finalReply;
+}
+
+// ─── Admin command ────────────────────────────────────────────────────────────
+
+async function handleAdmin(command, respond) {
+  const adminId = process.env.ADMIN_USER_ID;
+  if (!adminId || command.user_id !== adminId) {
+    await respond({ text: 'Non sei autorizzato, mbare.', response_type: 'ephemeral' });
+    return;
+  }
+
+  const args = command.text.replace(/^admin\s*/, '').trim().split(/\s+/);
+  const sub  = args[0];
+
+  if (sub === 'list') {
+    const utenti = await getUtenti();
+    let msg = '*Utenti e token Google:*\n';
+    utenti.forEach(function(u) {
+      msg += (userTokens[u.id] ? '✅' : '❌') + ' ' + u.name + ' (<@' + u.id + '>)\n';
+    });
+    await respond({ text: msg, response_type: 'ephemeral' });
+    return;
+  }
+
+  if (sub === 'revoke' && args[1]) {
+    const targetId = args[1].replace(/<@|>/g, '').split('|')[0];
+    if (!userTokens[targetId]) { await respond({ text: 'Nessun token trovato per quell\'utente.', response_type: 'ephemeral' }); return; }
+    rimuoviTokenUtente(targetId);
+    await respond({ text: 'Token revocato per <@' + targetId + '>.', response_type: 'ephemeral' });
+    return;
+  }
+
+  await respond({ text: 'Comandi: `admin list` | `admin revoke @utente`', response_type: 'ephemeral' });
 }
 
 // ─── Slack handlers ───────────────────────────────────────────────────────────
 
 app.event('app_mention', async function(args) {
-  const event = args.event;
-  const say = args.say;
+  const event = args.event, say = args.say;
   try {
-    const text = event.text.replace(/<@[^>]+>/g, '').trim();
+    const text  = event.text.replace(/<@[^>]+>/g, '').trim();
     const reply = await askGiuno(event.user, text, { mentionedBy: event.user });
     await say({ text: reply, thread_ts: event.thread_ts || event.ts });
-  } catch (err) {
+  } catch(err) {
     await say({ text: 'Errore: ' + err.message, thread_ts: event.thread_ts || event.ts });
   }
 });
 
 app.message(async function(args) {
-  const message = args.message;
-  const say = args.say;
-  if (message.channel_type !== 'im') return;
-  if (message.bot_id) return;
+  const message = args.message, say = args.say;
+  if (message.channel_type !== 'im' || message.bot_id) return;
   try {
     const reply = await askGiuno(message.user, message.text);
     await say({ text: reply });
-  } catch (err) {
-    await say({ text: 'Errore: ' + err.message });
-  }
+  } catch(err) { await say({ text: 'Errore: ' + err.message }); }
 });
 
 app.command('/giuno', async function(args) {
-  const command = args.command;
-  const ack = args.ack;
-  const respond = args.respond;
+  const command = args.command, ack = args.ack, respond = args.respond;
   await ack();
+  if (command.text.trim().startsWith('admin')) {
+    await handleAdmin(command, respond);
+    return;
+  }
   try {
     const reply = await askGiuno(command.user_id, command.text);
     await respond({ text: reply, response_type: 'in_channel' });
-  } catch (err) {
-    await respond('Errore: ' + err.message);
-  }
+  } catch(err) { await respond('Errore: ' + err.message); }
 });
 
 // ─── Routine giornaliera ──────────────────────────────────────────────────────
 
 const TITOLI_RIPETITIVI = ['stand-up', 'standup', 'daily', 'sync', 'check-in', 'weekly', 'scrum'];
 
-// Recupera dati Slack una volta sola (condivisi tra tutti gli utenti)
 async function getSlackBriefingData() {
   const ieri = String(Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000));
   const channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
   const channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
-
   const risultati = [];
   for (const ch of channels) {
     try {
@@ -690,24 +832,14 @@ async function getSlackBriefingData() {
   return risultati;
 }
 
-// Costruisce il briefing per un singolo utente
-async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
+async function buildBriefingUtente(slackUserId, canaliBriefing) {
   const parti = [];
-  const oggi = new Date();
-  const fineGiorno = new Date(); fineGiorno.setHours(23, 59, 59, 999);
+  const oggi = new Date(); const fineGiorno = new Date(); fineGiorno.setHours(23, 59, 59, 999);
 
-  // 1. Agenda di oggi (senza eventi ripetitivi comuni)
   const cal = getCalendarPerUtente(slackUserId);
   if (cal) {
     try {
-      const res = await cal.events.list({
-        calendarId: 'primary',
-        timeMin: oggi.toISOString(),
-        timeMax: fineGiorno.toISOString(),
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 20,
-      });
+      const res = await cal.events.list({ calendarId: 'primary', timeMin: oggi.toISOString(), timeMax: fineGiorno.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 20 });
       const eventi = (res.data.items || []).filter(function(e) {
         if (!e.recurringEventId) return true;
         const t = (e.summary || '').toLowerCase();
@@ -716,19 +848,14 @@ async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
       if (eventi.length > 0) {
         let s = '*Agenda di oggi:*\n';
         eventi.forEach(function(e) {
-          const ora = e.start.dateTime
-            ? new Date(e.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-            : 'tutto il giorno';
+          const ora = e.start.dateTime ? new Date(e.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : 'tutto il giorno';
           s += ora + ' - ' + (e.summary || 'Senza titolo') + '\n';
         });
         parti.push(s.trim());
-      } else {
-        parti.push('*Agenda di oggi:* giornata libera.');
-      }
-    } catch(e) { parti.push('*Agenda:* errore nel recupero.'); }
+      } else { parti.push('*Agenda di oggi:* giornata libera.'); }
+    } catch(e) { logger.error('Briefing calendar error:', e.message); }
   }
 
-  // 2. Mail importanti non lette
   const gm = getGmailPerUtente(slackUserId);
   if (gm) {
     try {
@@ -737,19 +864,15 @@ async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
         const emails = await Promise.all(res.data.messages.map(async function(m) {
           const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
           const h = msg.data.payload.headers;
-          return {
-            subject: (h.find(function(x) { return x.name === 'Subject'; }) || {}).value || '(nessun oggetto)',
-            from: (h.find(function(x) { return x.name === 'From'; }) || {}).value || '',
-          };
+          return { subject: getHeader(h, 'Subject'), from: getHeader(h, 'From') };
         }));
         let s = '*Mail importanti non lette:*\n';
         emails.forEach(function(e) { s += '"' + e.subject + '" da ' + e.from + '\n'; });
         parti.push(s.trim());
       }
-    } catch(e) {}
+    } catch(e) { logger.error('Briefing gmail error:', e.message); }
   }
 
-  // 3. Canali Slack più attivi (top 3)
   const top = canaliBriefing.slice().sort(function(a, b) { return b.count - a.count; }).slice(0, 3);
   if (top.length > 0) {
     let s = '*Canali piu\' caldi oggi:*\n';
@@ -757,7 +880,6 @@ async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
     parti.push(s.trim());
   }
 
-  // 4. Thread con menzioni senza risposta
   const senzaRisposta = [];
   for (const canale of canaliBriefing) {
     if (senzaRisposta.length >= 5) break;
@@ -768,8 +890,7 @@ async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
         const thread = await app.client.conversations.replies({ channel: canale.id, ts: threadTs, limit: 50 });
         const haiRisposto = (thread.messages || []).some(function(m) { return m.user === slackUserId; });
         if (!haiRisposto) {
-          const testo = msg.text.replace(/<[^>]+>/g, '').trim().substring(0, 70);
-          senzaRisposta.push({ channel: canale.name, testo: testo });
+          senzaRisposta.push({ channel: canale.name, testo: msg.text.replace(/<[^>]+>/g, '').trim().substring(0, 70) });
         }
       } catch(e) {}
     }
@@ -783,46 +904,90 @@ async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
   return parti;
 }
 
-// Invia la routine (a tutti o solo ai test users se ROUTINE_TEST_USERS è impostata)
 async function inviaRoutineGiornaliera() {
-  console.log('[ROUTINE] Invio briefing giornaliero...');
+  logger.info('[ROUTINE] Avvio briefing giornaliero...');
   try {
     const canaliBriefing = await getSlackBriefingData();
-    let utenti = await getUtenti();
-
+    const utenti = await getUtenti();
     for (const utente of utenti) {
+      if (!getPrefs(utente.id).routine_enabled) continue;
       try {
-        const nomeBrief = utente.name.split(' ')[0];
-        const parti = await buildBriefingUtente(utente.id, nomeBrief, canaliBriefing);
-
-        let msg = 'Buongiorno ' + nomeBrief + ', mbare! Ecco cosa hai oggi:\n\n' + parti.join('\n\n');
-
+        const parti = await buildBriefingUtente(utente.id, canaliBriefing);
+        let msg = 'Buongiorno ' + utente.name.split(' ')[0] + ', mbare! Ecco cosa hai oggi:\n\n' + parti.join('\n\n');
         if (!getCalendarPerUtente(utente.id)) {
           msg += '\n\n_Collega il tuo Google scrivendo "collega il mio Google" per vedere anche agenda e mail._';
         }
-
         await app.client.chat.postMessage({ channel: utente.id, text: msg });
-      } catch(e) {
-        console.error('[ROUTINE] Errore per ' + utente.id + ':', e.message);
-      }
+      } catch(e) { logger.error('[ROUTINE] Errore per', utente.id + ':', e.message); }
     }
-    console.log('[ROUTINE] Briefing inviato a ' + utenti.length + ' utenti.');
-  } catch(e) {
-    console.error('[ROUTINE] Errore generale:', e.message);
-  }
+    logger.info('[ROUTINE] Briefing inviato a', utenti.length, 'utenti.');
+  } catch(e) { logger.error('[ROUTINE] Errore generale:', e.message); }
 }
+
+// ─── Notifiche proattive ──────────────────────────────────────────────────────
+
+const notificheRiunioniInviate = new Set();
+const ultimaVerificaEmail = new Map();
+
+// Ogni 2 minuti: avvisa per riunioni imminenti (15 min prima)
+cron.schedule('*/2 * * * *', async function() {
+  const now = new Date();
+  const fra15 = new Date(now.getTime() + 15 * 60 * 1000);
+  for (const slackUserId of Object.keys(userTokens)) {
+    if (!getPrefs(slackUserId).notifiche_enabled) continue;
+    const cal = getCalendarPerUtente(slackUserId);
+    if (!cal) continue;
+    try {
+      const res = await cal.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: fra15.toISOString(), singleEvents: true, maxResults: 5 });
+      for (const evento of (res.data.items || [])) {
+        const key = slackUserId + '_' + evento.id + '_' + (evento.start.dateTime || evento.start.date);
+        if (notificheRiunioniInviate.has(key)) continue;
+        notificheRiunioniInviate.add(key);
+        const oraInizio = new Date(evento.start.dateTime || evento.start.date);
+        const minuti = Math.round((oraInizio - now) / 60000);
+        const testo = 'Tra ' + minuti + ' min: *' + (evento.summary || 'Evento') + '*' + (evento.location ? ' — ' + evento.location : '');
+        await app.client.chat.postMessage({ channel: slackUserId, text: testo });
+      }
+    } catch(e) { await handleTokenScaduto(slackUserId, e); }
+  }
+}, { timezone: 'Europe/Rome' });
+
+// Ogni ora: pulisce le notifiche riunioni vecchie
+cron.schedule('0 * * * *', function() { notificheRiunioniInviate.clear(); });
+
+// Ogni 10 minuti: avvisa per nuove email importanti
+cron.schedule('*/10 * * * *', async function() {
+  for (const slackUserId of Object.keys(userTokens)) {
+    if (!getPrefs(slackUserId).notifiche_enabled) continue;
+    const gm = getGmailPerUtente(slackUserId);
+    if (!gm) continue;
+    try {
+      const ultima = ultimaVerificaEmail.get(slackUserId) || Math.floor((Date.now() - 10 * 60 * 1000) / 1000);
+      ultimaVerificaEmail.set(slackUserId, Math.floor(Date.now() / 1000));
+      const res = await gm.users.messages.list({ userId: 'me', maxResults: 3, q: 'is:unread is:important after:' + ultima });
+      if (!res.data.messages || res.data.messages.length === 0) continue;
+      const emails = await Promise.all(res.data.messages.map(async function(m) {
+        const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
+        const h = msg.data.payload.headers;
+        return { subject: getHeader(h, 'Subject'), from: getHeader(h, 'From') };
+      }));
+      let testo = 'Mail importante' + (emails.length > 1 ? 'i' : '') + ' ricevut' + (emails.length > 1 ? 'e' : 'a') + ':\n';
+      emails.forEach(function(e) { testo += '"' + e.subject + '" da ' + e.from + '\n'; });
+      await app.client.chat.postMessage({ channel: slackUserId, text: testo });
+    } catch(e) { await handleTokenScaduto(slackUserId, e); }
+  }
+});
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 (async function() {
   oauthServer.listen(OAUTH_PORT, function() {
-    console.log('OAuth server in ascolto su porta ' + OAUTH_PORT);
+    logger.info('OAuth server in ascolto su porta ' + OAUTH_PORT);
   });
   await app.start();
 
-  // Routine giornaliera alle 9:00 ora italiana (lun-ven)
   cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
-  console.log('Routine giornaliera schedulata alle 9:00 (lun-ven, Europe/Rome)');
-
-  console.log('Giuno e online!');
+  logger.info('Routine schedulata: lun-ven alle 9:00 Europe/Rome');
+  logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
+  logger.info('Giuno e online!');
 })();
