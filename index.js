@@ -25,8 +25,28 @@ console.log('Google client ID presente:', !!process.env.GOOGLE_CLIENT_ID);
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
-const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
 const docs = google.docs({ version: 'v1', auth: oAuth2Client });
+
+// Carica token per utente (mappa slackUserId -> refreshToken)
+const USER_TOKENS_FILE = 'user_tokens.json';
+let userTokens = {};
+try {
+  userTokens = JSON.parse(fs.readFileSync(USER_TOKENS_FILE));
+} catch(e) {
+  userTokens = {};
+}
+
+function getCalendarPerUtente(slackUserId) {
+  const refreshToken = userTokens[slackUserId];
+  if (!refreshToken) return null;
+  const auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    'http://localhost'
+  );
+  auth.setCredentials({ refresh_token: refreshToken });
+  return google.calendar({ version: 'v3', auth: auth });
+}
 
 async function cercaSuDrive(query) {
   const res = await drive.files.list({
@@ -52,12 +72,16 @@ async function leggiEmailRecenti(max) {
   return emails;
 }
 
-async function leggiCalendario(giorni) {
+async function leggiCalendario(giorni, slackUserId) {
   giorni = giorni || 7;
+  const userCalendar = getCalendarPerUtente(slackUserId);
+  if (!userCalendar) {
+    throw new Error('NESSUN_TOKEN');
+  }
   const now = new Date();
   const fine = new Date();
   fine.setDate(fine.getDate() + giorni);
-  const res = await calendar.events.list({
+  const res = await userCalendar.events.list({
     calendarId: 'primary',
     timeMin: now.toISOString(),
     timeMax: fine.toISOString(),
@@ -92,11 +116,11 @@ async function getUtenti() {
     .map(function(u) { return { id: u.id, name: u.real_name || u.name }; });
 }
 
-const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\n- Risposte brevi e dirette. Mai paragrafi lunghi.\n- Niente trattini per le liste. Usa numeri o vai a capo semplicemente.\n- Massimo 3-4 righe per risposta salvo richieste complesse.\n- Tono conversazionale, non da report.\n\nHAI ACCESSO A:\n- Google Drive: cercare file e documenti\n- Gmail: leggere email non lette\n- Google Calendar: vedere eventi\n- Google Docs: creare documenti\n- Slack: leggere canali e taggare utenti con <@USERID>";
+const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO, di' all'utente che deve autenticarsi con Google per vedere il proprio calendario. Spiega che un admin deve aggiungere il suo token in user_tokens.json.";
 
 const conversations = {};
 
-async function buildContext(userMessage) {
+async function buildContext(userMessage, userId) {
   let context = '';
   const msg = userMessage.toLowerCase();
 
@@ -127,7 +151,7 @@ async function buildContext(userMessage) {
 
   if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani') || msg.includes('eventi')) {
     try {
-      const eventi = await leggiCalendario(7);
+      const eventi = await leggiCalendario(7, userId);
       if (eventi.length > 0) {
         context += '\nEVENTI CALENDARIO:\n';
         eventi.forEach(function(e) {
@@ -137,7 +161,13 @@ async function buildContext(userMessage) {
       } else {
         context += '\nNessun evento nei prossimi 7 giorni.\n';
       }
-    } catch(e) { context += '\nErrore Calendar: ' + e.message + '\n'; }
+    } catch(e) {
+      if (e.message === 'NESSUN_TOKEN') {
+        context += '\nCALENDARIO NON AUTORIZZATO: questo utente Slack non ha un token Google associato.\n';
+      } else {
+        context += '\nErrore Calendar: ' + e.message + '\n';
+      }
+    }
   }
 
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
@@ -177,7 +207,7 @@ async function buildContext(userMessage) {
 async function askGiuno(userId, userMessage) {
   if (!conversations[userId]) conversations[userId] = [];
   let contextData = '';
-  try { contextData = await buildContext(userMessage); } catch(e) {
+  try { contextData = await buildContext(userMessage, userId); } catch(e) {
     contextData = '\nErrore accesso Google: ' + e.message + '\n';
   }
   const messageWithContext = contextData ? userMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']' : userMessage;
