@@ -543,6 +543,56 @@ const tools = [
       required: ['query'],
     },
   },
+  // Ricerca globale
+  {
+    name: 'search_everywhere',
+    description: 'Cerca contemporaneamente su Drive, Slack, Gmail e nella memoria. Usalo quando l\'utente chiede informazioni generiche su un cliente, progetto o argomento.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare ovunque' },
+        sources: { type: 'array', items: { type: 'string', enum: ['drive', 'slack', 'email', 'memory'] }, description: 'Dove cercare (default: tutte le fonti)' },
+      },
+      required: ['query'],
+    },
+  },
+  // Summarize
+  {
+    name: 'summarize_channel',
+    description: 'Riassume cosa e\' successo in un canale Slack nelle ultime ore/giorni. Perfetto per "cosa mi sono perso in #canale?".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_name: { type: 'string', description: 'Nome del canale (senza #)' },
+        hours:        { type: 'number', description: 'Quante ore indietro guardare (default 24)' },
+      },
+      required: ['channel_name'],
+    },
+  },
+  {
+    name: 'summarize_thread',
+    description: 'Riassume un thread Slack lungo. Serve il channel ID e il timestamp del thread.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string', description: 'ID del canale' },
+        thread_ts:  { type: 'string', description: 'Timestamp del messaggio parent del thread' },
+      },
+      required: ['channel_id', 'thread_ts'],
+    },
+  },
+  {
+    name: 'summarize_doc',
+    description: 'Legge un Google Doc, lo riassume con AI e salva il riassunto in memoria per le prossime volte. Usa search_drive prima per trovare l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_id:     { type: 'string', description: 'ID del Google Doc' },
+        save_to_memory: { type: 'boolean', description: 'Salva il riassunto in memoria per richiamare dopo (default true)' },
+      },
+      required: ['doc_id'],
+    },
+  },
 ];
 
 // ─── Tool execution ───────────────────────────────────────────────────────────
@@ -942,6 +992,210 @@ async function eseguiTool(toolName, input, userId) {
     } catch(e) { return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' }; }
   }
 
+  // search_everywhere: ricerca cross-source
+  if (toolName === 'search_everywhere') {
+    var sources = input.sources || ['drive', 'slack', 'email', 'memory'];
+    var results = {};
+
+    // Memoria
+    if (sources.includes('memory')) {
+      var mems = searchMemories(userId, input.query);
+      if (mems.length > 0) {
+        results.memory = mems.slice(0, 5).map(function(m) {
+          return { content: m.content, tags: m.tags, created: m.created };
+        });
+      }
+    }
+
+    // Drive index locale (veloce, senza API call)
+    if (sources.includes('drive') && driveIndex[userId]) {
+      var queryLower = input.query.toLowerCase();
+      var indexed = Object.values(driveIndex[userId]).filter(function(f) {
+        return f.name.toLowerCase().includes(queryLower) || (f.description && f.description.toLowerCase().includes(queryLower));
+      }).slice(0, 3);
+      if (indexed.length > 0) {
+        results.drive_index = indexed.map(function(f) {
+          return { name: f.name, type: f.type, link: f.link, modified: f.modified };
+        });
+      }
+    }
+
+    // Drive
+    if (sources.includes('drive')) {
+      var drv = getDrivePerUtente(userId);
+      if (drv) {
+        try {
+          var escaped = input.query.replace(/'/g, "\\'");
+          var drvRes = await drv.files.list({
+            q: "fullText contains '" + escaped + "' and trashed = false",
+            fields: 'files(id, name, mimeType, webViewLink, modifiedTime)',
+            pageSize: 5,
+            orderBy: 'modifiedTime desc',
+          });
+          if (drvRes.data.files && drvRes.data.files.length > 0) {
+            results.drive = drvRes.data.files.map(function(f) {
+              return { name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime };
+            });
+          }
+        } catch(e) { if (await handleTokenScaduto(userId, e)) results.drive_error = 'Token scaduto'; }
+      }
+    }
+
+    // Gmail
+    if (sources.includes('email')) {
+      var gm = getGmailPerUtente(userId);
+      if (gm) {
+        try {
+          var gmRes = await gm.users.messages.list({ userId: 'me', maxResults: 5, q: input.query });
+          if (gmRes.data.messages && gmRes.data.messages.length > 0) {
+            var emails = await Promise.all(gmRes.data.messages.map(async function(m) {
+              var msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+              var h = msg.data.payload.headers;
+              return { id: m.id, subject: getHeader(h, 'Subject'), from: getHeader(h, 'From'), date: getHeader(h, 'Date') };
+            }));
+            results.email = emails;
+          }
+        } catch(e) { if (await handleTokenScaduto(userId, e)) results.email_error = 'Token scaduto'; }
+      }
+    }
+
+    // Slack
+    if (sources.includes('slack')) {
+      try {
+        var slkRes = await app.client.search.messages({ token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN, query: input.query, count: 5, sort: 'timestamp', sort_dir: 'desc' });
+        var matches = (slkRes.messages && slkRes.messages.matches) || [];
+        if (matches.length > 0) {
+          results.slack = matches.map(function(m) {
+            return { text: (m.text || '').substring(0, 200), channel: m.channel ? m.channel.name : null, permalink: m.permalink };
+          });
+        }
+      } catch(e) {}
+    }
+
+    return results;
+  }
+
+  // summarize_channel
+  if (toolName === 'summarize_channel') {
+    try {
+      var hours = input.hours || 24;
+      var oldest = String(Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000));
+      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
+      var target = (channelsRes.channels || []).find(function(c) { return c.name === input.channel_name; });
+      if (!target) return { error: 'Canale #' + input.channel_name + ' non trovato.' };
+      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+      var hist = await app.client.conversations.history({ channel: target.id, oldest: oldest, limit: 100 });
+      var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
+      if (msgs.length === 0) return { summary: 'Nessun messaggio nelle ultime ' + hours + ' ore in #' + input.channel_name + '.' };
+
+      // Risolvi nomi utenti nei messaggi
+      var userCache = {};
+      var messagesText = '';
+      for (var i = msgs.length - 1; i >= 0; i--) {
+        var m = msgs[i];
+        var userName = m.user;
+        if (!userCache[m.user]) {
+          try {
+            var uRes = await app.client.users.info({ user: m.user });
+            userCache[m.user] = uRes.user.real_name || uRes.user.name;
+          } catch(e) { userCache[m.user] = m.user; }
+        }
+        userName = userCache[m.user];
+        messagesText += userName + ': ' + m.text + '\n';
+      }
+
+      // Usa Claude per riassumere
+      var summaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. Formattazione Slack (grassetto con *testo*, no markdown).',
+        messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore):\n\n' + messagesText.substring(0, 6000) }],
+      });
+      var summary = summaryRes.content[0].text;
+      return { channel: input.channel_name, hours: hours, messages_count: msgs.length, summary: summary };
+    } catch(e) { return { error: 'Errore: ' + e.message }; }
+  }
+
+  // summarize_thread
+  if (toolName === 'summarize_thread') {
+    try {
+      var threadRes = await app.client.conversations.replies({ channel: input.channel_id, ts: input.thread_ts, limit: 100 });
+      var threadMsgs = (threadRes.messages || []).filter(function(m) { return m.text; });
+      if (threadMsgs.length === 0) return { summary: 'Thread vuoto.' };
+
+      var threadUserCache = {};
+      var threadText = '';
+      for (var j = 0; j < threadMsgs.length; j++) {
+        var tm = threadMsgs[j];
+        if (!threadUserCache[tm.user]) {
+          try {
+            var tuRes = await app.client.users.info({ user: tm.user });
+            threadUserCache[tm.user] = tuRes.user.real_name || tuRes.user.name;
+          } catch(e) { threadUserCache[tm.user] = tm.user; }
+        }
+        threadText += threadUserCache[tm.user] + ': ' + tm.text + '\n';
+      }
+
+      var threadSummaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 400,
+        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. Formattazione Slack.',
+        messages: [{ role: 'user', content: 'Riassumi questo thread Slack:\n\n' + threadText.substring(0, 6000) }],
+      });
+      return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
+    } catch(e) { return { error: 'Errore: ' + e.message }; }
+  }
+
+  // summarize_doc
+  if (toolName === 'summarize_doc') {
+    var docsApi = getDocsPerUtente(userId);
+    if (!docsApi) return { error: 'Google Docs non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var doc = await docsApi.documents.get({ documentId: input.doc_id });
+      var docText = '';
+      function extractSumText(elements) {
+        if (!elements) return;
+        elements.forEach(function(el) {
+          if (el.paragraph && el.paragraph.elements) {
+            el.paragraph.elements.forEach(function(pe) {
+              if (pe.textRun && pe.textRun.content) docText += pe.textRun.content;
+            });
+          }
+          if (el.table) {
+            (el.table.tableRows || []).forEach(function(row) {
+              (row.tableCells || []).forEach(function(cell) {
+                extractSumText(cell.content);
+                docText += '\t';
+              });
+              docText += '\n';
+            });
+          }
+        });
+      }
+      extractSumText(doc.data.body.content);
+
+      var docTitle = doc.data.title;
+      var docSummaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. Formattazione Slack.',
+        messages: [{ role: 'user', content: 'Riassumi questo documento "' + docTitle + '":\n\n' + docText.substring(0, 8000) }],
+      });
+      var docSummary = docSummaryRes.content[0].text;
+
+      // Salva in memoria se richiesto
+      var saveToMemory = input.save_to_memory !== false;
+      if (saveToMemory) {
+        addMemory(userId, 'Riassunto doc "' + docTitle + '": ' + docSummary, ['documento', 'riassunto', docTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')]);
+      }
+
+      return { title: docTitle, summary: docSummary, saved_to_memory: saveToMemory };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: e.message };
+    }
+  }
+
   return { error: 'Tool sconosciuto: ' + toolName };
 }
 
@@ -1128,6 +1382,13 @@ const SYSTEM_PROMPT =
   "Per leggere un Google Doc usa read_doc. Per creare documenti usa create_doc. Per condividere file usa share_file.\n\n" +
   "SLACK SEARCH (tool use):\n" +
   "Per cercare messaggi nei canali usa search_slack_messages. Supporta operatori Slack (in:#canale, from:@utente, has:link, before:, after:).\n\n" +
+  "RICERCA GLOBALE:\n" +
+  "search_everywhere cerca in Drive, Slack, Gmail e memoria contemporaneamente. Usalo quando l'utente chiede info generiche su un argomento/cliente/progetto.\n\n" +
+  "RIASSUNTI:\n" +
+  "summarize_channel: riassume cosa e' successo in un canale ('cosa mi sono perso in #canale?').\n" +
+  "summarize_thread: riassume un thread lungo.\n" +
+  "summarize_doc: legge un Google Doc, lo riassume e lo salva in memoria per dopo.\n" +
+  "Usali PROATTIVAMENTE quando l'utente chiede recap, riassunti, o 'cosa mi sono perso'.\n\n" +
   "PREFERENZE:\n" +
   "Se l'utente chiede di disabilitare/abilitare routine, notifiche o standup, usa set_user_prefs.\n" +
   "Standup asincrono: ogni mattina alle 9:15 mando una domanda via DM, alle 10:00 pubblico il recap nel canale.\n\n" +
@@ -1621,6 +1882,61 @@ async function inviaRecapSettimanale() {
   } catch(e) { logger.error('[RECAP] Errore generale:', e.message); }
 }
 
+// ─── Auto-index Drive ────────────────────────────────────────────────────────
+
+const DRIVE_INDEX_FILE = 'drive_index.json';
+let driveIndex = {};
+try { driveIndex = JSON.parse(fs.readFileSync(DRIVE_INDEX_FILE)); } catch(e) {}
+
+function salvaDriveIndex() {
+  try { fs.writeFileSync(DRIVE_INDEX_FILE, JSON.stringify(driveIndex, null, 2)); } catch(e) {}
+}
+
+async function indicizzaDriveUtente(slackUserId) {
+  var drv = getDrivePerUtente(slackUserId);
+  if (!drv) return 0;
+
+  var dueOreFa = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  try {
+    var res = await drv.files.list({
+      q: "modifiedTime > '" + dueOreFa + "' and trashed = false",
+      fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, description)',
+      pageSize: 20,
+      orderBy: 'modifiedTime desc',
+    });
+    var files = res.data.files || [];
+    if (files.length === 0) return 0;
+
+    if (!driveIndex[slackUserId]) driveIndex[slackUserId] = {};
+    files.forEach(function(f) {
+      driveIndex[slackUserId][f.id] = {
+        name: f.name,
+        type: f.mimeType,
+        link: f.webViewLink,
+        modified: f.modifiedTime,
+        owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null,
+        description: f.description || null,
+        indexed: new Date().toISOString(),
+      };
+    });
+    salvaDriveIndex();
+    return files.length;
+  } catch(e) {
+    await handleTokenScaduto(slackUserId, e);
+    return 0;
+  }
+}
+
+async function indicizzaDriveTutti() {
+  logger.info('[DRIVE-INDEX] Avvio indicizzazione...');
+  var totale = 0;
+  for (var uid of Object.keys(userTokens)) {
+    var n = await indicizzaDriveUtente(uid);
+    totale += n;
+  }
+  logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
+}
+
 // ─── Notifiche proattive ──────────────────────────────────────────────────────
 
 const notificheRiunioniInviate = new Set();
@@ -1687,9 +2003,13 @@ cron.schedule('*/10 * * * *', async function() {
   cron.schedule('5 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
+  cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
+  logger.info('Drive auto-index: ogni 2 ore');
   logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
+  // Indicizza Drive subito all'avvio
+  indicizzaDriveTutti().catch(function(e) { logger.error('Drive index startup error:', e.message); });
   logger.info('Giuno e online!');
 })();
