@@ -181,7 +181,7 @@ function salvaStandup() {
   try { fs.writeFileSync(STANDUP_FILE, JSON.stringify(standupData, null, 2)); } catch(e) {}
 }
 
-const STANDUP_CHANNEL = process.env.STANDUP_CHANNEL || 'general';
+const STANDUP_CHANNEL = process.env.STANDUP_CHANNEL || 'daily';
 const standupInAttesa = new Set();
 
 // ─── Server OAuth callback ────────────────────────────────────────────────────
@@ -1483,12 +1483,12 @@ cron.schedule('*/10 * * * *', async function() {
   });
   await app.start();
 
-  cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
-  cron.schedule('15 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
+  cron.schedule('45 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  cron.schedule('5 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
-  logger.info('Routine schedulata: lun-ven alle 9:00 Europe/Rome');
-  logger.info('Standup asincrono: domande 9:15, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
+  logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
+  logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
   logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
   logger.info('Giuno e online!');
