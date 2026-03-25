@@ -154,7 +154,22 @@ async function buildContext(userMessage) {
   }
 
 if (msg.includes('canale') || msg.includes('slack') || msg.includes('messaggi') || msg.includes('thread')) {
-  context += '\nPer leggere un canale specifico dimmi il nome del canale.\n';
+  try {
+    const channels = await app.client.conversations.list({ limit: 20 });
+    const channelList = channels.channels || [];
+    const targetChannel = channelList.find(c => msg.includes(c.name));
+    if (targetChannel) {
+      const messages = await leggiCanaleSlack(targetChannel.id, 10);
+      context += `\nULTIMI MESSAGGI IN #${targetChannel.name}:\n`;
+      messages.forEach(m => {
+        if (m.text) context += `- ${m.text}\n`;
+      });
+    } else {
+      context += `\nCanali disponibili: ${channelList.map(c => '#' + c.name).join(', ')}\n`;
+    }
+  } catch (e) {
+    context += `\nErrore lettura Slack: ${e.message}\n`;
+  }
 }
 
   return context;
