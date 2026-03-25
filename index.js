@@ -15,22 +15,31 @@ const app = new App({
 
 const client = new Anthropic();
 
-// OAuth config
-const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
-const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || ('http://localhost:' + OAUTH_PORT + '/oauth/callback');
+// Credenziali OAuth web (da file locale o env vars su Railway)
+let webCreds = null;
+try {
+  webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web;
+} catch(e) {}
 
+const GOOGLE_CLIENT_ID = (webCreds && webCreds.client_id) || process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = (webCreds && webCreds.client_secret) || process.env.GOOGLE_CLIENT_SECRET;
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI ||
+  (webCreds && webCreds.redirect_uris && webCreds.redirect_uris[0]) ||
+  ('http://localhost:3000/oauth/callback');
+
+const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
 const CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar'];
 
 // Client condiviso per Drive, Gmail, Docs (token del bot owner da .env)
 const oAuth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
   OAUTH_REDIRECT_URI
 );
 oAuth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
+console.log('Google client ID presente:', !!GOOGLE_CLIENT_ID);
 console.log('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN);
-console.log('Google client ID presente:', !!process.env.GOOGLE_CLIENT_ID);
 console.log('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
@@ -53,8 +62,8 @@ function salvaTokenUtente(slackUserId, refreshToken) {
 
 function generaLinkOAuth(slackUserId) {
   const authClient = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
     OAUTH_REDIRECT_URI
   );
   return authClient.generateAuthUrl({
@@ -69,8 +78,8 @@ function getCalendarPerUtente(slackUserId) {
   const refreshToken = userTokens[slackUserId];
   if (!refreshToken) return null;
   const auth = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
     OAUTH_REDIRECT_URI
   );
   auth.setCredentials({ refresh_token: refreshToken });
@@ -98,8 +107,8 @@ const oauthServer = http.createServer(async function(req, res) {
 
   try {
     const authClient = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
       OAUTH_REDIRECT_URI
     );
     const tokenResponse = await authClient.getToken(code);
