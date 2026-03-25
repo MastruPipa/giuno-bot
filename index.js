@@ -136,6 +136,7 @@ async function buildContext(userMessage) {
         files.forEach(f => { context += `${f.name}: ${f.webViewLink}
 `; });
 `; });
+`; });
       } else {
         context += '\nNessun file trovato su Drive.\n';
       }
