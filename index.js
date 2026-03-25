@@ -133,11 +133,7 @@ async function buildContext(userMessage) {
       const files = await cercaSuDrive(query);
       if (files.length > 0) {
         context += '\nFILE SU DRIVE:\n';
-        files.forEach(f => { context += `${f.name}: ${f.webViewLink}
-`; });
-`; });
-`; });
-`; });
+        files.forEach(f => { context += f.name + ': ' + f.webViewLink + '\n'; });
       } else {
         context += '\nNessun file trovato su Drive.\n';
       }
