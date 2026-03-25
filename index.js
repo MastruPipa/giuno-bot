@@ -13,7 +13,6 @@ const app = new App({
 
 const client = new Anthropic();
 
-// Google Auth
 const oAuth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID || JSON.parse(fs.readFileSync('credentials.json')).installed.client_id,
   process.env.GOOGLE_CLIENT_SECRET || JSON.parse(fs.readFileSync('credentials.json')).installed.client_secret,
@@ -31,7 +30,6 @@ const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
 const docs = google.docs({ version: 'v1', auth: oAuth2Client });
 
-// Funzioni Google
 async function cercaSuDrive(query) {
   const res = await drive.files.list({
     q: `name contains '${query}' and trashed = false`,
@@ -83,6 +81,17 @@ async function creaDocumento(titolo, contenuto) {
   return `https://docs.google.com/document/d/${docId}/edit`;
 }
 
+async function leggiCanaleSlack(channelId, limit = 10) {
+  try {
+    await app.client.conversations.join({ channel: channelId });
+  } catch(e) {}
+  const res = await app.client.conversations.history({
+    channel: channelId,
+    limit: limit,
+  });
+  return res.messages || [];
+}
+
 const SYSTEM_PROMPT = `Ti chiami Giuno.
 Sei l'assistente interno di Katania Studio, agenzia digitale di Catania.
 Siciliano nell'anima, non nella caricatura. Usi "mbare" ogni tanto.
@@ -91,87 +100,88 @@ Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.
 Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.
 Rispondi sempre in italiano. Non inventare mai dati.
 
-HAI ACCESSO A:
-- Google Drive: puoi cercare file e documenti
-- Gmail: puoi leggere le email non lette
-- Google Calendar: puoi vedere gli eventi dei prossimi giorni
-- Google Docs: puoi creare nuovi documenti
+REGOLE DI FORMATTAZIONE SLACK:
+- Risposte brevi e dirette. Mai paragrafi lunghi.
+- Niente trattini "-" per le liste. Usa numeri o vai a capo semplicemente.
+- Niente incisi tra parentesi o virgole eccessive.
+- Massimo 3-4 righe per risposta salvo richieste complesse.
+- Tono conversazionale, non da report.
 
-Quando l'utente chiede di cercare file, email o eventi, dì che stai cercando e usa i dati che ti vengono forniti nel messaggio.`;
+HAI ACCESSO A:
+- Google Drive: cercare file e documenti
+- Gmail: leggere email non lette
+- Google Calendar: vedere eventi
+- Google Docs: creare documenti
+- Slack: leggere canali`;
 
 const conversations = {};
-
-async function leggiCanaleSlack(channelId, limit = 10) {
-  const res = await app.client.conversations.history({
-    channel: channelId,
-    limit: limit,
-  });
-  return res.messages || [];
-}
 
 async function buildContext(userMessage) {
   let context = '';
   const msg = userMessage.toLowerCase();
 
   if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
-    const query = userMessage.replace(/cerca|drive|file|documento/gi, '').trim();
-    const files = await cercaSuDrive(query);
-    if (files.length > 0) {
-      context += '\nFILE TROVATI SU DRIVE:\n';
-      files.forEach(f => { context += `- ${f.name}: ${f.webViewLink}\n`; });
-    } else {
-      context += '\nNessun file trovato su Drive per questa ricerca.\n';
-    }
+    try {
+      const query = userMessage.replace(/cerca|drive|file|documento/gi, '').trim();
+      const files = await cercaSuDrive(query);
+      if (files.length > 0) {
+        context += '\nFILE SU DRIVE:\n';
+        files.forEach(f => { context += `${f.name}: ${f.webViewLink}\n`; });
+      } else {
+        context += '\nNessun file trovato su Drive.\n';
+      }
+    } catch(e) { context += `\nErrore Drive: ${e.message}\n`; }
   }
 
   if (msg.includes('email') || msg.includes('mail') || msg.includes('posta')) {
-    const emails = await leggiEmailRecenti(5);
-    if (emails.length > 0) {
-      context += '\nEMAIL NON LETTE:\n';
-      emails.forEach(e => { context += `- Da: ${e.from} | Oggetto: ${e.subject}\n`; });
-    } else {
-      context += '\nNessuna email non letta.\n';
-    }
+    try {
+      const emails = await leggiEmailRecenti(5);
+      if (emails.length > 0) {
+        context += '\nEMAIL NON LETTE:\n';
+        emails.forEach(e => { context += `Da: ${e.from} | ${e.subject}\n`; });
+      } else {
+        context += '\nNessuna email non letta.\n';
+      }
+    } catch(e) { context += `\nErrore Gmail: ${e.message}\n`; }
   }
 
-  if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani')) {
-    const eventi = await leggiCalendario(7);
-    if (eventi.length > 0) {
-      context += '\nEVENTI IN CALENDARIO:\n';
-      eventi.forEach(e => {
-        const data = e.start?.dateTime || e.start?.date;
-        context += `- ${e.summary} | ${new Date(data).toLocaleString('it-IT')}\n`;
-      });
-    } else {
-      context += '\nNessun evento in calendario per i prossimi 7 giorni.\n';
-    }
+  if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani') || msg.includes('eventi')) {
+    try {
+      const eventi = await leggiCalendario(7);
+      if (eventi.length > 0) {
+        context += '\nEVENTI CALENDARIO:\n';
+        eventi.forEach(e => {
+          const data = e.start?.dateTime || e.start?.date;
+          context += `${e.summary} | ${new Date(data).toLocaleString('it-IT')}\n`;
+        });
+      } else {
+        context += '\nNessun evento nei prossimi 7 giorni.\n';
+      }
+    } catch(e) { context += `\nErrore Calendar: ${e.message}\n`; }
   }
 
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
-    const titolo = `Documento Giuno - ${new Date().toLocaleDateString('it-IT')}`;
-    const url = await creaDocumento(titolo, `Documento creato da Giuno\nRichiesta: ${userMessage}\n\n`);
-    context += `\nDOCUMENTO CREATO: ${url}\n`;
+    try {
+      const titolo = `Documento Giuno - ${new Date().toLocaleDateString('it-IT')}`;
+      const url = await creaDocumento(titolo, `Documento creato da Giuno\nRichiesta: ${userMessage}\n\n`);
+      context += `\nDOCUMENTO CREATO: ${url}\n`;
+    } catch(e) { context += `\nErrore Docs: ${e.message}\n`; }
   }
 
-if (msg.includes('canale') || msg.includes('slack') || msg.includes('messaggi') || msg.includes('thread')) {
-  try {
-    const channels = await app.client.conversations.list({ limit: 20 });
-    const channelList = channels.channels || [];
-    const targetChannel = channelList.find(c => msg.includes(c.name));
-    if (targetChannel) {
-	await app.client.conversations.join({ channel: targetChannel.id });
-      const messages = await leggiCanaleSlack(targetChannel.id, 10);
-      context += `\nULTIMI MESSAGGI IN #${targetChannel.name}:\n`;
-      messages.forEach(m => {
-        if (m.text) context += `- ${m.text}\n`;
-      });
-    } else {
-      context += `\nCanali disponibili: ${channelList.map(c => '#' + c.name).join(', ')}\n`;
-    }
-  } catch (e) {
-    context += `\nErrore lettura Slack: ${e.message}\n`;
+  if (msg.includes('canale') || msg.includes('leggi') || msg.includes('messaggi') || msg.includes('thread')) {
+    try {
+      const channels = await app.client.conversations.list({ limit: 50 });
+      const channelList = channels.channels || [];
+      const targetChannel = channelList.find(c => msg.includes(c.name));
+      if (targetChannel) {
+        const messages = await leggiCanaleSlack(targetChannel.id, 10);
+        context += `\nMESSAGGI IN #${targetChannel.name}:\n`;
+        messages.forEach(m => { if (m.text) context += `${m.text}\n`; });
+      } else {
+        context += `\nCanali disponibili: ${channelList.map(c => '#' + c.name).join(', ')}\n`;
+      }
+    } catch(e) { context += `\nErrore Slack: ${e.message}\n`; }
   }
-}
 
   return context;
 }
@@ -180,15 +190,13 @@ async function askGiuno(userId, userMessage) {
   if (!conversations[userId]) conversations[userId] = [];
 
   let contextData = '';
-  try { 
-  contextData = await buildContext(userMessage); 
-} catch (e) { 
-  console.error('Errore Google completo:', e.message, e.stack);
-  contextData = `\nErrore accesso Google: ${e.message}\n`;
-}
+  try { contextData = await buildContext(userMessage); } catch(e) {
+    console.error('Errore Google completo:', e.message, e.stack);
+    contextData = `\nErrore accesso Google: ${e.message}\n`;
+  }
 
   const messageWithContext = contextData
-    ? `${userMessage}\n\n[DATI RECUPERATI:${contextData}]`
+    ? `${userMessage}\n\n[DATI RECUPERATI:\n${contextData}]`
     : userMessage;
 
   conversations[userId].push({ role: 'user', content: messageWithContext });
@@ -210,19 +218,20 @@ app.event('app_mention', async ({ event, say }) => {
   try {
     const text = event.text.replace(/<@[^>]+>/g, '').trim();
     const reply = await askGiuno(event.user, text);
-    await say({ text: reply, thread_ts: event.ts });
+    await say({ text: reply, thread_ts: event.thread_ts || event.ts });
   } catch (err) {
-    await say({ text: 'Errore: ' + err.message, thread_ts: event.ts });
+    await say({ text: 'Errore: ' + err.message, thread_ts: event.thread_ts || event.ts });
   }
 });
 
 app.message(async ({ message, say }) => {
   if (message.channel_type !== 'im') return;
+  if (message.bot_id) return;
   try {
     const reply = await askGiuno(message.user, message.text);
-    await say(reply);
+    await say({ text: reply, thread_ts: message.thread_ts });
   } catch (err) {
-    await say('Errore: ' + err.message);
+    await say({ text: 'Errore: ' + err.message });
   }
 });
 
