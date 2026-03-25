@@ -20,9 +20,7 @@ const oAuth2Client = new google.auth.OAuth2(
   'http://localhost'
 );
 oAuth2Client.setCredentials({
-  access_token: process.env.GOOGLE_ACCESS_TOKEN,
   refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-  token_type: 'Bearer',
 });
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
