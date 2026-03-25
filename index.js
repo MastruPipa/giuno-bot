@@ -164,7 +164,12 @@ async function askGiuno(userId, userMessage) {
   if (!conversations[userId]) conversations[userId] = [];
 
   let contextData = '';
-  try { contextData = await buildContext(userMessage); } catch (e) { console.error('Errore Google:', e.message); }
+  try { 
+  contextData = await buildContext(userMessage); 
+} catch (e) { 
+  console.error('Errore Google completo:', e.message, e.stack);
+  contextData = `\nErrore accesso Google: ${e.message}\n`;
+}
 
   const messageWithContext = contextData
     ? `${userMessage}\n\n[DATI RECUPERATI:${contextData}]`
