@@ -17,15 +17,13 @@ const client = new Anthropic();
 
 // Credenziali OAuth web (da file locale o env vars su Railway)
 let webCreds = null;
-try {
-  webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web;
-} catch(e) {}
+try { webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web; } catch(e) {}
 
 const GOOGLE_CLIENT_ID = (webCreds && webCreds.client_id) || process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = (webCreds && webCreds.client_secret) || process.env.GOOGLE_CLIENT_SECRET;
 const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI ||
   (webCreds && webCreds.redirect_uris && webCreds.redirect_uris[0]) ||
-  ('http://localhost:3000/oauth/callback');
+  'http://localhost:3000/oauth/callback';
 
 const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
 const GOOGLE_SCOPES = [
@@ -33,12 +31,8 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
 ];
 
-// Client condiviso per Drive, Gmail, Docs (token del bot owner da .env)
-const oAuth2Client = new google.auth.OAuth2(
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  OAUTH_REDIRECT_URI
-);
+// Client condiviso per Drive e Docs (token del bot owner da .env)
+const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
 oAuth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
 console.log('Google client ID presente:', !!GOOGLE_CLIENT_ID);
@@ -46,17 +40,13 @@ console.log('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN
 console.log('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
-const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
 const docs = google.docs({ version: 'v1', auth: oAuth2Client });
 
-// Carica token per utente (mappa slackUserId -> refreshToken)
+// ─── Token per utente ────────────────────────────────────────────────────────
+
 const USER_TOKENS_FILE = 'user_tokens.json';
 let userTokens = {};
-try {
-  userTokens = JSON.parse(fs.readFileSync(USER_TOKENS_FILE));
-} catch(e) {
-  userTokens = {};
-}
+try { userTokens = JSON.parse(fs.readFileSync(USER_TOKENS_FILE)); } catch(e) {}
 
 function salvaTokenUtente(slackUserId, refreshToken) {
   userTokens[slackUserId] = refreshToken;
@@ -64,11 +54,7 @@ function salvaTokenUtente(slackUserId, refreshToken) {
 }
 
 function generaLinkOAuth(slackUserId) {
-  const authClient = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    OAUTH_REDIRECT_URI
-  );
+  const authClient = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
   return authClient.generateAuthUrl({
     access_type: 'offline',
     scope: GOOGLE_SCOPES,
@@ -80,82 +66,268 @@ function generaLinkOAuth(slackUserId) {
 function getAuthPerUtente(slackUserId) {
   const refreshToken = userTokens[slackUserId];
   if (!refreshToken) return null;
-  const auth = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    OAUTH_REDIRECT_URI
-  );
+  const auth = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
   auth.setCredentials({ refresh_token: refreshToken });
   return auth;
 }
 
 function getCalendarPerUtente(slackUserId) {
   const auth = getAuthPerUtente(slackUserId);
-  if (!auth) return null;
-  return google.calendar({ version: 'v3', auth: auth });
+  return auth ? google.calendar({ version: 'v3', auth: auth }) : null;
 }
 
 function getGmailPerUtente(slackUserId) {
   const auth = getAuthPerUtente(slackUserId);
-  if (!auth) return null;
-  return google.gmail({ version: 'v1', auth: auth });
+  return auth ? google.gmail({ version: 'v1', auth: auth }) : null;
 }
 
-// Server HTTP per callback OAuth
+// ─── Server OAuth callback ───────────────────────────────────────────────────
+
 const oauthServer = http.createServer(async function(req, res) {
   const parsed = url.parse(req.url, true);
-
-  if (parsed.pathname !== '/oauth/callback') {
-    res.writeHead(404);
-    res.end('Not found');
-    return;
-  }
+  if (parsed.pathname !== '/oauth/callback') { res.writeHead(404); res.end('Not found'); return; }
 
   const code = parsed.query.code;
   const slackUserId = parsed.query.state;
-
-  if (!code || !slackUserId) {
-    res.writeHead(400);
-    res.end('Parametri mancanti.');
-    return;
-  }
+  if (!code || !slackUserId) { res.writeHead(400); res.end('Parametri mancanti.'); return; }
 
   try {
-    const authClient = new google.auth.OAuth2(
-      GOOGLE_CLIENT_ID,
-      GOOGLE_CLIENT_SECRET,
-      OAUTH_REDIRECT_URI
-    );
+    const authClient = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
     const tokenResponse = await authClient.getToken(code);
     const tokens = tokenResponse.tokens;
 
     if (!tokens.refresh_token) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<html><body><h2>Errore: nessun refresh token ricevuto.</h2><p>Vai su <a href="https://myaccount.google.com/permissions">account Google</a>, rimuovi l\'accesso a questa app e riprova.</p></body></html>');
+      res.end('<html><body><h2>Errore: nessun refresh token.</h2><p>Vai su <a href="https://myaccount.google.com/permissions">account Google</a>, rimuovi l\'accesso a questa app e riprova.</p></body></html>');
       return;
     }
 
     salvaTokenUtente(slackUserId, tokens.refresh_token);
-    console.log('Token salvato per utente Slack:', slackUserId);
+    console.log('Token salvato per:', slackUserId);
 
-    // Manda DM su Slack all'utente
     try {
       await app.client.chat.postMessage({
         channel: slackUserId,
         text: 'Google collegato, mbare! Da ora vedo il tuo calendario e le tue email.',
       });
-    } catch(e) {
-      console.error('Errore DM Slack post-auth:', e.message);
-    }
+    } catch(e) { console.error('Errore DM:', e.message); }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>Autorizzazione completata!</h2><p>Puoi chiudere questa finestra e tornare su Slack.</p></body></html>');
   } catch(e) {
-    console.error('Errore OAuth callback:', e.message);
+    console.error('Errore OAuth:', e.message);
     res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end('<html><body><h2>Errore durante l\'autorizzazione</h2><p>' + e.message + '</p></body></html>');
+    res.end('<html><body><h2>Errore</h2><p>' + e.message + '</p></body></html>');
   }
 });
+
+// ─── Calendar tool definitions ───────────────────────────────────────────────
+
+const calendarTools = [
+  {
+    name: 'list_events',
+    description: 'Elenca gli eventi del calendario nei prossimi N giorni',
+    input_schema: {
+      type: 'object',
+      properties: {
+        days: { type: 'number', description: 'Numero di giorni da oggi (default 7)' },
+      },
+    },
+  },
+  {
+    name: 'find_event',
+    description: 'Cerca eventi nel calendario per titolo o in un intervallo di date. Usalo prima di update_event, add_attendees o delete_event per ottenere l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nel titolo (opzionale)' },
+        date_from: { type: 'string', description: 'Inizio ricerca ISO 8601 (opzionale, default oggi)' },
+        date_to: { type: 'string', description: 'Fine ricerca ISO 8601 (opzionale, default +30 giorni)' },
+      },
+    },
+  },
+  {
+    name: 'create_event',
+    description: 'Crea un nuovo evento nel calendario. Le date devono essere ISO 8601 con timezone (es. 2025-03-25T10:00:00+01:00).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Titolo dell\'evento' },
+        start: { type: 'string', description: 'Data e ora di inizio ISO 8601' },
+        end: { type: 'string', description: 'Data e ora di fine ISO 8601' },
+        description: { type: 'string', description: 'Descrizione (opzionale)' },
+        location: { type: 'string', description: 'Luogo (opzionale)' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email degli invitati (opzionale)' },
+      },
+      required: ['title', 'start', 'end'],
+    },
+  },
+  {
+    name: 'update_event',
+    description: 'Modifica titolo, orario, luogo o descrizione di un evento esistente. Usa find_event prima per ottenere l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'ID dell\'evento' },
+        title: { type: 'string', description: 'Nuovo titolo (opzionale)' },
+        start: { type: 'string', description: 'Nuova data/ora inizio ISO 8601 (opzionale)' },
+        end: { type: 'string', description: 'Nuova data/ora fine ISO 8601 (opzionale)' },
+        description: { type: 'string', description: 'Nuova descrizione (opzionale)' },
+        location: { type: 'string', description: 'Nuovo luogo (opzionale)' },
+      },
+      required: ['event_id'],
+    },
+  },
+  {
+    name: 'add_attendees',
+    description: 'Aggiunge invitati a un evento e manda notifiche email. Usa find_event prima per ottenere l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'ID dell\'evento' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email degli invitati da aggiungere' },
+      },
+      required: ['event_id', 'attendees'],
+    },
+  },
+  {
+    name: 'delete_event',
+    description: 'Elimina un evento dal calendario. Usa find_event prima per ottenere l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'ID dell\'evento da eliminare' },
+      },
+      required: ['event_id'],
+    },
+  },
+];
+
+// ─── Calendar tool execution ─────────────────────────────────────────────────
+
+async function eseguiTool(toolName, input, userId) {
+  const cal = getCalendarPerUtente(userId);
+  if (!cal) {
+    return { error: 'Google Calendar non collegato. Scrivi "collega il mio Google" per autorizzare.' };
+  }
+
+  try {
+    if (toolName === 'list_events') {
+      const giorni = input.days || 7;
+      const now = new Date();
+      const fine = new Date();
+      fine.setDate(fine.getDate() + giorni);
+      const res = await cal.events.list({
+        calendarId: 'primary',
+        timeMin: now.toISOString(),
+        timeMax: fine.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 15,
+      });
+      return {
+        events: (res.data.items || []).map(function(e) {
+          return {
+            id: e.id,
+            title: e.summary,
+            start: e.start.dateTime || e.start.date,
+            end: e.end.dateTime || e.end.date,
+            location: e.location || null,
+            attendees: (e.attendees || []).map(function(a) { return a.email; }),
+          };
+        }),
+      };
+    }
+
+    if (toolName === 'find_event') {
+      const from = input.date_from ? new Date(input.date_from) : new Date();
+      const to = input.date_to ? new Date(input.date_to) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const res = await cal.events.list({
+        calendarId: 'primary',
+        timeMin: from.toISOString(),
+        timeMax: to.toISOString(),
+        q: input.query || undefined,
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 10,
+      });
+      return {
+        events: (res.data.items || []).map(function(e) {
+          return {
+            id: e.id,
+            title: e.summary,
+            start: e.start.dateTime || e.start.date,
+            end: e.end.dateTime || e.end.date,
+            location: e.location || null,
+            attendees: (e.attendees || []).map(function(a) { return a.email; }),
+          };
+        }),
+      };
+    }
+
+    if (toolName === 'create_event') {
+      const event = {
+        summary: input.title,
+        start: { dateTime: input.start, timeZone: 'Europe/Rome' },
+        end: { dateTime: input.end, timeZone: 'Europe/Rome' },
+      };
+      if (input.description) event.description = input.description;
+      if (input.location) event.location = input.location;
+      if (input.attendees && input.attendees.length > 0) {
+        event.attendees = input.attendees.map(function(email) { return { email: email }; });
+      }
+      const res = await cal.events.insert({
+        calendarId: 'primary',
+        requestBody: event,
+        sendUpdates: (input.attendees && input.attendees.length > 0) ? 'all' : 'none',
+      });
+      return { success: true, event_id: res.data.id, link: res.data.htmlLink };
+    }
+
+    if (toolName === 'update_event') {
+      const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
+      const event = existing.data;
+      if (input.title) event.summary = input.title;
+      if (input.start) event.start = { dateTime: input.start, timeZone: 'Europe/Rome' };
+      if (input.end) event.end = { dateTime: input.end, timeZone: 'Europe/Rome' };
+      if (input.description !== undefined) event.description = input.description;
+      if (input.location !== undefined) event.location = input.location;
+      await cal.events.update({
+        calendarId: 'primary',
+        eventId: input.event_id,
+        requestBody: event,
+        sendUpdates: 'all',
+      });
+      return { success: true };
+    }
+
+    if (toolName === 'add_attendees') {
+      const existing = await cal.events.get({ calendarId: 'primary', eventId: input.event_id });
+      const event = existing.data;
+      const currentEmails = (event.attendees || []).map(function(a) { return a.email; });
+      const nuovi = input.attendees.filter(function(e) { return !currentEmails.includes(e); });
+      event.attendees = (event.attendees || []).concat(nuovi.map(function(e) { return { email: e }; }));
+      await cal.events.update({
+        calendarId: 'primary',
+        eventId: input.event_id,
+        requestBody: event,
+        sendUpdates: 'all',
+      });
+      return { success: true, added: nuovi };
+    }
+
+    if (toolName === 'delete_event') {
+      await cal.events.delete({ calendarId: 'primary', eventId: input.event_id });
+      return { success: true };
+    }
+
+    return { error: 'Tool sconosciuto: ' + toolName };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+// ─── Drive / Gmail / Docs helpers ────────────────────────────────────────────
 
 async function cercaSuDrive(query) {
   const res = await drive.files.list({
@@ -183,32 +355,12 @@ async function leggiEmailRecenti(max, slackUserId) {
   return emails;
 }
 
-async function leggiCalendario(giorni, slackUserId) {
-  giorni = giorni || 7;
-  const userCalendar = getCalendarPerUtente(slackUserId);
-  if (!userCalendar) {
-    throw new Error('NESSUN_TOKEN');
-  }
-  const now = new Date();
-  const fine = new Date();
-  fine.setDate(fine.getDate() + giorni);
-  const res = await userCalendar.events.list({
-    calendarId: 'primary',
-    timeMin: now.toISOString(),
-    timeMax: fine.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime',
-    maxResults: 10,
-  });
-  return res.data.items || [];
-}
-
 async function creaDocumento(titolo, contenuto) {
   const doc = await docs.documents.create({ requestBody: { title: titolo } });
   const docId = doc.data.documentId;
   await docs.documents.batchUpdate({
     documentId: docId,
-    requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] }
+    requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] },
   });
   return 'https://docs.google.com/document/d/' + docId + '/edit';
 }
@@ -227,19 +379,17 @@ async function getUtenti() {
     .map(function(u) { return { id: u.id, name: u.real_name || u.name }; });
 }
 
-const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nGESTIONE GOOGLE:\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO o GMAIL NON AUTORIZZATO, di' all'utente che non ha ancora collegato il suo account Google e che puo' farlo scrivendo 'collega il mio Google'.\nSe nei dati recuperati vedi LINK_OAUTH, manda quel link all'utente e digli di cliccarlo per autorizzare Giuno. Un solo link autorizza sia Calendar che Gmail. Dopo il reindirizzamento tornera' su Slack con tutto attivo.";
-
-const conversations = {};
+// ─── Context builder (Drive, Gmail, Slack) ───────────────────────────────────
+// Il Calendar è gestito interamente via tool use da Claude
 
 async function buildContext(userMessage, userId) {
   let context = '';
   const msg = userMessage.toLowerCase();
 
-  // Richiesta di collegare Google
+  // Richiesta collegamento Google
   if ((msg.includes('collega') || msg.includes('connetti') || msg.includes('autorizza')) &&
       (msg.includes('calendar') || msg.includes('gmail') || msg.includes('google') || msg.includes('account') || msg.includes('email') || msg.includes('mail'))) {
-    const oauthLink = generaLinkOAuth(userId);
-    context += '\nLINK_OAUTH: ' + oauthLink + '\n';
+    context += '\nLINK_OAUTH: ' + generaLinkOAuth(userId) + '\n';
     return context;
   }
 
@@ -270,27 +420,6 @@ async function buildContext(userMessage, userId) {
         context += '\nGMAIL NON AUTORIZZATO: questo utente non ha ancora collegato il suo Gmail.\n';
       } else {
         context += '\nErrore Gmail: ' + e.message + '\n';
-      }
-    }
-  }
-
-  if (msg.includes('calendar') || msg.includes('calendario') || msg.includes('riunion') || msg.includes('appuntament') || msg.includes('settimana') || msg.includes('oggi') || msg.includes('domani') || msg.includes('eventi')) {
-    try {
-      const eventi = await leggiCalendario(7, userId);
-      if (eventi.length > 0) {
-        context += '\nEVENTI CALENDARIO:\n';
-        eventi.forEach(function(e) {
-          const data = e.start && (e.start.dateTime || e.start.date);
-          context += e.summary + ' | ' + new Date(data).toLocaleString('it-IT') + '\n';
-        });
-      } else {
-        context += '\nNessun evento nei prossimi 7 giorni.\n';
-      }
-    } catch(e) {
-      if (e.message === 'NESSUN_TOKEN') {
-        context += '\nCALENDARIO NON AUTORIZZATO: questo utente non ha ancora collegato il suo Google Calendar.\n';
-      } else {
-        context += '\nErrore Calendar: ' + e.message + '\n';
       }
     }
   }
@@ -329,25 +458,105 @@ async function buildContext(userMessage, userId) {
   return context;
 }
 
+// ─── System prompt ───────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = "Ti chiami Giuno.\n" +
+  "Sei l'assistente interno di Katania Studio, agenzia digitale di Catania.\n" +
+  "Siciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\n" +
+  "Frasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\n" +
+  "Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\n" +
+  "Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\n" +
+  "Rispondi sempre in italiano. Non inventare mai dati.\n\n" +
+  "REGOLE DI FORMATTAZIONE SLACK:\n" +
+  "Risposte brevi e dirette. Mai paragrafi lunghi.\n" +
+  "Niente trattini per le liste. Usa numeri o vai a capo semplicemente.\n" +
+  "Massimo 3-4 righe per risposta salvo richieste complesse.\n" +
+  "Tono conversazionale, non da report.\n" +
+  "Per il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\n" +
+  "Non usare mai markdown standard come # o ** che Slack non renderizza.\n\n" +
+  "HAI ACCESSO A:\n" +
+  "Google Drive: cercare file e documenti\n" +
+  "Gmail: leggere email non lette dell'utente\n" +
+  "Google Calendar: creare, modificare, spostare, eliminare eventi e gestire invitati (via tool)\n" +
+  "Google Docs: creare documenti\n" +
+  "Slack: leggere canali e taggare utenti con <@USERID>\n\n" +
+  "GESTIONE CALENDAR (tool use):\n" +
+  "Usa i tool per qualsiasi operazione sul calendario. Non inventare eventi.\n" +
+  "Per creare eventi chiedi data/ora se non specificate. Timezone: Europe/Rome.\n" +
+  "Per modificare o eliminare, usa find_event per trovare l'ID, poi agisci.\n" +
+  "Quando aggiungi invitati e manca l'email, chiedi all'utente prima di procedere.\n" +
+  "Se un tool risponde con errore di autenticazione, di' di scrivere 'collega il mio Google'.\n\n" +
+  "GESTIONE AUTH:\n" +
+  "Se nei dati vedi LINK_OAUTH, manda il link e di' di cliccare per autorizzare Giuno.\n" +
+  "Se nei dati vedi GMAIL NON AUTORIZZATO, di' di scrivere 'collega il mio Google'.";
+
+// ─── Core: askGiuno con tool use loop ────────────────────────────────────────
+
+const conversations = {};
+
 async function askGiuno(userId, userMessage) {
   if (!conversations[userId]) conversations[userId] = [];
+
   let contextData = '';
   try { contextData = await buildContext(userMessage, userId); } catch(e) {
-    contextData = '\nErrore accesso Google: ' + e.message + '\n';
+    contextData = '\nErrore: ' + e.message + '\n';
   }
-  const messageWithContext = contextData ? userMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']' : userMessage;
+
+  const messageWithContext = contextData
+    ? userMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
+    : userMessage;
+
+  // Array messaggi per questo turno (history + messaggio corrente)
+  const messages = conversations[userId].concat([{ role: 'user', content: messageWithContext }]);
+
+  let finalReply = '';
+
+  // Tool use loop: Claude chiama tool finché non ha la risposta finale
+  while (true) {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      messages: messages,
+      tools: calendarTools,
+    });
+
+    if (response.stop_reason !== 'tool_use') {
+      finalReply = response.content
+        .filter(function(b) { return b.type === 'text'; })
+        .map(function(b) { return b.text; })
+        .join('\n');
+      break;
+    }
+
+    // Aggiungi risposta assistant (con tool_use blocks) e risultati
+    messages.push({ role: 'assistant', content: response.content });
+
+    const toolResults = await Promise.all(
+      response.content
+        .filter(function(b) { return b.type === 'tool_use'; })
+        .map(async function(toolUse) {
+          const result = await eseguiTool(toolUse.name, toolUse.input, userId);
+          return {
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result),
+          };
+        })
+    );
+
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Salva nella history solo testo (senza blocchi tool)
   conversations[userId].push({ role: 'user', content: messageWithContext });
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages: conversations[userId],
-  });
-  const reply = response.content.filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('\n');
-  conversations[userId].push({ role: 'assistant', content: reply });
+  conversations[userId].push({ role: 'assistant', content: finalReply });
   if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
-  return reply;
+
+  return finalReply;
 }
+
+// ─── Slack handlers ───────────────────────────────────────────────────────────
 
 app.event('app_mention', async function(args) {
   const event = args.event;
@@ -386,6 +595,8 @@ app.command('/giuno', async function(args) {
     await respond('Errore: ' + err.message);
   }
 });
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
 
 (async function() {
   oauthServer.listen(OAUTH_PORT, function() {
