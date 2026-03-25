@@ -5,6 +5,7 @@ const { google } = require('googleapis');
 const fs = require('fs');
 const http = require('http');
 const url = require('url');
+const cron = require('node-cron');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -668,6 +669,149 @@ app.command('/giuno', async function(args) {
   }
 });
 
+// ─── Routine giornaliera ──────────────────────────────────────────────────────
+
+const TITOLI_RIPETITIVI = ['stand-up', 'standup', 'daily', 'sync', 'check-in', 'weekly', 'scrum'];
+
+// Recupera dati Slack una volta sola (condivisi tra tutti gli utenti)
+async function getSlackBriefingData() {
+  const ieri = String(Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000));
+  const channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
+  const channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
+
+  const risultati = [];
+  for (const ch of channels) {
+    try {
+      const hist = await app.client.conversations.history({ channel: ch.id, oldest: ieri, limit: 30 });
+      const msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message'; });
+      if (msgs.length > 0) risultati.push({ id: ch.id, name: ch.name, messages: msgs, count: msgs.length });
+    } catch(e) {}
+  }
+  return risultati;
+}
+
+// Costruisce il briefing per un singolo utente
+async function buildBriefingUtente(slackUserId, nome, canaliBriefing) {
+  const parti = [];
+  const oggi = new Date();
+  const fineGiorno = new Date(); fineGiorno.setHours(23, 59, 59, 999);
+
+  // 1. Agenda di oggi (senza eventi ripetitivi comuni)
+  const cal = getCalendarPerUtente(slackUserId);
+  if (cal) {
+    try {
+      const res = await cal.events.list({
+        calendarId: 'primary',
+        timeMin: oggi.toISOString(),
+        timeMax: fineGiorno.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 20,
+      });
+      const eventi = (res.data.items || []).filter(function(e) {
+        if (!e.recurringEventId) return true;
+        const t = (e.summary || '').toLowerCase();
+        return !TITOLI_RIPETITIVI.some(function(p) { return t.includes(p); });
+      });
+      if (eventi.length > 0) {
+        let s = '*Agenda di oggi:*\n';
+        eventi.forEach(function(e) {
+          const ora = e.start.dateTime
+            ? new Date(e.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+            : 'tutto il giorno';
+          s += ora + ' - ' + (e.summary || 'Senza titolo') + '\n';
+        });
+        parti.push(s.trim());
+      } else {
+        parti.push('*Agenda di oggi:* giornata libera.');
+      }
+    } catch(e) { parti.push('*Agenda:* errore nel recupero.'); }
+  }
+
+  // 2. Mail importanti non lette
+  const gm = getGmailPerUtente(slackUserId);
+  if (gm) {
+    try {
+      const res = await gm.users.messages.list({ userId: 'me', maxResults: 5, q: 'is:unread is:important' });
+      if (res.data.messages && res.data.messages.length > 0) {
+        const emails = await Promise.all(res.data.messages.map(async function(m) {
+          const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
+          const h = msg.data.payload.headers;
+          return {
+            subject: (h.find(function(x) { return x.name === 'Subject'; }) || {}).value || '(nessun oggetto)',
+            from: (h.find(function(x) { return x.name === 'From'; }) || {}).value || '',
+          };
+        }));
+        let s = '*Mail importanti non lette:*\n';
+        emails.forEach(function(e) { s += '"' + e.subject + '" da ' + e.from + '\n'; });
+        parti.push(s.trim());
+      }
+    } catch(e) {}
+  }
+
+  // 3. Canali Slack più attivi (top 3)
+  const top = canaliBriefing.slice().sort(function(a, b) { return b.count - a.count; }).slice(0, 3);
+  if (top.length > 0) {
+    let s = '*Canali piu\' caldi oggi:*\n';
+    top.forEach(function(c) { s += '#' + c.name + ' (' + c.count + ' messaggi)\n'; });
+    parti.push(s.trim());
+  }
+
+  // 4. Thread con menzioni senza risposta
+  const senzaRisposta = [];
+  for (const canale of canaliBriefing) {
+    if (senzaRisposta.length >= 5) break;
+    for (const msg of canale.messages) {
+      if (!msg.text || !msg.text.includes('<@' + slackUserId + '>')) continue;
+      const threadTs = msg.thread_ts || msg.ts;
+      try {
+        const thread = await app.client.conversations.replies({ channel: canale.id, ts: threadTs, limit: 50 });
+        const haiRisposto = (thread.messages || []).some(function(m) { return m.user === slackUserId; });
+        if (!haiRisposto) {
+          const testo = msg.text.replace(/<[^>]+>/g, '').trim().substring(0, 70);
+          senzaRisposta.push({ channel: canale.name, testo: testo });
+        }
+      } catch(e) {}
+    }
+  }
+  if (senzaRisposta.length > 0) {
+    let s = '*Thread senza risposta:*\n';
+    senzaRisposta.slice(0, 3).forEach(function(t) { s += '#' + t.channel + ': ' + t.testo + '...\n'; });
+    parti.push(s.trim());
+  }
+
+  return parti;
+}
+
+// Invia la routine a tutti i membri del workspace
+async function inviaRoutineGiornaliera() {
+  console.log('[ROUTINE] Invio briefing giornaliero...');
+  try {
+    const canaliBriefing = await getSlackBriefingData();
+    const utenti = await getUtenti();
+
+    for (const utente of utenti) {
+      try {
+        const nomeBrief = utente.name.split(' ')[0];
+        const parti = await buildBriefingUtente(utente.id, nomeBrief, canaliBriefing);
+
+        let msg = 'Buongiorno ' + nomeBrief + ', mbare! Ecco cosa hai oggi:\n\n' + parti.join('\n\n');
+
+        if (!getCalendarPerUtente(utente.id)) {
+          msg += '\n\n_Collega il tuo Google scrivendo "collega il mio Google" per vedere anche agenda e mail._';
+        }
+
+        await app.client.chat.postMessage({ channel: utente.id, text: msg });
+      } catch(e) {
+        console.error('[ROUTINE] Errore per ' + utente.id + ':', e.message);
+      }
+    }
+    console.log('[ROUTINE] Briefing inviato a ' + utenti.length + ' utenti.');
+  } catch(e) {
+    console.error('[ROUTINE] Errore generale:', e.message);
+  }
+}
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 (async function() {
@@ -675,5 +819,10 @@ app.command('/giuno', async function(args) {
     console.log('OAuth server in ascolto su porta ' + OAUTH_PORT);
   });
   await app.start();
+
+  // Routine giornaliera alle 9:00 ora italiana
+  cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  console.log('Routine giornaliera schedulata alle 9:00 (lun-ven, Europe/Rome)');
+
   console.log('Giuno e online!');
 })();

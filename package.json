@@ -10,7 +10,8 @@
     "@anthropic-ai/sdk": "^0.24.0",
     "@slack/bolt": "^3.17.0",
     "dotenv": "^16.0.0",
-    "googleapis": "^171.4.0"
+    "googleapis": "^171.4.0",
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"
