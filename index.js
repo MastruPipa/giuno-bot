@@ -137,6 +137,7 @@ async function buildContext(userMessage) {
 `; });
 `; });
 `; });
+`; });
       } else {
         context += '\nNessun file trovato su Drive.\n';
       }
