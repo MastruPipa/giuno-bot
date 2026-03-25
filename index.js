@@ -101,11 +101,6 @@ async function leggiCanaleSlack(channelId, limit = 10) {
   });
   return res.messages || [];
 }
-```
-
-Poi cerca `- Google Docs: puoi creare nuovi documenti` e aggiungi sotto:
-```
-- Slack: puoi leggere i messaggi dei canali quando ti viene chiesto
 
 async function buildContext(userMessage) {
   let context = '';
