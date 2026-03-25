@@ -92,6 +92,13 @@ async function leggiCanaleSlack(channelId, limit = 10) {
   return res.messages || [];
 }
 
+async function getUtenti() {
+  const res = await app.client.users.list();
+  return (res.members || [])
+    .filter(u => !u.is_bot && u.id !== 'USLACKBOT')
+    .map(u => ({ id: u.id, name: u.real_name || u.name }));
+}
+
 const SYSTEM_PROMPT = `Ti chiami Giuno.
 Sei l'assistente interno di Katania Studio, agenzia digitale di Catania.
 Siciliano nell'anima, non nella caricatura. Usi "mbare" ogni tanto.
@@ -112,7 +119,7 @@ HAI ACCESSO A:
 - Gmail: leggere email non lette
 - Google Calendar: vedere eventi
 - Google Docs: creare documenti
-- Slack: leggere canali`;
+- Slack: leggere canali e taggare utenti con <@USERID>. Quando menzioni qualcuno usa sempre il formato <@USERID> non il nome;
 
 const conversations = {};
 
@@ -182,6 +189,13 @@ async function buildContext(userMessage) {
       }
     } catch(e) { context += `\nErrore Slack: ${e.message}\n`; }
   }
+	if (msg.includes('utenti') || msg.includes('team') || msg.includes('chi c') || msg.includes('membri')) {
+  try {
+    const utenti = await getUtenti();
+    context += '\nMEMBRI DEL WORKSPACE:\n';
+    utenti.forEach(u => { context += `${u.name}: <@${u.id}>\n`; });
+  } catch(e) { context += `\nErrore utenti: ${e.message}\n`; }
+}
 
   return context;
 }
