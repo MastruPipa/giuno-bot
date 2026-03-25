@@ -29,6 +29,33 @@ const app = new App({
 
 const client = new Anthropic();
 
+// ─── Gemini ──────────────────────────────────────────────────────────────────
+
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+let gemini = null;
+let geminiModel = null;
+if (process.env.GEMINI_API_KEY) {
+  gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  geminiModel = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  logger.info('Gemini configurato (gemini-2.0-flash)');
+} else {
+  logger.warn('GEMINI_API_KEY non presente. Funzioni Gemini disabilitate.');
+}
+
+async function askGemini(prompt, systemInstruction) {
+  if (!geminiModel) return { error: 'Gemini non configurato. Aggiungi GEMINI_API_KEY al .env.' };
+  try {
+    var model = systemInstruction
+      ? gemini.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: systemInstruction })
+      : geminiModel;
+    var result = await model.generateContent(prompt);
+    return { response: result.response.text() };
+  } catch(e) {
+    logger.error('Errore Gemini:', e.message);
+    return { error: 'Errore Gemini: ' + e.message };
+  }
+}
+
 // ─── Google OAuth config ──────────────────────────────────────────────────────
 
 let webCreds = null;
@@ -543,6 +570,47 @@ const tools = [
       required: ['query'],
     },
   },
+  // Gemini (dual-brain)
+  {
+    name: 'ask_gemini',
+    description: 'Chiedi un parere a Gemini (Google AI). Usalo per avere un secondo punto di vista, cross-check informazioni, o quando serve competenza specifica Google.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt:  { type: 'string', description: 'Domanda o richiesta per Gemini' },
+        context: { type: 'string', description: 'Contesto aggiuntivo (opzionale)' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'review_content',
+    description: 'Gemini rivede un testo/copy e da\' feedback su grammatica, tono, chiarezza, SEO e brand voice. Perfetto per contenuti siti, social, presentazioni.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Testo da rivedere' },
+        type:    { type: 'string', description: 'Tipo di contenuto: "web" (sito), "social" (post social), "email" (email professionale), "presentation" (slide), "generic" (default)' },
+        brand_voice: { type: 'string', description: 'Descrizione del tono di voce del brand (opzionale)' },
+        language: { type: 'string', description: 'Lingua del contenuto (default "italiano")' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'review_email_draft',
+    description: 'Gemini rivede una bozza email prima dell\'invio: controlla tono, completezza, errori, suggerisce miglioramenti. Usalo SEMPRE prima di send_email o reply_email quando il contenuto e\' importante.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to:      { type: 'string', description: 'Destinatario' },
+        subject: { type: 'string', description: 'Oggetto' },
+        body:    { type: 'string', description: 'Corpo dell\'email da rivedere' },
+        context: { type: 'string', description: 'Contesto: a chi scrivi, perche\', tono desiderato (opzionale)' },
+      },
+      required: ['body'],
+    },
+  },
   // Ricerca globale
   {
     name: 'search_everywhere',
@@ -762,6 +830,18 @@ async function eseguiTool(toolName, input, userId) {
         const origMessageId = getHeader(h, 'Message-Id');
         const origRefs      = getHeader(h, 'References');
         const replySubject  = origSubject.startsWith('Re:') ? origSubject : 'Re: ' + origSubject;
+
+        // Auto-review Gemini (se disponibile)
+        var replyGeminiReview = null;
+        if (geminiModel) {
+          try {
+            replyGeminiReview = await askGemini(
+              'Risposta a: ' + origFrom + '\nOggetto: ' + replySubject + '\n\nBOZZA RISPOSTA:\n' + input.body,
+              'Rivedi questa bozza di risposta email in italiano. Se ci sono errori gravi (grammatica, tono sbagliato, info mancanti), segnalali brevemente. Se va bene, rispondi solo "OK". Max 3 righe.'
+            );
+          } catch(e) { logger.error('Gemini reply review error:', e.message); }
+        }
+
         const raw = [
           'To: ' + origFrom,
           'Subject: ' + replySubject,
@@ -774,10 +854,25 @@ async function eseguiTool(toolName, input, userId) {
         ].join('\r\n');
         const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded, threadId: orig.data.threadId } });
-        return { success: true };
+        var replyResult = { success: true };
+        if (replyGeminiReview && replyGeminiReview.response && replyGeminiReview.response !== 'OK') {
+          replyResult.gemini_note = replyGeminiReview.response;
+        }
+        return replyResult;
       }
 
       if (toolName === 'send_email') {
+        // Auto-review Gemini (se disponibile)
+        var geminiReview = null;
+        if (geminiModel) {
+          try {
+            geminiReview = await askGemini(
+              'Destinatario: ' + input.to + '\nOggetto: ' + input.subject + '\n\nBOZZA:\n' + input.body,
+              'Rivedi questa bozza email in italiano. Se ci sono errori gravi (grammatica, tono sbagliato, info mancanti), segnalali brevemente. Se va bene, rispondi solo "OK". Max 3 righe.'
+            );
+          } catch(e) { logger.error('Gemini auto-review error:', e.message); }
+        }
+
         const headers = [
           'To: ' + input.to,
           'Subject: ' + input.subject,
@@ -788,7 +883,11 @@ async function eseguiTool(toolName, input, userId) {
         const raw = headers.concat(['', input.body]).join('\r\n');
         const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded } });
-        return { success: true, to: input.to, subject: input.subject };
+        var result = { success: true, to: input.to, subject: input.subject };
+        if (geminiReview && geminiReview.response && geminiReview.response !== 'OK') {
+          result.gemini_note = geminiReview.response;
+        }
+        return result;
       }
 
       if (toolName === 'forward_email') {
@@ -990,6 +1089,58 @@ async function eseguiTool(toolName, input, userId) {
         total: (res.messages && res.messages.total) || 0,
       };
     } catch(e) { return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' }; }
+  }
+
+  // Tool Gemini (dual-brain)
+  if (toolName === 'ask_gemini') {
+    var prompt = input.prompt;
+    if (input.context) prompt = 'Contesto: ' + input.context + '\n\n' + prompt;
+    var gemResult = await askGemini(prompt, 'Sei un assistente AI che collabora con un altro AI (Claude). Rispondi in italiano, in modo conciso e utile. Se ti viene chiesto un parere, sii onesto e costruttivo.');
+    return gemResult;
+  }
+
+  if (toolName === 'review_content') {
+    var contentType = input.type || 'generic';
+    var lang = input.language || 'italiano';
+    var typeInstructions = {
+      'web': 'Rivedi questo testo per un sito web. Controlla: SEO (keyword, meta description), leggibilità, CTA, struttura H1/H2, lunghezza paragrafi.',
+      'social': 'Rivedi questo post per i social. Controlla: engagement, lunghezza, hashtag, CTA, tono, emoji se appropriate.',
+      'email': 'Rivedi questa email professionale. Controlla: tono, chiarezza, call to action, lunghezza, errori.',
+      'presentation': 'Rivedi questo testo per una presentazione. Controlla: chiarezza, concisione, impatto visivo del testo, punti chiave evidenziati.',
+      'generic': 'Rivedi questo testo. Controlla: grammatica, chiarezza, tono, struttura, errori.',
+    };
+    var instruction = typeInstructions[contentType] || typeInstructions['generic'];
+    if (input.brand_voice) instruction += '\nBrand voice richiesta: ' + input.brand_voice;
+
+    var reviewPrompt = instruction + '\nLingua: ' + lang + '\n\nTESTO DA RIVEDERE:\n' + input.content;
+    var reviewResult = await askGemini(reviewPrompt,
+      'Sei un copywriter e editor professionista. Dai feedback strutturato in italiano:\n' +
+      '1. VALUTAZIONE GENERALE (1 riga)\n' +
+      '2. PROBLEMI TROVATI (lista breve)\n' +
+      '3. TESTO MIGLIORATO (versione corretta completa)\n' +
+      'Formattazione Slack: grassetto con *testo*, no markdown.'
+    );
+    return reviewResult;
+  }
+
+  if (toolName === 'review_email_draft') {
+    var emailContext = '';
+    if (input.to) emailContext += 'Destinatario: ' + input.to + '\n';
+    if (input.subject) emailContext += 'Oggetto: ' + input.subject + '\n';
+    if (input.context) emailContext += 'Contesto: ' + input.context + '\n';
+    emailContext += '\nBOZZA EMAIL:\n' + input.body;
+
+    var emailReviewResult = await askGemini(emailContext,
+      'Sei un assistente che rivede bozze email professionali in italiano. Analizza:\n' +
+      '1. *Tono*: appropriato per il destinatario?\n' +
+      '2. *Completezza*: manca qualcosa di importante?\n' +
+      '3. *Errori*: grammatica, battitura, formattazione\n' +
+      '4. *Chiarezza*: il messaggio e\' chiaro?\n' +
+      '5. *Suggerimenti*: cosa migliorare\n\n' +
+      'Se la bozza va bene, dillo. Se va migliorata, proponi la versione corretta.\n' +
+      'Formattazione Slack: grassetto con *testo*, no markdown.'
+    );
+    return emailReviewResult;
   }
 
   // search_everywhere: ricerca cross-source
@@ -1356,14 +1507,22 @@ const SYSTEM_PROMPT =
   "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
   "Non usare # o ** che Slack non renderizza.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Memoria permanente, Google Drive (ricerca full-text, per cartella, per data), Gmail (leggere, cercare, rispondere, inviare, inoltrare), Google Calendar (tutte le operazioni), Google Docs (creare e leggere documenti), Slack (cercare messaggi, utenti)\n\n" +
+  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
+  "GEMINI (dual-brain):\n" +
+  "Hai un secondo cervello AI (Gemini) a disposizione:\n" +
+  "- ask_gemini: per avere un secondo parere, cross-check info, brainstorming\n" +
+  "- review_content: per rivedere copy/testi (web, social, email, presentazioni). Gemini controlla grammatica, tono, SEO, brand voice\n" +
+  "- review_email_draft: per rivedere bozze email prima dell'invio\n" +
+  "Le email inviate con send_email e reply_email vengono automaticamente riviste da Gemini.\n" +
+  "Se Gemini trova problemi, li segnali all'utente. Usa Gemini quando serve qualita' extra, non per ogni messaggio.\n\n" +
   "GMAIL (tool use):\n" +
   "Per cercare email usa find_emails con query Gmail. Per leggere il testo usa read_email. Per rispondere usa reply_email.\n" +
   "Per inviare una nuova email usa send_email. Per inoltrare usa forward_email.\n" +
-  "Prima di rispondere o inoltrare, leggila sempre con read_email per avere il contesto.\n\n" +
+  "Prima di rispondere o inoltrare, leggila sempre con read_email per avere il contesto.\n" +
+  "Le email vengono auto-riviste da Gemini. Se gemini_note e' presente nel risultato, comunicala all'utente.\n\n" +
   "CALENDAR (tool use):\n" +
   "Per qualsiasi operazione usa i tool. Timezone: Europe/Rome.\n" +
   "Per modificare/eliminare usa prima find_event per l'ID.\n" +
