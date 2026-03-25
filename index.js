@@ -94,6 +94,19 @@ Quando l'utente chiede di cercare file, email o eventi, dì che stai cercando e 
 
 const conversations = {};
 
+async function leggiCanaleSlack(channelId, limit = 10) {
+  const res = await app.client.conversations.history({
+    channel: channelId,
+    limit: limit,
+  });
+  return res.messages || [];
+}
+```
+
+Poi cerca `- Google Docs: puoi creare nuovi documenti` e aggiungi sotto:
+```
+- Slack: puoi leggere i messaggi dei canali quando ti viene chiesto
+
 async function buildContext(userMessage) {
   let context = '';
   const msg = userMessage.toLowerCase();
@@ -137,6 +150,10 @@ async function buildContext(userMessage) {
     const url = await creaDocumento(titolo, `Documento creato da Giuno\nRichiesta: ${userMessage}\n\n`);
     context += `\nDOCUMENTO CREATO: ${url}\n`;
   }
+
+if (msg.includes('canale') || msg.includes('slack') || msg.includes('messaggi') || msg.includes('thread')) {
+  context += '\nPer leggere un canale specifico dimmi il nome del canale.\n';
+}
 
   return context;
 }
