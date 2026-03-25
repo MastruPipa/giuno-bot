@@ -3,6 +3,8 @@ const { App } = require('@slack/bolt');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const fs = require('fs');
+const http = require('http');
+const url = require('url');
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -13,15 +15,23 @@ const app = new App({
 
 const client = new Anthropic();
 
+// OAuth config
+const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || ('http://localhost:' + OAUTH_PORT + '/oauth/callback');
+
+const CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar'];
+
+// Client condiviso per Drive, Gmail, Docs (token del bot owner da .env)
 const oAuth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  'http://localhost'
+  OAUTH_REDIRECT_URI
 );
 oAuth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
 console.log('Google refresh token presente:', !!process.env.GOOGLE_REFRESH_TOKEN);
 console.log('Google client ID presente:', !!process.env.GOOGLE_CLIENT_ID);
+console.log('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 const gmail = google.gmail({ version: 'v1', auth: oAuth2Client });
@@ -36,17 +46,92 @@ try {
   userTokens = {};
 }
 
+function salvaTokenUtente(slackUserId, refreshToken) {
+  userTokens[slackUserId] = refreshToken;
+  fs.writeFileSync(USER_TOKENS_FILE, JSON.stringify(userTokens, null, 2));
+}
+
+function generaLinkOAuth(slackUserId) {
+  const authClient = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    OAUTH_REDIRECT_URI
+  );
+  return authClient.generateAuthUrl({
+    access_type: 'offline',
+    scope: CALENDAR_SCOPES,
+    state: slackUserId,
+    prompt: 'consent',
+  });
+}
+
 function getCalendarPerUtente(slackUserId) {
   const refreshToken = userTokens[slackUserId];
   if (!refreshToken) return null;
   const auth = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    'http://localhost'
+    OAUTH_REDIRECT_URI
   );
   auth.setCredentials({ refresh_token: refreshToken });
   return google.calendar({ version: 'v3', auth: auth });
 }
+
+// Server HTTP per callback OAuth
+const oauthServer = http.createServer(async function(req, res) {
+  const parsed = url.parse(req.url, true);
+
+  if (parsed.pathname !== '/oauth/callback') {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  const code = parsed.query.code;
+  const slackUserId = parsed.query.state;
+
+  if (!code || !slackUserId) {
+    res.writeHead(400);
+    res.end('Parametri mancanti.');
+    return;
+  }
+
+  try {
+    const authClient = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      OAUTH_REDIRECT_URI
+    );
+    const tokenResponse = await authClient.getToken(code);
+    const tokens = tokenResponse.tokens;
+
+    if (!tokens.refresh_token) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><body><h2>Errore: nessun refresh token ricevuto.</h2><p>Vai su <a href="https://myaccount.google.com/permissions">account Google</a>, rimuovi l\'accesso a questa app e riprova.</p></body></html>');
+      return;
+    }
+
+    salvaTokenUtente(slackUserId, tokens.refresh_token);
+    console.log('Token salvato per utente Slack:', slackUserId);
+
+    // Manda DM su Slack all'utente
+    try {
+      await app.client.chat.postMessage({
+        channel: slackUserId,
+        text: 'Google Calendar collegato, mbare! Da ora vedo i tuoi eventi.',
+      });
+    } catch(e) {
+      console.error('Errore DM Slack post-auth:', e.message);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>Autorizzazione completata!</h2><p>Puoi chiudere questa finestra e tornare su Slack.</p></body></html>');
+  } catch(e) {
+    console.error('Errore OAuth callback:', e.message);
+    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<html><body><h2>Errore durante l\'autorizzazione</h2><p>' + e.message + '</p></body></html>');
+  }
+});
 
 async function cercaSuDrive(query) {
   const res = await drive.files.list({
@@ -116,13 +201,21 @@ async function getUtenti() {
     .map(function(u) { return { id: u.id, name: u.real_name || u.name }; });
 }
 
-const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO, di' all'utente che deve autenticarsi con Google per vedere il proprio calendario. Spiega che un admin deve aggiungere il suo token in user_tokens.json.";
+const SYSTEM_PROMPT = "Ti chiami Giuno.\nSei l'assistente interno di Katania Studio, agenzia digitale di Catania.\nSiciliano nell'anima, non nella caricatura. Usi mbare ogni tanto.\nFrasi corte. Zero fronzoli. Ironico e cazzone, ma concreto.\nZero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\nKatania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\nRispondi sempre in italiano. Non inventare mai dati.\n\nREGOLE DI FORMATTAZIONE SLACK:\nRisposte brevi e dirette. Mai paragrafi lunghi.\nNiente trattini per le liste. Usa numeri o vai a capo semplicemente.\nMassimo 3-4 righe per risposta salvo richieste complesse.\nTono conversazionale, non da report.\nPer il grassetto usa *testo* (non **testo**). Per il corsivo usa _testo_.\nNon usare mai markdown standard come # o ** che Slack non renderizza.\n\nHAI ACCESSO A:\nGoogle Drive: cercare file e documenti\nGmail: leggere email non lette\nGoogle Calendar: vedere eventi del calendario dell'utente\nGoogle Docs: creare documenti\nSlack: leggere canali e taggare utenti con <@USERID>\n\nGESTIONE CALENDARIO:\nSe nei dati recuperati vedi CALENDARIO NON AUTORIZZATO, di' all'utente che non ha ancora collegato il suo Google Calendar e che puo' farlo scrivendo 'collega il mio Google Calendar'.\nSe nei dati recuperati vedi LINK_OAUTH, manda quel link all'utente e digli di cliccarlo per autorizzare Giuno ad accedere al suo calendario. Spiega che dopo il reindirizzamento tornera' su Slack con il calendario attivo.";
 
 const conversations = {};
 
 async function buildContext(userMessage, userId) {
   let context = '';
   const msg = userMessage.toLowerCase();
+
+  // Richiesta di collegare Google Calendar
+  if ((msg.includes('collega') || msg.includes('connetti') || msg.includes('autorizza')) &&
+      (msg.includes('calendar') || msg.includes('google') || msg.includes('account'))) {
+    const oauthLink = generaLinkOAuth(userId);
+    context += '\nLINK_OAUTH: ' + oauthLink + '\n';
+    return context;
+  }
 
   if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
     try {
@@ -163,7 +256,7 @@ async function buildContext(userMessage, userId) {
       }
     } catch(e) {
       if (e.message === 'NESSUN_TOKEN') {
-        context += '\nCALENDARIO NON AUTORIZZATO: questo utente Slack non ha un token Google associato.\n';
+        context += '\nCALENDARIO NON AUTORIZZATO: questo utente non ha ancora collegato il suo Google Calendar.\n';
       } else {
         context += '\nErrore Calendar: ' + e.message + '\n';
       }
@@ -173,8 +266,8 @@ async function buildContext(userMessage, userId) {
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
     try {
       const titolo = 'Documento Giuno - ' + new Date().toLocaleDateString('it-IT');
-      const url = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
-      context += '\nDOCUMENTO CREATO: ' + url + '\n';
+      const url2 = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
+      context += '\nDOCUMENTO CREATO: ' + url2 + '\n';
     } catch(e) { context += '\nErrore Docs: ' + e.message + '\n'; }
   }
 
@@ -263,6 +356,9 @@ app.command('/giuno', async function(args) {
 });
 
 (async function() {
+  oauthServer.listen(OAUTH_PORT, function() {
+    console.log('OAuth server in ascolto su porta ' + OAUTH_PORT);
+  });
   await app.start();
   console.log('Giuno e online!');
 })();
