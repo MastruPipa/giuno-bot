@@ -135,7 +135,7 @@ function salvaPrefs() {
 }
 
 function getPrefs(userId) {
-  return Object.assign({ routine_enabled: true, notifiche_enabled: true }, userPrefs[userId] || {});
+  return Object.assign({ routine_enabled: true, notifiche_enabled: true, standup_enabled: true }, userPrefs[userId] || {});
 }
 
 function setPrefs(userId, prefs) {
@@ -170,6 +170,19 @@ try { conversations = JSON.parse(fs.readFileSync(CONVERSATIONS_FILE)); } catch(e
 function salvaConversazioni() {
   try { fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations)); } catch(e) {}
 }
+
+// ─── Standup asincrono ───────────────────────────────────────────────────────
+
+const STANDUP_FILE = 'standup_data.json';
+let standupData = { oggi: null, risposte: {} };
+try { standupData = JSON.parse(fs.readFileSync(STANDUP_FILE)); } catch(e) {}
+
+function salvaStandup() {
+  try { fs.writeFileSync(STANDUP_FILE, JSON.stringify(standupData, null, 2)); } catch(e) {}
+}
+
+const STANDUP_CHANNEL = process.env.STANDUP_CHANNEL || 'general';
+const standupInAttesa = new Set();
 
 // ─── Server OAuth callback ────────────────────────────────────────────────────
 
@@ -228,12 +241,13 @@ const tools = [
   // Preferenze utente
   {
     name: 'set_user_prefs',
-    description: 'Aggiorna le preferenze dell\'utente per Giuno (routine mattutina, notifiche proattive).',
+    description: 'Aggiorna le preferenze dell\'utente per Giuno (routine mattutina, notifiche proattive, standup).',
     input_schema: {
       type: 'object',
       properties: {
         routine_enabled:    { type: 'boolean', description: 'Abilita/disabilita la routine del mattino' },
         notifiche_enabled:  { type: 'boolean', description: 'Abilita/disabilita le notifiche proattive (riunioni imminenti, mail urgenti)' },
+        standup_enabled:    { type: 'boolean', description: 'Abilita/disabilita la domanda standup giornaliera' },
       },
     },
   },
@@ -466,6 +480,7 @@ async function eseguiTool(toolName, input, userId) {
       success: true,
       routine_enabled:   prefs.routine_enabled,
       notifiche_enabled: prefs.notifiche_enabled,
+      standup_enabled:   prefs.standup_enabled,
     };
   }
 
@@ -923,7 +938,8 @@ const SYSTEM_PROMPT =
   "SLACK SEARCH (tool use):\n" +
   "Per cercare messaggi nei canali usa search_slack_messages. Supporta operatori Slack (in:#canale, from:@utente, has:link, before:, after:).\n\n" +
   "PREFERENZE:\n" +
-  "Se l'utente chiede di disabilitare/abilitare routine o notifiche, usa set_user_prefs.\n\n" +
+  "Se l'utente chiede di disabilitare/abilitare routine, notifiche o standup, usa set_user_prefs.\n" +
+  "Standup asincrono: ogni mattina alle 9:15 mando una domanda via DM, alle 10:00 pubblico il recap nel canale.\n\n" +
   "AUTH:\n" +
   "Se nei dati vedi LINK_OAUTH, manda il link per autorizzare.\n" +
   "Se vedi GMAIL NON AUTORIZZATO o un tool risponde con errore auth, di' di scrivere 'collega il mio Google'.";
@@ -1048,6 +1064,23 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   const message = args.message, say = args.say;
   if (message.channel_type !== 'im' || message.bot_id) return;
+
+  // Intercetta risposte standup
+  if (standupInAttesa.has(message.user)) {
+    standupInAttesa.delete(message.user);
+    const oggi = new Date().toISOString().slice(0, 10);
+    if (standupData.oggi === oggi) {
+      standupData.risposte[message.user] = {
+        testo: message.text,
+        timestamp: Date.now(),
+      };
+      salvaStandup();
+      await say({ text: 'Registrato, mbare! Il recap uscira\' alle 10:00 nel canale.' });
+      logger.info('[STANDUP] Risposta ricevuta da:', message.user);
+      return;
+    }
+  }
+
   const threadTs = message.thread_ts || null;
   try {
     const reply = await askGiuno(message.user, message.text, { threadTs: threadTs });
@@ -1181,6 +1214,76 @@ async function inviaRoutineGiornaliera() {
     }
     logger.info('[ROUTINE] Briefing inviato a', utenti.length, 'utenti.');
   } catch(e) { logger.error('[ROUTINE] Errore generale:', e.message); }
+}
+
+// ─── Standup asincrono ───────────────────────────────────────────────────────
+
+async function inviaStandupDomande() {
+  const oggi = new Date().toISOString().slice(0, 10);
+  logger.info('[STANDUP] Invio domande standup per', oggi);
+
+  // Reset dati se è un nuovo giorno
+  standupData.oggi = oggi;
+  standupData.risposte = {};
+  salvaStandup();
+
+  const utenti = await getUtenti();
+  let inviati = 0;
+  for (const utente of utenti) {
+    if (!getPrefs(utente.id).standup_enabled) continue;
+    try {
+      standupInAttesa.add(utente.id);
+      await app.client.chat.postMessage({
+        channel: utente.id,
+        text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
+          'Rispondi a questo messaggio con:\n' +
+          '1. Su cosa lavori oggi?\n' +
+          '2. Hai blocchi o serve aiuto?\n\n' +
+          '_Scrivi tutto in un unico messaggio, il recap uscira\' alle 10:00._',
+      });
+      inviati++;
+    } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
+  }
+  logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
+}
+
+async function pubblicaRecapStandup() {
+  const oggi = new Date().toISOString().slice(0, 10);
+  if (standupData.oggi !== oggi) {
+    logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.');
+    return;
+  }
+
+  const risposte = standupData.risposte;
+  const userIds = Object.keys(risposte);
+  if (userIds.length === 0) {
+    logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.');
+    return;
+  }
+
+  // Pulisci gli utenti rimasti in attesa
+  standupInAttesa.clear();
+
+  let msg = '*Standup ' + oggi + '*\n\n';
+  for (const userId of userIds) {
+    const r = risposte[userId];
+    msg += '<@' + userId + '>:\n' + r.testo + '\n\n';
+  }
+
+  // Trova il canale
+  try {
+    const channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
+    const target = (channelsRes.channels || []).find(function(c) {
+      return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL;
+    });
+    if (!target) {
+      logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.');
+      return;
+    }
+    try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+    await app.client.chat.postMessage({ channel: target.id, text: msg });
+    logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
+  } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
 }
 
 // ─── Riassunto settimanale ────────────────────────────────────────────────────
@@ -1381,8 +1484,11 @@ cron.schedule('*/10 * * * *', async function() {
   await app.start();
 
   cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  cron.schedule('15 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
+  cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 9:00 Europe/Rome');
+  logger.info('Standup asincrono: domande 9:15, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
   logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
   logger.info('Giuno e online!');
