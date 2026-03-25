@@ -790,14 +790,6 @@ async function inviaRoutineGiornaliera() {
     const canaliBriefing = await getSlackBriefingData();
     let utenti = await getUtenti();
 
-    const testUsers = process.env.ROUTINE_TEST_USERS
-      ? process.env.ROUTINE_TEST_USERS.split(',').map(function(s) { return s.trim(); })
-      : null;
-    if (testUsers) {
-      utenti = utenti.filter(function(u) { return testUsers.includes(u.id); });
-      console.log('[ROUTINE] Modalita\' test: invio solo a', testUsers);
-    }
-
     for (const utente of utenti) {
       try {
         const nomeBrief = utente.name.split(' ')[0];
@@ -831,12 +823,6 @@ async function inviaRoutineGiornaliera() {
   // Routine giornaliera alle 9:00 ora italiana (lun-ven)
   cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
   console.log('Routine giornaliera schedulata alle 9:00 (lun-ven, Europe/Rome)');
-
-  // Test immediato: imposta ROUTINE_RUN_NOW=true per inviare subito al boot
-  if (process.env.ROUTINE_RUN_NOW === 'true') {
-    console.log('[ROUTINE] ROUTINE_RUN_NOW attivo, invio tra 5 secondi...');
-    setTimeout(inviaRoutineGiornaliera, 5000);
-  }
 
   console.log('Giuno e online!');
 })();
