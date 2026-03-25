@@ -382,6 +382,30 @@ async function leggiEmailRecenti(max, slackUserId) {
   return emails;
 }
 
+// Espande <@USERID> nel testo con "Nome (email)" per dare contesto a Claude
+async function resolveSlackMentions(text) {
+  const matches = [];
+  const pattern = /<@([A-Z0-9]+)>/g;
+  let m;
+  while ((m = pattern.exec(text)) !== null) {
+    if (!matches.find(function(x) { return x === m[1]; })) matches.push(m[1]);
+  }
+  if (matches.length === 0) return text;
+  let resolved = text;
+  for (let i = 0; i < matches.length; i++) {
+    const slackId = matches[i];
+    try {
+      const res = await app.client.users.info({ user: slackId });
+      const u = res.user;
+      const name = u.real_name || u.name;
+      const email = (u.profile && u.profile.email) || '';
+      const label = '@' + name + (email ? ' (' + email + ')' : '');
+      resolved = resolved.split('<@' + slackId + '>').join(label);
+    } catch(e) { /* lascia il tag originale se fallisce */ }
+  }
+  return resolved;
+}
+
 async function creaDocumento(titolo, contenuto) {
   const doc = await docs.documents.create({ requestBody: { title: titolo } });
   const docId = doc.data.documentId;
@@ -537,8 +561,11 @@ async function askGiuno(userId, userMessage, options) {
   options = options || {};
   if (!conversations[userId]) conversations[userId] = [];
 
+  // Risolve <@USERID> in nomi ed email reali prima di tutto il resto
+  const resolvedMessage = await resolveSlackMentions(userMessage);
+
   let contextData = '';
-  try { contextData = await buildContext(userMessage, userId); } catch(e) {
+  try { contextData = await buildContext(resolvedMessage, userId); } catch(e) {
     contextData = '\nErrore: ' + e.message + '\n';
   }
 
@@ -547,8 +574,8 @@ async function askGiuno(userId, userMessage, options) {
   }
 
   const messageWithContext = contextData
-    ? userMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
-    : userMessage;
+    ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
+    : resolvedMessage;
 
   // Array messaggi per questo turno (history + messaggio corrente)
   const messages = conversations[userId].concat([{ role: 'user', content: messageWithContext }]);
@@ -593,7 +620,7 @@ async function askGiuno(userId, userMessage, options) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  // Salva nella history solo testo (senza blocchi tool)
+  // Salva nella history il messaggio con mention risolte (senza blocchi tool)
   conversations[userId].push({ role: 'user', content: messageWithContext });
   conversations[userId].push({ role: 'assistant', content: finalReply });
   if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
