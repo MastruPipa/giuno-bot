@@ -229,7 +229,7 @@ app.message(async ({ message, say }) => {
   if (message.bot_id) return;
   try {
     const reply = await askGiuno(message.user, message.text);
-    await say({ text: reply, thread_ts: message.thread_ts });
+    await say({ text: reply });
   } catch (err) {
     await say({ text: 'Errore: ' + err.message });
   }
