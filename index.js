@@ -44,6 +44,8 @@ const OAUTH_PORT = process.env.OAUTH_PORT || 3000;
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/documents',
 ];
 
 const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
@@ -94,6 +96,16 @@ function getCalendarPerUtente(slackUserId) {
 function getGmailPerUtente(slackUserId) {
   const auth = getAuthPerUtente(slackUserId);
   return auth ? google.gmail({ version: 'v1', auth: auth }) : null;
+}
+
+function getDrivePerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  return auth ? google.drive({ version: 'v3', auth: auth }) : null;
+}
+
+function getDocsPerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  return auth ? google.docs({ version: 'v1', auth: auth }) : null;
 }
 
 // Gestione token scaduto: rimuove il token e avvisa l'utente via DM
@@ -339,6 +351,58 @@ const tools = [
       required: ['message_id', 'body'],
     },
   },
+  // Google Drive
+  {
+    name: 'search_drive',
+    description: 'Cerca file su Google Drive dell\'utente per nome o contenuto.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query:     { type: 'string', description: 'Testo da cercare nel nome o contenuto dei file' },
+        mime_type: { type: 'string', description: 'Filtra per tipo MIME (es. "application/vnd.google-apps.document", "application/pdf"). Opzionale.' },
+        max:       { type: 'number', description: 'Numero massimo risultati (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'create_doc',
+    description: 'Crea un nuovo Google Doc con titolo e contenuto. Restituisce il link al documento.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title:   { type: 'string', description: 'Titolo del documento' },
+        content: { type: 'string', description: 'Contenuto testuale del documento' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'share_file',
+    description: 'Condivide un file Google Drive con un utente. Usa search_drive prima per trovare l\'ID del file e get_slack_users per l\'email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file su Drive' },
+        email:   { type: 'string', description: 'Email dell\'utente con cui condividere' },
+        role:    { type: 'string', description: 'Ruolo: "reader", "commenter" o "writer" (default "reader")' },
+      },
+      required: ['file_id', 'email'],
+    },
+  },
+  // Slack search
+  {
+    name: 'search_slack_messages',
+    description: 'Cerca messaggi nei canali Slack. Utile per ritrovare decisioni, link, o conversazioni passate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query:   { type: 'string', description: 'Testo da cercare (supporta operatori Slack: in:#canale, from:@utente, before:, after:, has:link)' },
+        max:     { type: 'number', description: 'Numero massimo risultati (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ─── Tool execution ───────────────────────────────────────────────────────────
@@ -503,6 +567,71 @@ async function eseguiTool(toolName, input, userId) {
     }
   }
 
+  // Tool Google Drive
+  const DRIVE_TOOLS = ['search_drive', 'create_doc', 'share_file'];
+  if (DRIVE_TOOLS.includes(toolName)) {
+    const drv = getDrivePerUtente(userId);
+    if (!drv && toolName !== 'create_doc') return { error: 'Google Drive non collegato. Scrivi "collega il mio Google".' };
+    try {
+      if (toolName === 'search_drive') {
+        const max = input.max || 10;
+        let q = "name contains '" + input.query.replace(/'/g, "\\'") + "' and trashed = false";
+        if (input.mime_type) q += " and mimeType = '" + input.mime_type + "'";
+        const res = await drv.files.list({ q: q, fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners)', pageSize: max, orderBy: 'modifiedTime desc' });
+        return {
+          files: (res.data.files || []).map(function(f) {
+            return { id: f.id, name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime, owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null };
+          }),
+        };
+      }
+
+      if (toolName === 'create_doc') {
+        const docsApi = getDocsPerUtente(userId);
+        if (!docsApi) return { error: 'Google Docs non collegato. Scrivi "collega il mio Google".' };
+        const doc = await docsApi.documents.create({ requestBody: { title: input.title } });
+        const docId = doc.data.documentId;
+        if (input.content) {
+          await docsApi.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: input.content } }] } });
+        }
+        return { success: true, doc_id: docId, link: 'https://docs.google.com/document/d/' + docId + '/edit' };
+      }
+
+      if (toolName === 'share_file') {
+        const role = input.role || 'reader';
+        await drv.permissions.create({
+          fileId: input.file_id,
+          requestBody: { type: 'user', role: role, emailAddress: input.email },
+          sendNotificationEmail: true,
+        });
+        return { success: true, shared_with: input.email, role: role };
+      }
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
+      return { error: e.message };
+    }
+  }
+
+  // Tool Slack search
+  if (toolName === 'search_slack_messages') {
+    try {
+      const max = input.max || 10;
+      const res = await app.client.search.messages({ token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN, query: input.query, count: max, sort: 'timestamp', sort_dir: 'desc' });
+      const matches = (res.messages && res.messages.matches) || [];
+      return {
+        results: matches.map(function(m) {
+          return {
+            text: (m.text || '').substring(0, 300),
+            user: m.user || m.username,
+            channel: m.channel ? m.channel.name : null,
+            timestamp: m.ts,
+            permalink: m.permalink,
+          };
+        }),
+        total: (res.messages && res.messages.total) || 0,
+      };
+    } catch(e) { return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' }; }
+  }
+
   return { error: 'Tool sconosciuto: ' + toolName };
 }
 
@@ -663,7 +792,7 @@ const SYSTEM_PROMPT =
   "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
   "Non usare # o ** che Slack non renderizza.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Google Drive, Gmail (leggere, cercare, rispondere), Google Calendar (tutte le operazioni), Google Docs, Slack\n\n" +
+  "Google Drive (cercare file, condividere), Gmail (leggere, cercare, rispondere), Google Calendar (tutte le operazioni), Google Docs (creare documenti), Slack (cercare messaggi, utenti)\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
@@ -674,6 +803,10 @@ const SYSTEM_PROMPT =
   "Per qualsiasi operazione usa i tool. Timezone: Europe/Rome.\n" +
   "Per modificare/eliminare usa prima find_event per l'ID.\n" +
   "Per invitare qualcuno per nome, usa get_slack_users per trovare l'email.\n\n" +
+  "GOOGLE DRIVE (tool use):\n" +
+  "Per cercare file usa search_drive. Per creare documenti usa create_doc. Per condividere file usa share_file (serve l'ID file da search_drive e l'email da get_slack_users).\n\n" +
+  "SLACK SEARCH (tool use):\n" +
+  "Per cercare messaggi nei canali usa search_slack_messages. Supporta operatori Slack (in:#canale, from:@utente, has:link, before:, after:).\n\n" +
   "PREFERENZE:\n" +
   "Se l'utente chiede di disabilitare/abilitare routine o notifiche, usa set_user_prefs.\n\n" +
   "AUTH:\n" +
@@ -682,6 +815,10 @@ const SYSTEM_PROMPT =
 
 // ─── askGiuno ─────────────────────────────────────────────────────────────────
 
+function conversationKey(userId, threadTs) {
+  return threadTs ? userId + ':' + threadTs : userId;
+}
+
 async function askGiuno(userId, userMessage, options) {
   options = options || {};
 
@@ -689,7 +826,8 @@ async function askGiuno(userId, userMessage, options) {
     return 'Piano piano, mbare. Troppe richieste. Aspetta un minuto.';
   }
 
-  if (!conversations[userId]) conversations[userId] = [];
+  const convKey = conversationKey(userId, options.threadTs);
+  if (!conversations[convKey]) conversations[convKey] = [];
 
   const resolvedMessage = await resolveSlackMentions(userMessage);
 
@@ -706,7 +844,7 @@ async function askGiuno(userId, userMessage, options) {
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
     : resolvedMessage;
 
-  const messages = conversations[userId].concat([{ role: 'user', content: messageWithContext }]);
+  const messages = conversations[convKey].concat([{ role: 'user', content: messageWithContext }]);
 
   let finalReply = '';
 
@@ -737,9 +875,9 @@ async function askGiuno(userId, userMessage, options) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  conversations[userId].push({ role: 'user', content: messageWithContext });
-  conversations[userId].push({ role: 'assistant', content: finalReply });
-  if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
+  conversations[convKey].push({ role: 'user', content: messageWithContext });
+  conversations[convKey].push({ role: 'assistant', content: finalReply });
+  if (conversations[convKey].length > 20) conversations[convKey] = conversations[convKey].slice(-20);
   salvaConversazioni();
 
   return finalReply;
@@ -782,21 +920,27 @@ async function handleAdmin(command, respond) {
 
 app.event('app_mention', async function(args) {
   const event = args.event, say = args.say;
+  const threadTs = event.thread_ts || event.ts;
   try {
     const text  = event.text.replace(/<@[^>]+>/g, '').trim();
-    const reply = await askGiuno(event.user, text, { mentionedBy: event.user });
-    await say({ text: reply, thread_ts: event.thread_ts || event.ts });
+    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs });
+    await say({ text: reply, thread_ts: threadTs });
   } catch(err) {
-    await say({ text: 'Errore: ' + err.message, thread_ts: event.thread_ts || event.ts });
+    await say({ text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
 });
 
 app.message(async function(args) {
   const message = args.message, say = args.say;
   if (message.channel_type !== 'im' || message.bot_id) return;
+  const threadTs = message.thread_ts || null;
   try {
-    const reply = await askGiuno(message.user, message.text);
-    await say({ text: reply });
+    const reply = await askGiuno(message.user, message.text, { threadTs: threadTs });
+    if (threadTs) {
+      await say({ text: reply, thread_ts: threadTs });
+    } else {
+      await say({ text: reply });
+    }
   } catch(err) { await say({ text: 'Errore: ' + err.message }); }
 });
 
