@@ -50,12 +50,18 @@ var TOOLS = registry.getToolsForAgent('clientRetrieval');
 function buildDynamicContext(ctx) {
   var dynamicContext = '';
 
-  if (ctx.currentDate) {
-    dynamicContext += '\nDATA ATTUALE: ' + ctx.currentDate +
-      ' (' + ctx.currentYear + ' ' + ctx.currentQuarter + ')\n';
-    dynamicContext += 'PRIORITÀ TEMPORALE: Informazioni del ' +
-      ctx.currentYear + ' hanno priorità su anni precedenti.\n';
-  }
+  var now = new Date();
+  var dateStr = now.toLocaleDateString('it-IT', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    timeZone: 'Europe/Rome',
+  });
+  var timeStr = now.toLocaleTimeString('it-IT', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome',
+  });
+  dynamicContext += '\nDATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n';
+  dynamicContext += 'Anno corrente: ' + now.getFullYear() +
+    '. Priorità: ' + now.getFullYear() + ' > ' + (now.getFullYear() - 1) +
+    ' > ' + (now.getFullYear() - 2) + ' > storico.\n';
 
   if (ctx.profile && ctx.profile.ruolo) {
     dynamicContext += '\nPROFILO UTENTE:\n';

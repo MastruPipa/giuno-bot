@@ -80,6 +80,27 @@ var SYSTEM_PROMPT =
   'Se vedi LINK_OAUTH nell\'input, manda esattamente il testo tra virgolette che segue LINK_OAUTH: è già formattato per Slack, non modificarlo.\n' +
   'Se tool risponde con errore auth, di\' di scrivere \'collega il mio Google\'.';
 
+function buildSystemPrompt(userRolePrompt) {
+  var now = new Date();
+  var dateStr = now.toLocaleDateString('it-IT', {
+    weekday: 'long', year: 'numeric',
+    month: 'long', day: 'numeric',
+    timeZone: 'Europe/Rome',
+  });
+  var timeStr = now.toLocaleTimeString('it-IT', {
+    hour: '2-digit', minute: '2-digit',
+    timeZone: 'Europe/Rome',
+  });
+
+  return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
+    'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
+    'Anno corrente: ' + now.getFullYear() + '. Quest\'anno=' + now.getFullYear() +
+    ', l\'anno scorso=' + (now.getFullYear() - 1) + '.\n' +
+    'Priorità info: ' + now.getFullYear() + ' > ' + (now.getFullYear() - 1) +
+    ' > ' + (now.getFullYear() - 2) + ' > storico.\n\n' +
+    SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + userRolePrompt;
+}
+
 // ─── Conversation helpers ──────────────────────────────────────────────────────
 
 function conversationKey(userId, threadTs) {
@@ -296,7 +317,7 @@ async function askGiuno(userId, userMessage, options) {
       response = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1024,
-        system: SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + getRoleSystemPrompt(userRole),
+        system: buildSystemPrompt(getRoleSystemPrompt(userRole)),
         messages: messages,
         tools: allTools,
       });
@@ -356,5 +377,6 @@ module.exports = {
   askGiuno: askGiuno,
   autoLearn: autoLearn,
   SYSTEM_PROMPT: SYSTEM_PROMPT,
+  buildSystemPrompt: buildSystemPrompt,
   conversationKey: conversationKey,
 };
