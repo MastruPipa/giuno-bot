@@ -9,6 +9,23 @@ require('dotenv').config();
 var db = require('../../supabase');
 var logger = require('../utils/logger');
 var { SLACK_FORMAT_RULES } = require('../utils/slackFormat');
+// Separate WebClient for user token (needed for search API)
+var _userClient = null;
+function getUserClient() {
+  if (_userClient) return _userClient;
+  var token = process.env.SLACK_USER_TOKEN;
+  if (!token) return null;
+  try {
+    // @slack/bolt re-exports WebClient
+    var WebClient = require('@slack/bolt').WebClient;
+    _userClient = new WebClient(token);
+    logger.info('[SLACK-TOOLS] WebClient creato con SLACK_USER_TOKEN');
+    return _userClient;
+  } catch(e) {
+    logger.warn('[SLACK-TOOLS] WebClient da bolt non disponibile, uso https fallback');
+    return null;
+  }
+}
 
 // Lazy-loaded to avoid circular deps at module load time
 function getApp() { return require('../services/slackService').app; }
@@ -384,28 +401,33 @@ async function execute(toolName, input, userId) {
   if (toolName === 'search_slack_messages') {
     try {
       var max = input.max || 20;
-      var searchToken = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
 
-      // Paginated search — fetch up to max results across pages
+      // Try user token WebClient first, fall back to app.client
+      var userClient = getUserClient();
+      var searchClient = userClient || app.client;
+
       var allMatches = [];
       var page = 1;
       var totalFetched = 0;
       while (totalFetched < max) {
         var pageCount = Math.min(max - totalFetched, 100);
-        var res = await app.client.search.messages({
-          token: searchToken,
+        var searchOpts = {
           query: input.query,
           count: pageCount,
           page: page,
           sort: 'timestamp',
           sort_dir: 'desc',
-        });
+        };
+        // If using app.client (no user client), pass token explicitly
+        if (!userClient) {
+          searchOpts.token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
+        }
+        var res = await searchClient.search.messages(searchOpts);
         var matches = (res.messages && res.messages.matches) || [];
         if (matches.length === 0) break;
         allMatches = allMatches.concat(matches);
         totalFetched += matches.length;
         page++;
-        // Stop if we got all available results
         var total = (res.messages && res.messages.total) || 0;
         if (totalFetched >= total) break;
       }
@@ -423,8 +445,9 @@ async function execute(toolName, input, userId) {
         total: (res && res.messages && res.messages.total) || allMatches.length,
       };
     } catch(e) {
-      logger.error('[SEARCH-SLACK] Errore:', e.message);
-      return { error: 'Ricerca non disponibile. Usa summarize_channel per leggere i canali oppure list_channels + get_pinned_messages.' };
+      logger.error('[SEARCH-SLACK] Errore reale:', e.message, e.data || '');
+      // Fallback: try with conversations.history if search completely fails
+      return { error: 'Ricerca fallita (' + e.message + '). Usa summarize_channel per leggere i canali.' };
     }
   }
 
@@ -574,14 +597,18 @@ async function execute(toolName, input, userId) {
   if (toolName === 'search_files') {
     try {
       var fileMax = input.max || 10;
-      var fileToken = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
-      var fileRes = await app.client.search.files({
-        token: fileToken,
+      var fileUserClient = getUserClient();
+      var fileSearchClient = fileUserClient || app.client;
+      var fileOpts = {
         query: input.query,
         count: fileMax,
         sort: 'timestamp',
         sort_dir: 'desc',
-      });
+      };
+      if (!fileUserClient) {
+        fileOpts.token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
+      }
+      var fileRes = await fileSearchClient.search.files(fileOpts);
       var files = (fileRes.files && fileRes.files.matches) || [];
       return {
         results: files.map(function(f) {
