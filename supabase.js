@@ -283,32 +283,37 @@ function expandQueryTokens(query) {
 function scoreMemory(memory, tokens, now) {
   var contentLow = memory.content.toLowerCase();
   var tagsLow = (memory.tags || []).map(function(t) { return t.toLowerCase(); });
-  var score = 0;
 
-  // Token matching — each token that matches adds score
+  // fonte:ufficiale always gets max score
+  var isOfficial = tagsLow.some(function(t) { return t === 'fonte:ufficiale'; });
+
+  // Base score: keyword matching
+  var baseScore = 0;
   tokens.forEach(function(token) {
-    if (contentLow.includes(token)) score += 3;
+    if (contentLow.includes(token)) baseScore += 3;
     tagsLow.forEach(function(t) {
-      if (t.includes(token)) score += 2;
+      if (t.includes(token)) baseScore += 2;
     });
   });
 
   // Bonus for multi-token match (phrase relevance)
   var fullQuery = tokens.slice(0, 3).join(' ');
-  if (fullQuery.length > 5 && contentLow.includes(fullQuery)) score += 5;
+  if (fullQuery.length > 5 && contentLow.includes(fullQuery)) baseScore += 5;
 
-  // Temporal weight — recent memories score higher
+  if (baseScore === 0) return 0;
+
+  // fonte:ufficiale — always top priority
+  if (isOfficial) return baseScore + 100;
+
+  // Temporal score: 1.0 for brand new, decays to 0.3 over 180 days
+  var temporalScore = 1.0;
   if (memory.created && now) {
-    var ageMs = now - new Date(memory.created).getTime();
-    var ageDays = ageMs / (1000 * 60 * 60 * 24);
-    if (ageDays < 30) score += 4;        // last month
-    else if (ageDays < 90) score += 3;    // last quarter
-    else if (ageDays < 365) score += 2;   // last year
-    else if (ageDays < 730) score += 1;   // last 2 years
-    // older: no bonus
+    var ageDays = (now - new Date(memory.created).getTime()) / (1000 * 60 * 60 * 24);
+    temporalScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
   }
 
-  return score;
+  // Weighted final score: 75% relevance + 25% recency
+  return baseScore * 0.75 + (baseScore * temporalScore) * 0.25;
 }
 
 // Filter out stale/wrong info about technical limitations
@@ -416,7 +421,68 @@ async function loadKB() {
   } catch(e) { logErr('loadKB', e); _kbCache = []; return []; }
 }
 
+var STOPWORDS_IT = ['che', 'per', 'con', 'del', 'della', 'delle', 'dei', 'degli', 'nel', 'nella', 'nelle', 'nei', 'negli', 'una', 'uno', 'sono', 'alla', 'alle', 'allo', 'agli', 'dal', 'dalla', 'dai', 'dagli', 'sul', 'sulla', 'sui', 'sugli', 'tra', 'fra', 'non', 'come', 'anche', 'questo', 'questa', 'questi', 'queste', 'quello', 'quella', 'quelli', 'quelle', 'stato', 'stata', 'stati', 'state', 'essere', 'avere', 'fare', 'dire', 'dove', 'quando', 'cosa', 'ogni', 'tutto', 'tutti', 'dopo', 'prima', 'solo', 'ancora', 'molto', 'più'];
+
+function extractKeywords(text) {
+  return text.toLowerCase().split(/\W+/).filter(function(w) {
+    return w.length > 5 && STOPWORDS_IT.indexOf(w) === -1;
+  });
+}
+
+function getTagValue(tags, prefix) {
+  for (var i = 0; i < tags.length; i++) {
+    if (tags[i].toLowerCase().startsWith(prefix)) return tags[i].toLowerCase();
+  }
+  return null;
+}
+
+function isDuplicate(newContent, newTags) {
+  if (!_kbCache || _kbCache.length === 0) return false;
+
+  // Never deduplicate official entries
+  if ((newTags || []).some(function(t) { return t === 'fonte:ufficiale'; })) return false;
+
+  var newKeywords = extractKeywords(newContent);
+  if (newKeywords.length < 3) return false;
+
+  var newClient = getTagValue(newTags || [], 'cliente:');
+  var newProject = getTagValue(newTags || [], 'progetto:');
+  var newTipo = getTagValue(newTags || [], 'tipo:');
+
+  for (var i = 0; i < _kbCache.length; i++) {
+    var existing = _kbCache[i];
+
+    // Never replace official entries
+    if ((existing.tags || []).some(function(t) { return t === 'fonte:ufficiale'; })) continue;
+
+    var existingKeywords = extractKeywords(existing.content);
+    var matchCount = 0;
+    for (var k = 0; k < newKeywords.length; k++) {
+      if (existingKeywords.indexOf(newKeywords[k]) !== -1) matchCount++;
+    }
+
+    if (matchCount >= 3) {
+      // Check if at least one tag dimension matches
+      var existingClient = getTagValue(existing.tags || [], 'cliente:');
+      var existingProject = getTagValue(existing.tags || [], 'progetto:');
+      var existingTipo = getTagValue(existing.tags || [], 'tipo:');
+
+      var tagMatch = (newClient && newClient === existingClient) ||
+        (newProject && newProject === existingProject) ||
+        (newTipo && newTipo === existingTipo);
+
+      if (tagMatch) return true;
+    }
+  }
+  return false;
+}
+
 async function addKBEntry(content, tags, addedBy) {
+  // Deduplication check
+  if (isDuplicate(content, tags)) {
+    return null;
+  }
+
   var entry = {
     id: Date.now().toString(36),
     content: content,
