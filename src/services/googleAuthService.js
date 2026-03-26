@@ -18,9 +18,16 @@ try { webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web; } catc
 
 var GOOGLE_CLIENT_ID     = (webCreds && webCreds.client_id)     || process.env.GOOGLE_CLIENT_ID;
 var GOOGLE_CLIENT_SECRET = (webCreds && webCreds.client_secret) || process.env.GOOGLE_CLIENT_SECRET;
-var OAUTH_REDIRECT_URI   = process.env.OAUTH_REDIRECT_URI ||
-  (webCreds && webCreds.redirect_uris && webCreds.redirect_uris[0]) ||
-  'http://localhost:3000/oauth/callback';
+var OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI;
+if (!OAUTH_REDIRECT_URI) {
+  // Fallback a credentials-web.json solo se non è n8n
+  var credsUri = webCreds && webCreds.redirect_uris && webCreds.redirect_uris[0];
+  if (credsUri && !credsUri.includes('n8n')) {
+    OAUTH_REDIRECT_URI = credsUri;
+  } else {
+    OAUTH_REDIRECT_URI = 'http://localhost:3000/oauth/callback';
+  }
+}
 
 var GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
