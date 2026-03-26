@@ -854,6 +854,82 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
 
 // ─── Schedule cron jobs ────────────────────────────────────────────────────────
 
+// ─── Memory Consolidation ─────────────────────────────────────────────────────
+
+async function consolidaMemorie() {
+  var Anthropic = require('@anthropic-ai/sdk');
+  var client = new Anthropic();
+  var memCache = db.getMemCache();
+  var userIds = Object.keys(memCache);
+  var totalConsolidated = 0;
+
+  for (var u = 0; u < userIds.length; u++) {
+    var userId = userIds[u];
+    var memories = memCache[userId];
+    if (!memories || memories.length < 10) continue; // skip users with few memories
+
+    // Group by tags for better consolidation
+    var tagGroups = {};
+    memories.forEach(function(m) {
+      var key = (m.tags || []).sort().join(',') || '_untagged';
+      if (!tagGroups[key]) tagGroups[key] = [];
+      tagGroups[key].push(m);
+    });
+
+    var keys = Object.keys(tagGroups);
+    for (var k = 0; k < keys.length; k++) {
+      var group = tagGroups[keys[k]];
+      if (group.length < 3) continue; // only consolidate groups with 3+ memories
+
+      var memList = group.map(function(m) {
+        return '- [' + (m.created || '?') + '] ' + m.content;
+      }).join('\n');
+
+      try {
+        var res = await client.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 600,
+          system: 'Sei un assistente che consolida memorie. Analizza le memorie e:\n' +
+            '1. Identifica duplicati o memorie molto simili\n' +
+            '2. Identifica informazioni contraddittorie (tieni la più recente)\n' +
+            '3. Rispondi SOLO in JSON con questo formato:\n' +
+            '{"delete_ids": ["id1", "id2"], "new_memories": [{"content": "testo consolidato", "tags": ["tag1"]}]}\n' +
+            'Se non serve consolidare, rispondi: {"delete_ids": [], "new_memories": []}\n' +
+            'Conserva SEMPRE le informazioni importanti. Elimina solo veri duplicati.',
+          messages: [{
+            role: 'user',
+            content: 'Memorie da analizzare (tag: ' + keys[k] + '):\n\n' +
+              group.map(function(m) { return '- [ID: ' + m.id + '] [' + (m.created || '?') + '] ' + m.content; }).join('\n'),
+          }],
+        });
+
+        var text = res.content[0].text.trim();
+        // Extract JSON from response
+        var jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) continue;
+
+        var result = JSON.parse(jsonMatch[0]);
+        if (result.delete_ids && result.delete_ids.length > 0) {
+          for (var d = 0; d < result.delete_ids.length; d++) {
+            await db.deleteMemory(userId, result.delete_ids[d]);
+            totalConsolidated++;
+          }
+        }
+        if (result.new_memories && result.new_memories.length > 0) {
+          for (var n = 0; n < result.new_memories.length; n++) {
+            var nm = result.new_memories[n];
+            await db.addMemory(userId, nm.content, nm.tags || []);
+          }
+        }
+      } catch(e) {
+        logger.error('[CONSOLIDATE] Errore per user ' + userId + ':', e.message);
+      }
+    }
+  }
+
+  logger.info('[CONSOLIDATE] Completato. Memorie consolidate/rimosse:', totalConsolidated);
+}
+
 function scheduleCrons() {
   cron.schedule('45 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
   cron.schedule('5 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
@@ -862,11 +938,13 @@ function scheduleCrons() {
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
   cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
+  cron.schedule('0 3 * * 0', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica alle 3:00
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
   logger.info('Channel digest: ogni 4 ore');
+  logger.info('Memory consolidation: domenica alle 3:00');
 }
 
 module.exports = {
@@ -882,6 +960,7 @@ module.exports = {
   elaboraPreventivi: elaboraPreventivi,
   inviaOnboardingPersonalizzato: inviaOnboardingPersonalizzato,
   invitaNonConnessi: invitaNonConnessi,
+  consolidaMemorie: consolidaMemorie,
   getSlackBriefingData: getSlackBriefingData,
   buildBriefingUtente: buildBriefingUtente,
   MANSIONI_TEAM: MANSIONI_TEAM,

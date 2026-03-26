@@ -238,13 +238,94 @@ async function deleteMemory(userId, memoryId) {
   return true;
 }
 
+// ─── Fuzzy search helpers ─────────────────────────────────────────────────────
+
+var SINONIMI = {
+  'foto': ['fotografico', 'fotografia', 'shooting', 'servizio fotografico', 'photo'],
+  'fotografico': ['foto', 'fotografia', 'shooting', 'photo'],
+  'sito': ['website', 'web', 'sito web', 'portale', 'landing'],
+  'website': ['sito', 'web', 'sito web', 'portale', 'landing'],
+  'web': ['sito', 'website', 'sito web', 'portale'],
+  'branding': ['brand', 'marchio', 'identità visiva', 'logo', 'rebrand', 'rebranding'],
+  'brand': ['branding', 'marchio', 'identità visiva', 'logo', 'rebrand'],
+  'logo': ['branding', 'brand', 'marchio', 'logotipo'],
+  'social': ['social media', 'instagram', 'facebook', 'tiktok', 'linkedin'],
+  'marketing': ['promozione', 'campagna', 'adv', 'advertising', 'ads'],
+  'campagna': ['marketing', 'promozione', 'adv', 'advertising'],
+  'video': ['filmato', 'clip', 'reel', 'montaggio', 'riprese'],
+  'design': ['grafica', 'progettazione', 'layout', 'mockup', 'ui', 'ux'],
+  'grafica': ['design', 'progettazione', 'layout', 'visual'],
+  'progetto': ['progettazione', 'lavoro', 'commessa', 'incarico'],
+  'cliente': ['client', 'committente', 'azienda'],
+  'preventivo': ['quotazione', 'offerta', 'stima', 'quote', 'budget'],
+  'contratto': ['accordo', 'agreement', 'incarico'],
+  'fattura': ['invoice', 'pagamento', 'fatturazione'],
+  'meeting': ['riunione', 'call', 'incontro', 'appuntamento'],
+  'riunione': ['meeting', 'call', 'incontro', 'appuntamento'],
+  'task': ['compito', 'attività', 'todo', 'da fare', 'azione'],
+  'deadline': ['scadenza', 'consegna', 'termine'],
+  'scadenza': ['deadline', 'consegna', 'termine'],
+};
+
+function expandQueryTokens(query) {
+  var tokens = query.toLowerCase().split(/\s+/).filter(function(t) { return t.length > 2; });
+  var expanded = tokens.slice();
+  tokens.forEach(function(token) {
+    if (SINONIMI[token]) {
+      SINONIMI[token].forEach(function(syn) {
+        if (expanded.indexOf(syn) === -1) expanded.push(syn);
+      });
+    }
+  });
+  return expanded;
+}
+
+function scoreMemory(memory, tokens, now) {
+  var contentLow = memory.content.toLowerCase();
+  var tagsLow = (memory.tags || []).map(function(t) { return t.toLowerCase(); });
+  var score = 0;
+
+  // Token matching — each token that matches adds score
+  tokens.forEach(function(token) {
+    if (contentLow.includes(token)) score += 3;
+    tagsLow.forEach(function(t) {
+      if (t.includes(token)) score += 2;
+    });
+  });
+
+  // Bonus for multi-token match (phrase relevance)
+  var fullQuery = tokens.slice(0, 3).join(' ');
+  if (fullQuery.length > 5 && contentLow.includes(fullQuery)) score += 5;
+
+  // Temporal weight — recent memories score higher
+  if (memory.created && now) {
+    var ageMs = now - new Date(memory.created).getTime();
+    var ageDays = ageMs / (1000 * 60 * 60 * 24);
+    if (ageDays < 30) score += 4;        // last month
+    else if (ageDays < 90) score += 3;    // last quarter
+    else if (ageDays < 365) score += 2;   // last year
+    else if (ageDays < 730) score += 1;   // last 2 years
+    // older: no bonus
+  }
+
+  return score;
+}
+
 function searchMemories(userId, query) {
   if (!_memCache || !_memCache[userId]) return [];
-  var q = query.toLowerCase();
-  return _memCache[userId].filter(function(m) {
-    return m.content.toLowerCase().includes(q) ||
-      (m.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+  var tokens = expandQueryTokens(query);
+  var now = Date.now();
+
+  var scored = _memCache[userId].map(function(m) {
+    return { memory: m, score: scoreMemory(m, tokens, now) };
+  }).filter(function(item) {
+    return item.score > 0;
   });
+
+  // Sort by score descending (most relevant + most recent first)
+  scored.sort(function(a, b) { return b.score - a.score; });
+
+  return scored.map(function(item) { return item.memory; });
 }
 
 function getMemCache() { return _memCache || {}; }
@@ -368,11 +449,18 @@ async function deleteKBEntry(entryId) {
 
 function searchKB(query) {
   if (!_kbCache) return [];
-  var q = query.toLowerCase();
-  return _kbCache.filter(function(entry) {
-    return entry.content.toLowerCase().includes(q) ||
-      (entry.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+  var tokens = expandQueryTokens(query);
+  var now = Date.now();
+
+  var scored = _kbCache.map(function(entry) {
+    return { entry: entry, score: scoreMemory(entry, tokens, now) };
+  }).filter(function(item) {
+    return item.score > 0;
   });
+
+  scored.sort(function(a, b) { return b.score - a.score; });
+
+  return scored.map(function(item) { return item.entry; });
 }
 
 function getKBCache() { return _kbCache || []; }
