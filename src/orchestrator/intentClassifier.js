@@ -29,8 +29,8 @@ var RULES = [
     intent: INTENTS.DAILY_DIGEST,
     keywords: [
       'briefing', 'routine mattutina', 'recap giornaliero', 'agenda di oggi',
-      'cosa ho oggi', 'daily', 'piano del giorno', 'cosa mi aspetta',
-      'mail non lette', 'impegni di oggi',
+      'cosa ho oggi', 'daily briefing', 'daily digest', 'piano del giorno',
+      'cosa mi aspetta', 'mail non lette', 'impegni di oggi',
     ],
   },
   {
