@@ -115,6 +115,27 @@ CREATE TABLE IF NOT EXISTS channel_digests (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 12. Ruoli utente (RBAC 5 livelli)
+CREATE TABLE IF NOT EXISTS user_roles (
+  slack_user_id  TEXT PRIMARY KEY,
+  role           TEXT NOT NULL CHECK (
+                   role IN (
+                     'admin',
+                     'finance',
+                     'manager',
+                     'member',
+                     'restricted'
+                   )
+                 ),
+  display_name   TEXT,
+  assigned_by    TEXT,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_roles_slack_id
+  ON user_roles(slack_user_id);
+
 -- Abilita Row Level Security (opzionale, consigliato per produzione)
 -- ALTER TABLE user_tokens ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE user_prefs ENABLE ROW LEVEL SECURITY;

@@ -7,6 +7,7 @@ const http = require('http');
 const url = require('url');
 const cron = require('node-cron');
 const db = require('./supabase');
+const { getUserRole, checkPermission, filterQuoteData, getRoleSystemPrompt, invalidateRoleCache, getAccessDeniedMessage, setUserRole, getAllRoles } = require('./rbac');
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
@@ -860,7 +861,30 @@ const tools = [
 
 // ─── Tool execution ───────────────────────────────────────────────────────────
 
-async function eseguiTool(toolName, input, userId) {
+async function eseguiTool(toolName, input, userId, userRole) {
+  userRole = userRole || 'member';
+
+  // ─── RBAC: controllo accesso tool sensibili ─────────────────────────
+  if (toolName === 'search_drive' || toolName === 'read_doc') {
+    var queryLow = ((input.query || '') + ' ' + (input.folder || '')).toLowerCase();
+    if ((queryLow.includes('finance') || queryLow.includes('finanz') || queryLow.includes('cassa') || queryLow.includes('fattur')) && !checkPermission(userRole, 'view_drive_finance')) {
+      return { error: getAccessDeniedMessage(userRole) };
+    }
+    if ((queryLow.includes('contratt') || queryLow.includes('contract')) && !checkPermission(userRole, 'view_drive_contracts')) {
+      return { error: getAccessDeniedMessage(userRole) };
+    }
+  }
+
+  // ─── RBAC: restricted → solo OffKatania e funzioni base ─────────────
+  if (userRole === 'restricted') {
+    var RESTRICTED_ALLOWED = ['list_events', 'find_event', 'recall_memory', 'save_memory', 'list_memories',
+      'search_slack_messages', 'summarize_channel', 'summarize_thread', 'get_slack_users',
+      'set_user_prefs', 'confirm_action', 'search_kb', 'ask_gemini'];
+    if (!RESTRICTED_ALLOWED.includes(toolName)) {
+      return { error: getAccessDeniedMessage('restricted') };
+    }
+  }
+
   // ─── Conferma azione critica ─────────────────────────────────────────
   if (toolName === 'confirm_action') {
     var actionId = input.action_id;
@@ -927,15 +951,34 @@ async function eseguiTool(toolName, input, userId) {
   }
 
   if (toolName === 'recall_memory') {
-    const results = searchMemories(userId, input.query);
+    // RBAC: admin/finance vedono tutte le memorie, altri solo le proprie
+    if (checkPermission(userRole, 'view_all_memories') && input.user_id) {
+      var results = searchMemories(input.user_id, input.query);
+      return { memories: results, count: results.length };
+    }
+    var results = searchMemories(userId, input.query);
+    if (userRole === 'restricted') {
+      results = results.filter(function(m) {
+        return m.tags.some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
+      });
+    }
     return { memories: results, count: results.length };
   }
 
   if (toolName === 'list_memories') {
-    const userMems = db.getMemCache()[userId] || [];
-    const filtered = input.tag
+    var targetId = userId;
+    if (checkPermission(userRole, 'view_all_memories') && input.user_id) {
+      targetId = input.user_id;
+    }
+    const userMems = db.getMemCache()[targetId] || [];
+    var filtered = input.tag
       ? userMems.filter(function(m) { return m.tags.some(function(t) { return t.toLowerCase().includes(input.tag.toLowerCase()); }); })
       : userMems;
+    if (userRole === 'restricted') {
+      filtered = filtered.filter(function(m) {
+        return m.tags.some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
+      });
+    }
     return { memories: filtered, count: filtered.length };
   }
 
@@ -2020,6 +2063,9 @@ async function askGiuno(userId, userMessage, options) {
     return 'Piano piano, mbare. Troppe richieste. Aspetta un minuto.';
   }
 
+  // RBAC: carica ruolo utente
+  var userRole = await getUserRole(userId);
+
   const convKey = conversationKey(userId, options.threadTs);
   var convCache = getConversations();
   if (!convCache[convKey]) convCache[convKey] = [];
@@ -2093,7 +2139,7 @@ async function askGiuno(userId, userMessage, options) {
       response = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1024,
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + getRoleSystemPrompt(userRole),
         messages: messages,
         tools: tools,
       });
@@ -2120,7 +2166,7 @@ async function askGiuno(userId, userMessage, options) {
 
     const toolResults = await Promise.all(
       response.content.filter(function(b) { return b.type === 'tool_use'; }).map(async function(tu) {
-        const result = await eseguiTool(tu.name, tu.input, userId);
+        const result = await eseguiTool(tu.name, tu.input, userId, userRole);
         logger.info('Tool:', tu.name, '| User:', userId, '| Result:', JSON.stringify(result).substring(0, 80));
         return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) };
       })
@@ -2220,16 +2266,17 @@ async function autoLearn(userId, userMessage, botReply) {
 // ─── Admin command ────────────────────────────────────────────────────────────
 
 async function handleAdmin(command, respond) {
-  const adminId = process.env.ADMIN_USER_ID;
-  if (!adminId || command.user_id !== adminId) {
-    await respond({ text: 'Non sei autorizzato, mbare.', response_type: 'ephemeral' });
-    return;
-  }
+  var callerRole = await getUserRole(command.user_id);
 
   const args = command.text.replace(/^admin\s*/, '').trim().split(/\s+/);
   const sub  = args[0];
 
+  // /giuno admin list — mostra utenti e token (solo admin)
   if (sub === 'list') {
+    if (callerRole !== 'admin') {
+      await respond({ text: 'Solo Antonio e Corrado possono usare questo comando.', response_type: 'ephemeral' });
+      return;
+    }
     const utenti = await getUtenti();
     let msg = '*Utenti e token Google:*\n';
     utenti.forEach(function(u) {
@@ -2239,7 +2286,12 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  // /giuno admin revoke @utente — revoca token (solo admin)
   if (sub === 'revoke' && args[1]) {
+    if (callerRole !== 'admin') {
+      await respond({ text: 'Solo Antonio e Corrado possono usare questo comando.', response_type: 'ephemeral' });
+      return;
+    }
     const targetId = args[1].replace(/<@|>/g, '').split('|')[0];
     if (!getUserTokens()[targetId]) { await respond({ text: 'Nessun token trovato per quell\'utente.', response_type: 'ephemeral' }); return; }
     rimuoviTokenUtente(targetId);
@@ -2247,7 +2299,55 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi: `admin list` | `admin revoke @utente`', response_type: 'ephemeral' });
+  // /giuno admin ruolo @nome livello — cambia ruolo (solo admin)
+  if (sub === 'ruolo' && args[1]) {
+    if (callerRole !== 'admin') {
+      await respond({ text: 'Solo Antonio e Corrado possono modificare i ruoli.', response_type: 'ephemeral' });
+      return;
+    }
+    var targetId = args[1].replace(/<@|>/g, '').split('|')[0];
+    var newRole = (args[2] || '').toLowerCase();
+    var validRoles = ['admin', 'finance', 'manager', 'member', 'restricted'];
+    if (!validRoles.includes(newRole)) {
+      await respond({ text: 'Ruolo non valido. Usa: ' + validRoles.join(', '), response_type: 'ephemeral' });
+      return;
+    }
+    // Trova il nome display
+    var utenti = await getUtenti();
+    var targetUser = utenti.find(function(u) { return u.id === targetId; });
+    var displayName = targetUser ? targetUser.name : null;
+
+    var success = await setUserRole(targetId, newRole, displayName, command.user_id);
+    if (success) {
+      await respond({ text: '<@' + targetId + '> ora ha accesso livello *' + newRole + '*\nModificato da <@' + command.user_id + '>', response_type: 'ephemeral' });
+    } else {
+      await respond({ text: 'Errore nel salvataggio del ruolo. Riprova.', response_type: 'ephemeral' });
+    }
+    return;
+  }
+
+  // /giuno admin roles — mostra tutti i ruoli
+  if (sub === 'roles') {
+    if (callerRole !== 'admin') {
+      await respond({ text: 'Solo Antonio e Corrado possono vedere i ruoli.', response_type: 'ephemeral' });
+      return;
+    }
+    var roles = await getAllRoles();
+    if (roles.length === 0) {
+      await respond({ text: 'Nessun ruolo configurato.', response_type: 'ephemeral' });
+      return;
+    }
+    var msg = '*Ruoli team:*\n';
+    var order = { admin: 1, finance: 2, manager: 3, member: 4, restricted: 5 };
+    roles.sort(function(a, b) { return (order[a.role] || 9) - (order[b.role] || 9); });
+    roles.forEach(function(r) {
+      msg += '*' + r.role.toUpperCase() + '* — ' + (r.display_name || r.slack_user_id) + ' (<@' + r.slack_user_id + '>)\n';
+    });
+    await respond({ text: msg, response_type: 'ephemeral' });
+    return;
+  }
+
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 // ─── Slack handlers ───────────────────────────────────────────────────────────
@@ -2350,6 +2450,22 @@ app.command('/giuno', async function(args) {
 
   if (text.startsWith('admin')) {
     await handleAdmin(command, respond);
+    return;
+  }
+
+  // /giuno chi sono — mostra info utente e livello accesso
+  if (text === 'chi sono' || text === 'chisono') {
+    try {
+      var myRole = await getUserRole(command.user_id);
+      var roleDesc = getRoleSystemPrompt(myRole).split('\n').slice(0, 3).join('\n');
+      var utenti = await getUtenti();
+      var me = utenti.find(function(u) { return u.id === command.user_id; });
+      var myName = me ? me.name : 'Utente';
+      await respond({
+        text: 'Ciao ' + myName + '!\n• Slack ID: `' + command.user_id + '`\n• Livello di accesso: *' + myRole.toUpperCase() + '*\n• ' + roleDesc,
+        response_type: 'ephemeral',
+      });
+    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
     return;
   }
 
