@@ -70,7 +70,7 @@ var oauthServer = http.createServer(async function(req, res) {
       return;
     }
 
-    salvaTokenUtente(slackUserId, tokens.refresh_token);
+    await salvaTokenUtente(slackUserId, tokens.refresh_token);
     logger.info('Token salvato per:', slackUserId);
 
     inviaOnboardingPersonalizzato(slackUserId).catch(function(e) {
