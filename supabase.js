@@ -311,6 +311,19 @@ function scoreMemory(memory, tokens, now) {
   return score;
 }
 
+// Filter out stale/wrong info about technical limitations
+var BLACKLIST_PATTERNS = [
+  'slack_user_token', 'search:read', 'limitazioni tecniche',
+  'problema tecnico con slack', 'token non ha', 'permessi.*slack',
+  'non riesco ad accedere ai canali', 'configurare.*permessi',
+  'serve che.*configur', 'accesso.*canali.*limitat',
+];
+var _blacklistRegex = new RegExp(BLACKLIST_PATTERNS.join('|'), 'i');
+
+function isBlacklisted(content) {
+  return _blacklistRegex.test(content);
+}
+
 function searchMemories(userId, query) {
   if (!_memCache || !_memCache[userId]) return [];
   var tokens = expandQueryTokens(query);
@@ -319,10 +332,9 @@ function searchMemories(userId, query) {
   var scored = _memCache[userId].map(function(m) {
     return { memory: m, score: scoreMemory(m, tokens, now) };
   }).filter(function(item) {
-    return item.score > 0;
+    return item.score > 0 && !isBlacklisted(item.memory.content);
   });
 
-  // Sort by score descending (most relevant + most recent first)
   scored.sort(function(a, b) { return b.score - a.score; });
 
   return scored.map(function(item) { return item.memory; });
@@ -455,7 +467,7 @@ function searchKB(query) {
   var scored = _kbCache.map(function(entry) {
     return { entry: entry, score: scoreMemory(entry, tokens, now) };
   }).filter(function(item) {
-    return item.score > 0;
+    return item.score > 0 && !isBlacklisted(item.entry.content);
   });
 
   scored.sort(function(a, b) { return b.score - a.score; });

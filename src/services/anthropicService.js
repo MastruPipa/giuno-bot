@@ -212,8 +212,13 @@ async function autoLearn(userId, userMessage, botReply) {
     if (analysis.skip) return;
 
     if (analysis.memories && analysis.memories.length > 0) {
+      var blacklistRe = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi/i;
       analysis.memories.forEach(function(m) {
         if (m.content && m.content.length > 5) {
+          if (blacklistRe.test(m.content)) {
+            logger.info('[AUTO-LEARN] Skip memoria con info tecnica obsoleta:', m.content.substring(0, 60));
+            return;
+          }
           db.addMemory(userId, m.content, m.tags || []);
           logger.info('[AUTO-LEARN] Memoria salvata per', userId + ':', m.content.substring(0, 60));
         }
