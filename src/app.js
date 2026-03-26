@@ -1,5 +1,6 @@
 // ─── App Bootstrap ─────────────────────────────────────────────────────────────
 // Initialises all services, registers handlers, starts listeners.
+// v2.1 — OAuth fixes: token persistence + verb conjugation matching
 
 'use strict';
 
