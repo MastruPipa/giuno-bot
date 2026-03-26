@@ -175,6 +175,148 @@ var definitions = [
       required: ['channel', 'question', 'options'],
     },
   },
+  // ─── New tools: pins, files, reminders, profiles, usergroups, channels mgmt ──
+  {
+    name: 'get_pinned_messages',
+    description: 'Ottieni i messaggi fissati (pin) in un canale. Utile per trovare info importanti e risorse fissate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', description: 'Nome o ID del canale' },
+      },
+      required: ['channel'],
+    },
+  },
+  {
+    name: 'pin_message',
+    description: 'Fissa un messaggio in un canale. Usalo per evidenziare decisioni importanti o risorse.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string', description: 'ID del canale' },
+        message_ts: { type: 'string', description: 'Timestamp del messaggio da fissare' },
+      },
+      required: ['channel_id', 'message_ts'],
+    },
+  },
+  {
+    name: 'unpin_message',
+    description: 'Rimuovi un messaggio dai pin di un canale.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string', description: 'ID del canale' },
+        message_ts: { type: 'string', description: 'Timestamp del messaggio da sbloccare' },
+      },
+      required: ['channel_id', 'message_ts'],
+    },
+  },
+  {
+    name: 'search_files',
+    description: 'Cerca file condivisi su Slack (PDF, immagini, documenti). Utile per trovare allegati e risorse.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nei nomi/contenuti dei file' },
+        channel: { type: 'string', description: 'ID canale per filtrare (opzionale)' },
+        max: { type: 'number', description: 'Numero massimo risultati (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'upload_file',
+    description: 'Carica un file di testo/snippet in un canale Slack.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', description: 'Nome o ID del canale' },
+        content: { type: 'string', description: 'Contenuto del file' },
+        filename: { type: 'string', description: 'Nome del file (es. report.txt)' },
+        title: { type: 'string', description: 'Titolo del file (opzionale)' },
+        comment: { type: 'string', description: 'Commento da aggiungere al file (opzionale)' },
+      },
+      required: ['channel', 'content', 'filename'],
+    },
+  },
+  {
+    name: 'set_reminder',
+    description: 'Crea un promemoria Slack per un utente. Usalo quando qualcuno dice "ricordami di...", "reminder per...", ecc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Testo del promemoria' },
+        time: { type: 'string', description: 'Quando ricordare (es. "in 30 minutes", "tomorrow at 9am", "next Monday", timestamp Unix)' },
+        user: { type: 'string', description: 'Slack user ID (default: utente corrente)' },
+      },
+      required: ['text', 'time'],
+    },
+  },
+  {
+    name: 'get_user_profile',
+    description: 'Ottieni il profilo dettagliato di un utente Slack: ruolo, telefono, fuso orario, stato, titolo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'Slack user ID' },
+        user_name: { type: 'string', description: 'Nome utente (cerca l\'ID se user_id non fornito)' },
+      },
+    },
+  },
+  {
+    name: 'list_usergroups',
+    description: 'Elenca i gruppi utente (@team-design, @sviluppatori, ecc.) del workspace.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        include_users: { type: 'boolean', description: 'Includi la lista dei membri (default false)' },
+      },
+    },
+  },
+  {
+    name: 'set_channel_topic',
+    description: 'Imposta o aggiorna il topic/descrizione di un canale.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', description: 'Nome o ID del canale' },
+        topic: { type: 'string', description: 'Nuovo topic del canale' },
+      },
+      required: ['channel', 'topic'],
+    },
+  },
+  {
+    name: 'invite_to_channel',
+    description: 'Invita uno o più utenti in un canale Slack.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', description: 'Nome o ID del canale' },
+        users: { type: 'array', items: { type: 'string' }, description: 'Lista di Slack user ID da invitare' },
+      },
+      required: ['channel', 'users'],
+    },
+  },
+  {
+    name: 'get_reactions',
+    description: 'Ottieni le reazioni su un messaggio specifico. Utile per contare voti, feedback, conferme.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string', description: 'ID del canale' },
+        message_ts: { type: 'string', description: 'Timestamp del messaggio' },
+      },
+      required: ['channel_id', 'message_ts'],
+    },
+  },
+  {
+    name: 'list_emoji',
+    description: 'Elenca gli emoji personalizzati del workspace.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
@@ -374,6 +516,221 @@ async function execute(toolName, input, userId) {
       }
       return { success: true, ts: posted.ts };
     } catch(e) { return { error: e.message }; }
+  }
+
+  // ─── Resolve channel name → ID helper ─────────────────────────────────────────
+  async function resolveChannelId(channelInput) {
+    if (channelInput.match(/^[CG]/)) return channelInput;
+    var name = channelInput.replace(/^#/, '');
+    var channels = await getAllChannels(app);
+    var ch = channels.find(function(c) { return c.name === name; });
+    return ch ? ch.id : null;
+  }
+
+  // ─── Pins ───────────────────────────────────────────────────────────────────
+  if (toolName === 'get_pinned_messages') {
+    try {
+      var pinChId = await resolveChannelId(input.channel);
+      if (!pinChId) return { error: 'Canale non trovato: ' + input.channel };
+      var pinsRes = await app.client.pins.list({ channel: pinChId });
+      var pins = (pinsRes.items || []).map(function(item) {
+        var msg = item.message || {};
+        return {
+          text: (msg.text || '').substring(0, 600),
+          user: msg.user,
+          timestamp: msg.ts,
+          permalink: msg.permalink || null,
+        };
+      });
+      return { channel: input.channel, pins: pins, count: pins.length };
+    } catch(e) { return { error: 'Errore pins: ' + e.message }; }
+  }
+
+  if (toolName === 'pin_message') {
+    try {
+      await app.client.pins.add({ channel: input.channel_id, timestamp: input.message_ts });
+      return { success: true, message: 'Messaggio fissato.' };
+    } catch(e) { return { error: 'Errore pin: ' + e.message }; }
+  }
+
+  if (toolName === 'unpin_message') {
+    try {
+      await app.client.pins.remove({ channel: input.channel_id, timestamp: input.message_ts });
+      return { success: true, message: 'Pin rimosso.' };
+    } catch(e) { return { error: 'Errore unpin: ' + e.message }; }
+  }
+
+  // ─── Files ──────────────────────────────────────────────────────────────────
+  if (toolName === 'search_files') {
+    try {
+      var fileMax = input.max || 10;
+      var fileToken = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
+      var fileRes = await app.client.search.files({
+        token: fileToken,
+        query: input.query,
+        count: fileMax,
+        sort: 'timestamp',
+        sort_dir: 'desc',
+      });
+      var files = (fileRes.files && fileRes.files.matches) || [];
+      return {
+        results: files.map(function(f) {
+          return {
+            name: f.name,
+            title: f.title,
+            filetype: f.filetype,
+            size: f.size,
+            user: f.user,
+            url: f.url_private || f.permalink,
+            channels: f.channels || [],
+            created: f.created,
+            preview: (f.preview || '').substring(0, 300),
+          };
+        }),
+        total: (fileRes.files && fileRes.files.total) || 0,
+      };
+    } catch(e) { return { error: 'Errore ricerca file: ' + e.message }; }
+  }
+
+  if (toolName === 'upload_file') {
+    try {
+      var upChId = await resolveChannelId(input.channel);
+      if (!upChId) return { error: 'Canale non trovato: ' + input.channel };
+      var upRes = await app.client.files.uploadV2({
+        channel_id: upChId,
+        content: input.content,
+        filename: input.filename,
+        title: input.title || input.filename,
+        initial_comment: input.comment || '',
+      });
+      return { success: true, file_id: upRes.file ? upRes.file.id : null };
+    } catch(e) { return { error: 'Errore upload: ' + e.message }; }
+  }
+
+  // ─── Reminders ──────────────────────────────────────────────────────────────
+  if (toolName === 'set_reminder') {
+    try {
+      var reminderUser = input.user || userId;
+      var remRes = await app.client.reminders.add({
+        text: input.text,
+        time: input.time,
+        user: reminderUser,
+      });
+      return {
+        success: true,
+        reminder_id: remRes.reminder ? remRes.reminder.id : null,
+        text: input.text,
+        time: input.time,
+        user: reminderUser,
+      };
+    } catch(e) { return { error: 'Errore reminder: ' + e.message }; }
+  }
+
+  // ─── User Profile ──────────────────────────────────────────────────────────
+  if (toolName === 'get_user_profile') {
+    try {
+      var profileUserId = input.user_id;
+      if (!profileUserId && input.user_name) {
+        var allU = await getUtenti();
+        var nameMatch = allU.find(function(u) { return u.name.toLowerCase().includes(input.user_name.toLowerCase()); });
+        if (nameMatch) profileUserId = nameMatch.id;
+      }
+      if (!profileUserId) return { error: 'Utente non trovato.' };
+      var profRes = await app.client.users.profile.get({ user: profileUserId });
+      var prof = profRes.profile || {};
+      return {
+        user_id: profileUserId,
+        display_name: prof.display_name || prof.real_name,
+        real_name: prof.real_name,
+        title: prof.title || null,
+        phone: prof.phone || null,
+        email: prof.email || null,
+        status_text: prof.status_text || null,
+        status_emoji: prof.status_emoji || null,
+        image: prof.image_192 || null,
+        tz: prof.tz || null,
+      };
+    } catch(e) { return { error: 'Errore profilo: ' + e.message }; }
+  }
+
+  // ─── User Groups ───────────────────────────────────────────────────────────
+  if (toolName === 'list_usergroups') {
+    try {
+      var ugRes = await app.client.usergroups.list({
+        include_users: input.include_users || false,
+        include_disabled: false,
+      });
+      var groups = (ugRes.usergroups || []).map(function(g) {
+        var result = {
+          id: g.id,
+          handle: g.handle,
+          name: g.name,
+          description: g.description || '',
+          user_count: g.user_count || (g.users ? g.users.length : 0),
+        };
+        if (g.users) result.users = g.users;
+        return result;
+      });
+      return { usergroups: groups, count: groups.length };
+    } catch(e) { return { error: 'Errore usergroups: ' + e.message }; }
+  }
+
+  // ─── Channel Topic ─────────────────────────────────────────────────────────
+  if (toolName === 'set_channel_topic') {
+    try {
+      var topicChId = await resolveChannelId(input.channel);
+      if (!topicChId) return { error: 'Canale non trovato: ' + input.channel };
+      await app.client.conversations.setTopic({ channel: topicChId, topic: input.topic });
+      return { success: true, channel: input.channel, topic: input.topic };
+    } catch(e) { return { error: 'Errore topic: ' + e.message }; }
+  }
+
+  // ─── Invite to Channel ─────────────────────────────────────────────────────
+  if (toolName === 'invite_to_channel') {
+    try {
+      var invChId = await resolveChannelId(input.channel);
+      if (!invChId) return { error: 'Canale non trovato: ' + input.channel };
+      var invUsers = input.users || [];
+      var invited = [];
+      var invErrors = [];
+      for (var iu = 0; iu < invUsers.length; iu++) {
+        try {
+          await app.client.conversations.invite({ channel: invChId, users: invUsers[iu] });
+          invited.push(invUsers[iu]);
+        } catch(e) {
+          invErrors.push({ user: invUsers[iu], error: e.message });
+        }
+      }
+      return { success: true, invited: invited, errors: invErrors };
+    } catch(e) { return { error: 'Errore invito: ' + e.message }; }
+  }
+
+  // ─── Reactions ──────────────────────────────────────────────────────────────
+  if (toolName === 'get_reactions') {
+    try {
+      var reactRes = await app.client.reactions.get({
+        channel: input.channel_id,
+        timestamp: input.message_ts,
+        full: true,
+      });
+      var msg = reactRes.message || {};
+      var reactions = (msg.reactions || []).map(function(r) {
+        return { name: r.name, count: r.count, users: r.users || [] };
+      });
+      return { reactions: reactions, total: reactions.length };
+    } catch(e) { return { error: 'Errore reazioni: ' + e.message }; }
+  }
+
+  // ─── Emoji ──────────────────────────────────────────────────────────────────
+  if (toolName === 'list_emoji') {
+    try {
+      var emojiRes = await app.client.emoji.list();
+      var emojiMap = emojiRes.emoji || {};
+      var emojiList = Object.keys(emojiMap).map(function(name) {
+        return { name: name, url: emojiMap[name] };
+      });
+      return { emoji: emojiList.slice(0, 100), total: emojiList.length };
+    } catch(e) { return { error: 'Errore emoji: ' + e.message }; }
   }
 
   return { error: 'Tool sconosciuto nel modulo slackTools: ' + toolName };

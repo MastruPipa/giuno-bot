@@ -13,6 +13,8 @@ var RESTRICTED_ALLOWED = [
   'list_events', 'find_event', 'recall_memory', 'save_memory', 'list_memories',
   'search_slack_messages', 'summarize_channel', 'summarize_thread', 'get_slack_users',
   'set_user_prefs', 'confirm_action', 'search_kb', 'ask_gemini',
+  'get_pinned_messages', 'search_files', 'get_user_profile', 'list_usergroups',
+  'get_reactions', 'list_emoji', 'set_reminder',
 ];
 
 /**
