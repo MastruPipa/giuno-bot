@@ -1,7 +1,7 @@
 // ─── Context Builder ───────────────────────────────────────────────────────────
 // Assembles the context object for a request:
 // userId, role, profile, channelContext, mentionedBy, channelId, threadTs,
-// oauthLink if needed.
+// oauthLink if needed, plus enriched context (memories, KB, temporal awareness).
 
 'use strict';
 
@@ -46,16 +46,41 @@ async function buildContext(params) {
     oauthLink = '<' + oauthUrl + '|Collega il tuo Google>';
   }
 
+  // Enriched context: relevant memories
+  var relevantMemories = [];
+  try { relevantMemories = db.searchMemories(userId, message) || []; } catch(e) {}
+
+  // Enriched context: KB results
+  var kbResults = [];
+  try { kbResults = db.searchKB(message) || []; } catch(e) {}
+
+  // Temporal awareness
+  var now = new Date();
+  var currentYear = now.getFullYear();
+  var currentQuarter = 'Q' + Math.ceil((now.getMonth() + 1) / 3);
+
+  // Channel context
+  var channelContext = options.channelContext || null;
+
   return {
-    userId:         userId,
-    userRole:       userRole,
-    profile:        profile,
-    threadTs:       options.threadTs   || null,
-    channelId:      options.channelId  || null,
-    channelContext: options.channelContext || null,
-    mentionedBy:    options.mentionedBy || null,
-    channelMapEntry:channelMapEntry,
-    oauthLink:      oauthLink,
+    userId:           userId,
+    userRole:         userRole,
+    profile:          profile,
+    threadTs:         options.threadTs   || null,
+    channelId:        options.channelId  || null,
+    channelContext:   channelContext,
+    mentionedBy:      options.mentionedBy || null,
+    channelMapEntry:  channelMapEntry,
+    oauthLink:        oauthLink,
+
+    // Enriched context
+    relevantMemories: relevantMemories.slice(0, 8),
+    kbResults:        kbResults.slice(0, 5),
+    currentDate:      now.toISOString().slice(0, 10),
+    currentYear:      currentYear,
+    currentQuarter:   currentQuarter,
+    temporalNote:     'Siamo nel ' + currentYear + ' ' + currentQuarter +
+                      '. Informazioni più recenti hanno priorità su quelle vecchie.',
   };
 }
 

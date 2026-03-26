@@ -22,9 +22,53 @@ var SYSTEM_PROMPT =
 
 var TOOLS = registry.getToolsForAgent('threadSummary');
 
+function buildDynamicContext(ctx) {
+  var dynamicContext = '';
+
+  if (ctx.currentDate) {
+    dynamicContext += '\nDATA ATTUALE: ' + ctx.currentDate +
+      ' (' + ctx.currentYear + ' ' + ctx.currentQuarter + ')\n';
+    dynamicContext += 'PRIORITÀ TEMPORALE: Informazioni del ' +
+      ctx.currentYear + ' hanno priorità su anni precedenti.\n';
+  }
+
+  if (ctx.profile && ctx.profile.ruolo) {
+    dynamicContext += '\nPROFILO UTENTE:\n';
+    dynamicContext += 'Ruolo: ' + ctx.profile.ruolo + '\n';
+    if (ctx.profile.progetti && ctx.profile.progetti.length > 0)
+      dynamicContext += 'Progetti: ' + ctx.profile.progetti.join(', ') + '\n';
+    if (ctx.profile.clienti && ctx.profile.clienti.length > 0)
+      dynamicContext += 'Clienti: ' + ctx.profile.clienti.join(', ') + '\n';
+  }
+
+  if (ctx.relevantMemories && ctx.relevantMemories.length > 0) {
+    dynamicContext += '\nMEMORIE RILEVANTI:\n';
+    ctx.relevantMemories.forEach(function(m) {
+      dynamicContext += '• [' + (m.tags || []).join(', ') + '] ' + m.content + '\n';
+    });
+  }
+
+  if (ctx.kbResults && ctx.kbResults.length > 0) {
+    dynamicContext += '\nKNOWLEDGE BASE AZIENDALE:\n';
+    ctx.kbResults.forEach(function(k) {
+      dynamicContext += '• ' + k.content + '\n';
+    });
+  }
+
+  if (ctx.channelContext) {
+    dynamicContext += '\nCONTESTO CANALE:\n' + ctx.channelContext + '\n';
+  }
+
+  return dynamicContext;
+}
+
 async function run(message, ctx) {
   var Anthropic = require('@anthropic-ai/sdk');
   var client = new Anthropic();
+
+  var dynamicContext = buildDynamicContext(ctx);
+  var fullSystemPrompt = SYSTEM_PROMPT +
+    (dynamicContext ? '\n\n---\nCONTESTO CORRENTE:\n' + dynamicContext : '');
 
   var messages = [{ role: 'user', content: message }];
   var finalReply = '';
@@ -35,7 +79,7 @@ async function run(message, ctx) {
       response = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 800,
-        system: SYSTEM_PROMPT,
+        system: fullSystemPrompt,
         messages: messages,
         tools: TOOLS,
       });
@@ -63,6 +107,12 @@ async function run(message, ctx) {
         })
     );
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Auto-learn in background
+  var { autoLearn } = require('../services/anthropicService');
+  if (finalReply && finalReply.length > 20) {
+    autoLearn(ctx.userId, message, finalReply).catch(function(e) {});
   }
 
   return finalReply;
