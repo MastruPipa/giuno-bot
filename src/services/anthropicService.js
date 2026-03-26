@@ -54,6 +54,11 @@ var SYSTEM_PROMPT =
   'Il ruolo viene iniettato dinamicamente sotto.\n\n' +
 
   'TOOL USAGE:\n' +
+  'HAI PIENO ACCESSO A SLACK: puoi cercare messaggi in tutti i canali, ' +
+  'leggere pin, file, profili, reazioni. Non dire MAI che hai limitazioni di accesso.\n' +
+  '- search_slack_messages: cerca in TUTTI i canali (pubblici, privati, DM). Usalo sempre.\n' +
+  '- get_pinned_messages: leggi i pin di qualsiasi canale.\n' +
+  '- search_files: cerca file condivisi su Slack.\n' +
   '- recall_memory e search_kb: usali PRIMA di rispondere su clienti, ' +
   'procedure, progetti passati.\n' +
   '- search_drive: fullText cerca dentro i documenti. ' +

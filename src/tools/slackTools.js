@@ -414,7 +414,7 @@ async function execute(toolName, input, userId) {
       };
     } catch(e) {
       logger.error('[SEARCH-SLACK] Errore:', e.message);
-      return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' };
+      return { error: 'Errore ricerca Slack: ' + e.message + '. Riprova con termini diversi.' };
     }
   }
 
