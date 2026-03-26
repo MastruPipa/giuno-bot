@@ -1015,6 +1015,20 @@ async function eseguiTool(toolName, input, userId, userRole) {
       var rowCount = (input.values || []).length;
       var previewRows = (input.values || []).slice(0, 3).map(function(r) { return (r || []).join(' | '); }).join('\n');
       preview.preview = 'SCRITTURA GOOGLE SHEET:\nSheet: ' + input.sheet_id + '\nRange: ' + input.range + '\nRighe: ' + rowCount + '\n\nAnteprima:\n' + previewRows;
+      // Gemini review sui dati da scrivere
+      if (geminiModel) {
+        try {
+          var sheetReview = await askGemini(
+            'Controlla questi dati che stanno per essere scritti in un Google Sheet.\n' +
+            'Range: ' + input.range + '\nDati:\n' + JSON.stringify(input.values).substring(0, 2000) +
+            '\n\nControlla: numeri sensati, formati corretti, possibili errori di battitura. Se tutto ok rispondi "OK". Altrimenti segnala il problema in 1 riga.',
+            'Sei un revisore dati. Rispondi in italiano, brevissimo.'
+          );
+          if (sheetReview && sheetReview.response && sheetReview.response.trim() !== 'OK') {
+            preview.gemini_note = sheetReview.response;
+          }
+        } catch(e) { logger.error('Gemini write_sheet review error:', e.message); }
+      }
     }
     return preview;
   }
@@ -1457,7 +1471,21 @@ async function eseguiTool(toolName, input, userId, userRole) {
           });
         }
         extractDocText(doc.data.body.content);
-        return { title: doc.data.title, content: text.substring(0, 4000) };
+        var docResult = { title: doc.data.title, content: text.substring(0, 4000) };
+        // Gemini: riassunto intelligente del documento
+        if (geminiModel && text.length > 200) {
+          try {
+            var docSummary = await askGemini(
+              'Documento: "' + doc.data.title + '"\n\nContenuto:\n' + text.substring(0, 3000) +
+              '\n\nFai un riassunto strutturato: argomento principale, punti chiave (max 5), eventuali azioni/decisioni menzionate.',
+              'Sei un assistente che riassume documenti aziendali. Rispondi in italiano, conciso e strutturato.'
+            );
+            if (docSummary && docSummary.response) {
+              docResult.gemini_summary = docSummary.response;
+            }
+          } catch(e) { logger.error('Gemini doc summary error:', e.message); }
+        }
+        return docResult;
       }
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
@@ -1588,11 +1616,28 @@ async function eseguiTool(toolName, input, userId, userRole) {
         };
       }
 
-      return {
+      var slidesResult = {
         title: presData.title,
         total_slides: slidesList.length,
         slides: slidesList,
       };
+      // Gemini: riassunto intelligente della presentazione
+      if (geminiModel && slidesList.length > 1) {
+        try {
+          var slidesText = slidesList.map(function(s) {
+            return 'Slide ' + s.index + ': ' + s.texts.join(' ');
+          }).join('\n').substring(0, 3000);
+          var slidesSummary = await askGemini(
+            'Presentazione: "' + presData.title + '" (' + slidesList.length + ' slide)\n\n' + slidesText +
+            '\n\nFai un riassunto: tema principale, struttura della presentazione, messaggi chiave per slide.',
+            'Sei un assistente che analizza presentazioni aziendali. Rispondi in italiano, conciso e strutturato.'
+          );
+          if (slidesSummary && slidesSummary.response) {
+            slidesResult.gemini_summary = slidesSummary.response;
+          }
+        } catch(e) { logger.error('Gemini slides summary error:', e.message); }
+      }
+      return slidesResult;
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
       return { error: e.message };
@@ -1634,8 +1679,26 @@ async function eseguiTool(toolName, input, userId, userRole) {
 
   // Tool Knowledge base
   if (toolName === 'add_to_kb') {
-    addKBEntry(input.content, input.tags || [], userId);
-    return { success: true, message: 'Aggiunto alla knowledge base aziendale.' };
+    var kbContent = input.content;
+    var kbNote = null;
+    // Gemini: revisione entry KB prima del salvataggio
+    if (geminiModel) {
+      try {
+        var kbReview = await askGemini(
+          'Questa informazione sta per essere salvata nella knowledge base aziendale:\n\n"' + kbContent + '"\n\nTags: ' + JSON.stringify(input.tags || []) +
+          '\n\nControlla: e\' un\'informazione utile e corretta? E\' troppo vaga o troppo specifica? Suggerisci miglioramenti al testo o ai tag se necessario. Se va bene rispondi solo "OK".',
+          'Sei un revisore di knowledge base aziendale. Rispondi in italiano, brevissimo.'
+        );
+        if (kbReview && kbReview.response && kbReview.response.trim() !== 'OK') {
+          kbNote = kbReview.response.substring(0, 200);
+          logger.info('[KB-REVIEW] Gemini nota:', kbNote);
+        }
+      } catch(e) { logger.error('Gemini KB review error:', e.message); }
+    }
+    addKBEntry(kbContent, input.tags || [], userId);
+    var kbResult = { success: true, message: 'Aggiunto alla knowledge base aziendale.' };
+    if (kbNote) kbResult.gemini_review = kbNote;
+    return kbResult;
   }
 
   if (toolName === 'search_kb') {
@@ -2523,14 +2586,31 @@ async function autoLearn(userId, userMessage, botReply) {
       }
     }
 
-    // Salva nella knowledge base
+    // Salva nella knowledge base (con review Gemini)
     if (analysis.kb && analysis.kb.length > 0) {
-      analysis.kb.forEach(function(entry) {
+      for (var ki = 0; ki < analysis.kb.length; ki++) {
+        var entry = analysis.kb[ki];
         if (entry.content && entry.content.length > 5) {
-          addKBEntry(entry.content, entry.tags || [], userId);
-          logger.info('[AUTO-LEARN] KB aggiornata:', entry.content.substring(0, 60));
+          var shouldSave = true;
+          if (geminiModel) {
+            try {
+              var autoKbReview = await askGemini(
+                'Auto-learn vuole salvare in KB aziendale:\n"' + entry.content + '"\nTags: ' + JSON.stringify(entry.tags || []) +
+                '\n\nE\' un\'informazione aziendale utile da ricordare? Rispondi "OK" se si\', "SKIP" se e\' troppo generica, personale o irrilevante.',
+                'Filtro qualita\' knowledge base. Rispondi SOLO "OK" o "SKIP".'
+              );
+              if (autoKbReview && autoKbReview.response && autoKbReview.response.trim().toUpperCase().startsWith('SKIP')) {
+                logger.info('[AUTO-LEARN] KB entry skippata da Gemini:', entry.content.substring(0, 60));
+                shouldSave = false;
+              }
+            } catch(e) { /* Gemini non disponibile, salva comunque */ }
+          }
+          if (shouldSave) {
+            addKBEntry(entry.content, entry.tags || [], userId);
+            logger.info('[AUTO-LEARN] KB aggiornata:', entry.content.substring(0, 60));
+          }
         }
-      });
+      }
     }
   } catch(e) {
     // JSON parse error o API error, ignora silenziosamente
@@ -2674,7 +2754,24 @@ app.event('app_mention', async function(args) {
       }
     } catch(e) {}
 
-    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext, channelId: ch ? ch.id : null });
+    var reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext, channelId: ch ? ch.id : null });
+    // Gemini quality gate: rivede le risposte in canale pubblico
+    if (geminiModel && reply && reply.length > 30) {
+      try {
+        var qgReview = await askGemini(
+          'Rivedi questa risposta di un bot aziendale in un canale Slack pubblico.\n' +
+          'Domanda utente: ' + text.substring(0, 300) + '\n' +
+          'Risposta bot: ' + reply.substring(0, 1000) + '\n\n' +
+          'Controlla: tono professionale ma informale, niente dati sensibili esposti (password, token, IBAN), info coerente, niente hallucination evidenti.\n' +
+          'Se tutto ok rispondi SOLO "OK". Se c\'e\' un problema, suggerisci la correzione in 1 riga.',
+          'Revisore qualita\' comunicazione aziendale. Brevissimo, italiano.'
+        );
+        if (qgReview && qgReview.response && qgReview.response.trim() !== 'OK') {
+          logger.warn('[QUALITY-GATE] Gemini nota:', qgReview.response.substring(0, 100));
+          reply = reply + '\n\n_Nota interna: ' + qgReview.response.substring(0, 150) + '_';
+        }
+      } catch(e) { logger.error('Gemini quality gate error:', e.message); }
+    }
     const formatted = formatPerSlack(reply);
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
@@ -3492,6 +3589,28 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
       }
 
       var needs_review = data.confidence === 'low' || !data.client_name || !data.price_quoted;
+
+      // Gemini cross-check sull'estrazione
+      if (geminiModel && data.price_quoted) {
+        try {
+          var crossCheck = await askGemini(
+            'Controlla questa estrazione dati da un preventivo di agenzia digitale:\n' +
+            'Cliente: ' + (data.client_name || 'N/D') + '\n' +
+            'Progetto: ' + (data.project_name || 'N/D') + '\n' +
+            'Prezzo quotato: ' + data.price_quoted + '\n' +
+            'Costo interno: ' + (data.total_cost_interno || 'N/D') + '\n' +
+            'Markup: ' + (data.markup_pct || 'N/D') + '%\n' +
+            'Giorni: ' + (data.total_days || 'N/D') + '\n' +
+            'File: "' + file.name + '"\n\n' +
+            'Segnala SOLO se qualcosa e\' palesemente sbagliato (markup >500%, prezzo negativo, giorni >365). Se tutto plausibile rispondi "OK".',
+            'Revisore dati finanziari. Rispondi brevissimo in italiano.'
+          );
+          if (crossCheck && crossCheck.response && crossCheck.response.trim() !== 'OK') {
+            needs_review = true;
+            data.notes = (data.notes || '') + ' [Gemini: ' + crossCheck.response.substring(0, 100) + ']';
+          }
+        } catch(e) { logger.error('[CATALOGA] Gemini cross-check error:', e.message); }
+      }
 
       // Salva in Supabase
       await db.saveQuote({
