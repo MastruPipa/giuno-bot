@@ -2709,60 +2709,8 @@ async function indicizzaDriveTutti() {
   logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
 }
 
-// ─── Notifiche proattive ──────────────────────────────────────────────────────
-
-const notificheRiunioniInviate = new Set();
-const ultimaVerificaEmail = new Map();
-
-// Ogni 2 minuti: avvisa per riunioni imminenti (15 min prima)
-cron.schedule('*/2 * * * *', async function() {
-  const now = new Date();
-  const fra15 = new Date(now.getTime() + 15 * 60 * 1000);
-  for (const slackUserId of Object.keys(getUserTokens())) {
-    if (!getPrefs(slackUserId).notifiche_enabled) continue;
-    const cal = getCalendarPerUtente(slackUserId);
-    if (!cal) continue;
-    try {
-      const res = await cal.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: fra15.toISOString(), singleEvents: true, maxResults: 5 });
-      for (const evento of (res.data.items || [])) {
-        const key = slackUserId + '_' + evento.id + '_' + (evento.start.dateTime || evento.start.date);
-        if (notificheRiunioniInviate.has(key)) continue;
-        const oraInizio = new Date(evento.start.dateTime || evento.start.date);
-        const minuti = Math.round((oraInizio - now) / 60000);
-        if (minuti < 0) continue; // evento già passato, ignora
-        notificheRiunioniInviate.add(key);
-        const testo = 'Tra ' + minuti + ' min: *' + (evento.summary || 'Evento') + '*' + (evento.location ? ' — ' + evento.location : '');
-        await app.client.chat.postMessage({ channel: slackUserId, text: testo });
-      }
-    } catch(e) { await handleTokenScaduto(slackUserId, e); }
-  }
-}, { timezone: 'Europe/Rome' });
-
-// Ogni ora: pulisce le notifiche riunioni vecchie
-cron.schedule('0 * * * *', function() { notificheRiunioniInviate.clear(); });
-
-// Ogni 10 minuti: avvisa per nuove email importanti
-cron.schedule('*/10 * * * *', async function() {
-  for (const slackUserId of Object.keys(getUserTokens())) {
-    if (!getPrefs(slackUserId).notifiche_enabled) continue;
-    const gm = getGmailPerUtente(slackUserId);
-    if (!gm) continue;
-    try {
-      const ultima = ultimaVerificaEmail.get(slackUserId) || Math.floor((Date.now() - 10 * 60 * 1000) / 1000);
-      ultimaVerificaEmail.set(slackUserId, Math.floor(Date.now() / 1000));
-      const res = await gm.users.messages.list({ userId: 'me', maxResults: 3, q: 'is:unread is:important after:' + ultima });
-      if (!res.data.messages || res.data.messages.length === 0) continue;
-      const emails = await Promise.all(res.data.messages.map(async function(m) {
-        const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
-        const h = msg.data.payload.headers;
-        return { subject: getHeader(h, 'Subject'), from: getHeader(h, 'From') };
-      }));
-      let testo = 'Mail importante' + (emails.length > 1 ? 'i' : '') + ' ricevut' + (emails.length > 1 ? 'e' : 'a') + ':\n';
-      emails.forEach(function(e) { testo += '"' + e.subject + '" da ' + e.from + '\n'; });
-      await app.client.chat.postMessage({ channel: slackUserId, text: testo });
-    } catch(e) { await handleTokenScaduto(slackUserId, e); }
-  }
-});
+// ─── Notifiche proattive (disabilitate) ───────────────────────────────────────
+// Reminder calendario e push email rimossi per evitare spam.
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
@@ -2786,7 +2734,6 @@ cron.schedule('*/10 * * * *', async function() {
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
-  logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
   // Indicizza Drive subito all'avvio
   indicizzaDriveTutti().catch(function(e) { logger.error('Drive index startup error:', e.message); });
   logger.info('Giuno e online!');
