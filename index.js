@@ -845,6 +845,33 @@ const tools = [
       required: ['channel', 'question', 'options'],
     },
   },
+  // Preventivi (quotes)
+  {
+    name: 'search_quotes',
+    description: 'Cerca preventivi nel database. Filtra per cliente, progetto, anno, trimestre, stato, categoria. RBAC: admin/finance vedono tutto, manager vede prezzi ma non margini, member/restricted non vedono importi.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name:      { type: 'string', description: 'Nome cliente (ricerca parziale)' },
+        project_name:     { type: 'string', description: 'Nome progetto (ricerca parziale)' },
+        status:           { type: 'string', description: 'Stato: draft, sent, approved, rejected, expired' },
+        service_category: { type: 'string', description: 'Categoria servizio (ricerca parziale)' },
+        year:             { type: 'integer', description: 'Anno del preventivo' },
+        quarter:          { type: 'string', description: 'Trimestre: Q1, Q2, Q3, Q4' },
+        limit:            { type: 'integer', description: 'Max risultati (default 20)' },
+      },
+    },
+  },
+  {
+    name: 'get_rate_card',
+    description: 'Recupera la rate card (listino prezzi interni). Solo admin e finance possono accedere. Opzionalmente specifica una versione, altrimenti ritorna l\'ultima.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        version: { type: 'string', description: 'Versione specifica (opzionale, default: ultima)' },
+      },
+    },
+  },
   // Conferma azione critica
   {
     name: 'confirm_action',
@@ -1415,6 +1442,33 @@ async function eseguiTool(toolName, input, userId, userRole) {
     return kbDeleted ? { success: true } : { error: 'Entry non trovata.' };
   }
 
+  // Tool Preventivi (quotes) — RBAC
+  if (toolName === 'search_quotes') {
+    if (!checkPermission(userRole, 'view_quote_price') && userRole !== 'member') {
+      return { error: getAccessDeniedMessage(userRole) };
+    }
+    try {
+      var quotes = await db.searchQuotes(input);
+      // Filtra dati in base al ruolo
+      quotes = quotes.map(function(q) { return filterQuoteData(q, userRole); });
+      return { quotes: quotes, count: quotes.length };
+    } catch(e) { return { error: e.message }; }
+  }
+
+  if (toolName === 'get_rate_card') {
+    if (!checkPermission(userRole, 'view_rate_card')) {
+      return { error: getAccessDeniedMessage(userRole) };
+    }
+    try {
+      if (input.version === 'list') {
+        var cards = await db.listRateCards();
+        return { rate_cards: cards, count: cards.length };
+      }
+      var card = await db.getRateCard(input.version);
+      return card ? { rate_card: card } : { error: 'Nessuna rate card trovata.' };
+    } catch(e) { return { error: e.message }; }
+  }
+
   // Tool Gemini (dual-brain)
   if (toolName === 'ask_gemini') {
     var prompt = input.prompt;
@@ -1976,7 +2030,11 @@ const SYSTEM_PROMPT =
   "MAI condividere in output: password, token, chiavi API, numeri di carta, IBAN completi.\n" +
   "Per email e documenti, mostra solo oggetto/titolo e mittente, mai il corpo intero a meno che l'utente non lo chieda esplicitamente.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
+  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread), Preventivi (search_quotes), Rate Card (get_rate_card)\n\n" +
+  "PREVENTIVI E RATE CARD:\n" +
+  "- search_quotes: cerca preventivi per cliente, progetto, anno, stato. I dati visibili dipendono dal ruolo utente.\n" +
+  "- get_rate_card: recupera il listino prezzi interni (solo admin/finance).\n" +
+  "- RISPETTA SEMPRE le restrizioni del ruolo indicate in RUOLO UTENTE. Non mostrare dati che il ruolo non permette.\n\n" +
   "CONTESTO CANALE:\n" +
   "Quando vieni menzionato in un canale, ricevi automaticamente: nome canale, topic, messaggi recenti e membri presenti.\n" +
   "LEGGI SEMPRE la conversazione recente prima di rispondere. Capisci di cosa si sta parlando, quale progetto/cliente e' in discussione, chi ha detto cosa.\n" +

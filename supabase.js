@@ -635,6 +635,64 @@ async function initAll() {
 }
 
 // ============================================================================
+// QUOTES (Preventivi)
+// ============================================================================
+
+async function searchQuotes(query) {
+  if (!useSupabase) return [];
+  try {
+    var q = supabase.from('quotes').select('*');
+    if (query.client_name) q = q.ilike('client_name', '%' + query.client_name + '%');
+    if (query.project_name) q = q.ilike('project_name', '%' + query.project_name + '%');
+    if (query.status) q = q.eq('status', query.status);
+    if (query.service_category) q = q.ilike('service_category', '%' + query.service_category + '%');
+    if (query.year) q = q.eq('quote_year', query.year);
+    if (query.quarter) q = q.eq('quote_quarter', query.quarter);
+    q = q.order('date', { ascending: false }).limit(query.limit || 20);
+    var res = await q;
+    return res.data || [];
+  } catch(e) { logErr('searchQuotes', e); return []; }
+}
+
+async function saveQuote(quote) {
+  if (!useSupabase) return false;
+  try {
+    await supabase.from('quotes').upsert(quote);
+    return true;
+  } catch(e) { logErr('saveQuote', e); return false; }
+}
+
+async function getRateCard(version) {
+  if (!useSupabase) return null;
+  try {
+    var q = supabase.from('rate_card_history').select('*');
+    if (version) {
+      q = q.eq('version', version);
+    } else {
+      q = q.order('effective_from', { ascending: false }).limit(1);
+    }
+    var res = await q;
+    return res.data && res.data.length > 0 ? res.data[0] : null;
+  } catch(e) { logErr('getRateCard', e); return null; }
+}
+
+async function listRateCards() {
+  if (!useSupabase) return [];
+  try {
+    var res = await supabase.from('rate_card_history').select('id, version, effective_from, notes, created_at').order('effective_from', { ascending: false });
+    return res.data || [];
+  } catch(e) { logErr('listRateCards', e); return []; }
+}
+
+async function saveRateCard(rateCard) {
+  if (!useSupabase) return false;
+  try {
+    await supabase.from('rate_card_history').upsert(rateCard);
+    return true;
+  } catch(e) { logErr('saveRateCard', e); return false; }
+}
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 
@@ -678,4 +736,11 @@ module.exports = {
   // Channel Digests
   saveChannelDigest: saveChannelDigest,
   getChannelDigestCache: getChannelDigestCache,
+  // Quotes
+  searchQuotes: searchQuotes,
+  saveQuote: saveQuote,
+  // Rate Card
+  getRateCard: getRateCard,
+  listRateCards: listRateCards,
+  saveRateCard: saveRateCard,
 };

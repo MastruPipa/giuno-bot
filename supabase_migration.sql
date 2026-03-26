@@ -136,6 +136,43 @@ CREATE TABLE IF NOT EXISTS user_roles (
 CREATE INDEX IF NOT EXISTS idx_user_roles_slack_id
   ON user_roles(slack_user_id);
 
+-- 13. Preventivi (quotes)
+CREATE TABLE IF NOT EXISTS quotes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_name TEXT,
+  project_name TEXT,
+  service_category TEXT,
+  service_tags TEXT[] DEFAULT '{}',
+  deliverables TEXT[] DEFAULT '{}',
+  status TEXT,
+  date DATE,
+  quote_year INTEGER,
+  quote_quarter TEXT,
+  price_quoted NUMERIC,
+  total_days NUMERIC,
+  total_cost_interno NUMERIC,
+  markup_pct NUMERIC,
+  pricing_era TEXT,
+  resources JSONB DEFAULT '[]',
+  source_doc_id TEXT UNIQUE,
+  source_doc_name TEXT,
+  needs_review BOOLEAN DEFAULT false,
+  confidence TEXT,
+  notes TEXT,
+  cataloged_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 14. Storico rate card
+CREATE TABLE IF NOT EXISTS rate_card_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  version TEXT NOT NULL,
+  effective_from DATE,
+  resources JSONB NOT NULL DEFAULT '[]',
+  source_doc_id TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Abilita Row Level Security (opzionale, consigliato per produzione)
 -- ALTER TABLE user_tokens ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE user_prefs ENABLE ROW LEVEL SECURITY;
