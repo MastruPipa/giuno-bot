@@ -854,6 +854,82 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
 
 // ─── Schedule cron jobs ────────────────────────────────────────────────────────
 
+// ─── Unanswered Questions Monitor ─────────────────────────────────────────────
+
+async function monitoraDomandeInSospeso() {
+  logger.info('[MONITOR] Controllo domande in sospeso...');
+
+  try {
+    var channelsRes = await app.client.conversations.list({
+      limit: 50,
+      types: 'public_channel,private_channel',
+    });
+    var channels = (channelsRes.channels || [])
+      .filter(function(c) { return !c.is_archived; });
+
+    var dueOreFa = String(Math.floor(
+      (Date.now() - 2 * 60 * 60 * 1000) / 1000
+    ));
+
+    for (var ci = 0; ci < channels.length; ci++) {
+      var ch = channels[ci];
+      try {
+        var hist = await app.client.conversations.history({
+          channel: ch.id,
+          oldest: dueOreFa,
+          limit: 20,
+        });
+        var msgs = (hist.messages || []).filter(function(m) {
+          return !m.bot_id && m.type === 'message' && m.text &&
+            (m.text.includes('?') ||
+             m.text.toLowerCase().includes('qualcuno sa') ||
+             m.text.toLowerCase().includes('come si fa') ||
+             m.text.toLowerCase().includes('qualcuno può'));
+        });
+
+        for (var mi = 0; mi < msgs.length; mi++) {
+          var msg = msgs[mi];
+          if (msg.reply_count && msg.reply_count > 0) continue;
+
+          var kbResults = db.searchKB(msg.text.substring(0, 100));
+          if (kbResults.length === 0) continue;
+
+          try {
+            var Anthropic = require('@anthropic-ai/sdk');
+            var client = new Anthropic();
+            var res = await client.messages.create({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 200,
+              system: 'Hai trovato info rilevanti nella KB aziendale. ' +
+                'Rispondi in 2-3 righe massimo alla domanda. ' +
+                'Formato Slack: *grassetto* per punti chiave. MAI ** o ##. ' +
+                'Se le info non sono pertinenti alla domanda, rispondi solo "SKIP".',
+              messages: [{
+                role: 'user',
+                content: 'Domanda: ' + msg.text.substring(0, 200) +
+                  '\n\nKB:\n' + kbResults.slice(0, 2)
+                    .map(function(k) { return k.content; }).join('\n'),
+              }],
+            });
+
+            var reply = res.content[0].text.trim();
+            if (reply !== 'SKIP' && reply.length > 10) {
+              await app.client.chat.postMessage({
+                channel: ch.id,
+                thread_ts: msg.ts,
+                text: reply,
+              });
+              logger.info('[MONITOR] Risposta postata in #' + ch.name);
+            }
+          } catch(e) {}
+        }
+      } catch(e) {}
+    }
+  } catch(e) {
+    logger.error('[MONITOR] Errore:', e.message);
+  }
+}
+
 // ─── Memory Consolidation ─────────────────────────────────────────────────────
 
 async function consolidaMemorie() {
@@ -938,6 +1014,7 @@ function scheduleCrons() {
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
   cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
+  cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
   cron.schedule('0 3 * * 0', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica alle 3:00
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
@@ -961,6 +1038,7 @@ module.exports = {
   inviaOnboardingPersonalizzato: inviaOnboardingPersonalizzato,
   invitaNonConnessi: invitaNonConnessi,
   consolidaMemorie: consolidaMemorie,
+  monitoraDomandeInSospeso: monitoraDomandeInSospeso,
   getSlackBriefingData: getSlackBriefingData,
   buildBriefingUtente: buildBriefingUtente,
   MANSIONI_TEAM: MANSIONI_TEAM,

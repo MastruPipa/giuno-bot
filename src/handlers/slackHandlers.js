@@ -13,6 +13,8 @@ var { getUserTokens, generaLinkOAuth, rimuoviTokenUtente } = require('../service
 var db = require('../../supabase');
 var { route } = require('../orchestrator/router');
 var { catalogaConfirm } = require('../tools/registry');
+var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
+var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -127,6 +129,10 @@ app.event('app_mention', async function(args) {
       botMessages.set(posted.ts, { userId: event.user, text: formatted, channel: event.channel, timestamp: Date.now() });
       lastBotMessageByChannel.set(event.channel, { ts: posted.ts, userId: event.user, timestamp: Date.now() });
     }
+
+    // Background: detect deadlines and auto-summarize Drive links
+    detectAndSaveDeadlines(event.user, text, event.channel).catch(function(e) {});
+    autoSummarizeDriveLinks(event.user, event.text, event.channel, threadTs).catch(function(e) {});
   } catch(err) {
     await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
@@ -167,6 +173,8 @@ app.message(async function(args) {
         botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
         lastBotMessageByChannel.set(message.channel, { ts: posted.ts, userId: message.user, timestamp: Date.now() });
       }
+      // Background: detect deadlines
+      detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
     } catch(err) { logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
     return;
   }
