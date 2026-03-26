@@ -264,6 +264,31 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (text === 'studia' || text.startsWith('studia ')) {
+    var studiaRole = await getUserRole(command.user_id);
+    if (studiaRole !== 'admin') {
+      await respond({ text: 'Solo Antonio e Corrado possono avviare lo studio.', response_type: 'ephemeral' });
+      return;
+    }
+    var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
+    runKnowledgeEngine(command.user_id).catch(function(e) { logger.error('[KB-ENGINE]', e.message); });
+    await respond({ text: 'Studio avviato — ricevi il report quando finisco.', response_type: 'ephemeral' });
+    return;
+  }
+
+  if (text === 'preventivo' || text.startsWith('preventivo ')) {
+    try {
+      var prevText = text.replace(/^preventivo\s*/, '').trim();
+      if (!prevText) {
+        await respond({ text: 'Specifica cosa quotare: /giuno preventivo branding per ClienteX', response_type: 'ephemeral' });
+        return;
+      }
+      var reply = await route(command.user_id, 'Fammi un preventivo per: ' + prevText);
+      await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
+    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (text === 'glossario' || text.startsWith('glossario ')) {
     var searchTerm = text.replace(/^glossario\s*/, '').trim();
     var glossary = db.getGlossaryCache();

@@ -1026,6 +1026,10 @@ function scheduleCrons() {
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
   cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
   cron.schedule('0 3 * * 0', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica alle 3:00
+  cron.schedule('0 2 * * *', function() {
+    var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
+    runKnowledgeEngine('system').catch(function(e) { logger.error('[KB-ENGINE] Errore cron:', e.message); });
+  }, { timezone: 'Europe/Rome' }); // ogni notte alle 2:00
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');

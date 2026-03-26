@@ -11,6 +11,7 @@ var INTENTS = {
   THREAD_SUMMARY:   'THREAD_SUMMARY',
   DAILY_DIGEST:     'DAILY_DIGEST',
   CLIENT_RETRIEVAL: 'CLIENT_RETRIEVAL',
+  QUOTE_SUPPORT:    'QUOTE_SUPPORT',
   GENERAL:          'GENERAL',
 };
 
@@ -34,10 +35,24 @@ var RULES = [
     ],
   },
   {
+    intent: INTENTS.QUOTE_SUPPORT,
+    keywords: [
+      'quotare', 'quanto costerebbe', 'stima costi',
+      'quanto costa fare', 'quanto quotare', 'prezzo per un',
+      'offerta per', 'budget per un',
+    ],
+    // Anti-noise: requires service type, deliverable, client, or duration
+    validate: function(msg) {
+      return /brand|video|social|web|sito|evento|campagna|foto|design|grafica|app|logo|content|copy|seo|adv|shoot|presentazion/i.test(msg) ||
+        /settiman|mes[ei]|giorn|durata|consegna|timeline/i.test(msg) ||
+        /per\s+[A-Z][a-z]/i.test(msg); // "per NomeCliente"
+    },
+  },
+  {
     intent: INTENTS.CLIENT_RETRIEVAL,
     keywords: [
       'dimmi di', 'info su', 'cosa sai di', 'cliente', 'progetto',
-      'preventivo per', 'lavoriamo con', 'chi è', 'storia di',
+      'lavoriamo con', 'chi è', 'storia di',
       'dossier', 'cerca tutto su',
     ],
   },
@@ -53,6 +68,8 @@ async function classifyIntent(message) {
     var rule = RULES[i];
     for (var j = 0; j < rule.keywords.length; j++) {
       if (msgLow.includes(rule.keywords[j])) {
+        // Anti-noise validation if defined
+        if (rule.validate && !rule.validate(msgLow)) continue;
         logger.info('[INTENT] Keyword match → ' + rule.intent);
         return rule.intent;
       }
@@ -71,6 +88,7 @@ async function classifyIntent(message) {
         'THREAD_SUMMARY — recap/riassunto thread o canale Slack\n' +
         'DAILY_DIGEST — briefing giornaliero, agenda, mail, piano del giorno\n' +
         'CLIENT_RETRIEVAL — info su un cliente, progetto o preventivo specifico\n' +
+        'QUOTE_SUPPORT — richiesta di preventivo, quotazione, stima costi per un progetto\n' +
         'GENERAL — tutto il resto',
       messages: [{ role: 'user', content: message }],
     });

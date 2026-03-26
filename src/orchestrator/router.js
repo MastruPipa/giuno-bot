@@ -13,6 +13,7 @@ function getThreadSummaryAgent()   { return require('../agents/threadSummaryAgen
 function getDailyDigestAgent()     { return require('../agents/dailyDigestAgent'); }
 function getClientRetrievalAgent() { return require('../agents/clientRetrievalAgent'); }
 function getGeneralAssistantAgent(){ return require('../agents/generalAssistantAgent'); }
+function getQuoteSupportAgent()   { return require('../agents/quoteSupportAgent'); }
 
 /**
  * route — main entry point for all user messages.
@@ -44,6 +45,9 @@ async function route(userId, message, options) {
         break;
       case INTENTS.CLIENT_RETRIEVAL:
         reply = await getClientRetrievalAgent().run(message, ctx);
+        break;
+      case INTENTS.QUOTE_SUPPORT:
+        reply = await getQuoteSupportAgent().run(message, ctx);
         break;
       case INTENTS.GENERAL:
       default:
