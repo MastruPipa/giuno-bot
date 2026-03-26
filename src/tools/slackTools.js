@@ -424,7 +424,7 @@ async function execute(toolName, input, userId) {
       };
     } catch(e) {
       logger.error('[SEARCH-SLACK] Errore:', e.message);
-      return { error: 'Errore ricerca Slack: ' + e.message + '. Riprova con termini diversi.' };
+      return { error: 'Ricerca non disponibile. Usa summarize_channel per leggere i canali oppure list_channels + get_pinned_messages.' };
     }
   }
 
