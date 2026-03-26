@@ -21,8 +21,12 @@ async function main() {
   var app = slackService.app;
 
   // Load token cache from Supabase/JSON before anything else
-  await db.initAll();
-  logger.info('Token cache caricata');
+  try {
+    await db.initAll();
+    logger.info('Token cache caricata');
+  } catch(e) {
+    logger.error('Errore caricamento cache (app parte comunque):', e.message);
+  }
 
   // Inject Bolt app into googleAuthService (needed for token-expiry DMs)
   googleAuth.setSlackApp(app);
