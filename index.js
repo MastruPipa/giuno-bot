@@ -854,13 +854,14 @@ const tools = [
   // Google Sheets
   {
     name: 'read_sheet',
-    description: 'Legge il contenuto di un Google Sheet. Restituisce righe e colonne come array di array. Usa search_drive prima per trovare il file ID.',
+    description: 'Legge il contenuto di un Google Sheet. Restituisce righe come array di array. Se non specifichi sheet_name, restituisce la lista dei fogli disponibili + anteprima del primo. Usa search_drive prima per trovare il file ID.',
     input_schema: {
       type: 'object',
       properties: {
-        sheet_id:   { type: 'string', description: 'ID del Google Sheet (dalla URL o da search_drive)' },
-        range:      { type: 'string', description: 'Range da leggere, es. "A1:Z100" (default "A1:Z100")' },
-        sheet_name: { type: 'string', description: 'Nome del foglio specifico (opzionale, default primo foglio)' },
+        sheet_id:    { type: 'string', description: 'ID del Google Sheet (dalla URL o da search_drive)' },
+        range:       { type: 'string', description: 'Range da leggere, es. "A1:Z100" (default "A1:Z100")' },
+        sheet_name:  { type: 'string', description: 'Nome del foglio specifico. Se omesso, mostra la lista dei fogli disponibili.' },
+        list_sheets: { type: 'boolean', description: 'Se true, restituisce solo la lista dei fogli senza leggere dati (default false)' },
       },
       required: ['sheet_id'],
     },
@@ -1432,9 +1433,29 @@ async function eseguiTool(toolName, input, userId, userRole) {
     var sheets = getSheetPerUtente(userId);
     if (!sheets) return { error: 'Google Sheets non collegato. Scrivi "collega il mio Google".' };
     try {
-      var range = input.sheet_name
-        ? input.sheet_name + '!' + (input.range || 'A1:Z100')
+      // Prima: recupera metadati del file (lista fogli)
+      var meta = await sheets.spreadsheets.get({
+        spreadsheetId: input.sheet_id,
+        fields: 'sheets.properties',
+      });
+      var sheetNames = (meta.data.sheets || []).map(function(s) {
+        return { name: s.properties.title, index: s.properties.index, rows: s.properties.gridProperties.rowCount, cols: s.properties.gridProperties.columnCount };
+      });
+
+      // Se list_sheets o nessun sheet_name specificato, mostra i fogli disponibili + anteprima primo
+      if (input.list_sheets) {
+        return { sheet_id: input.sheet_id, sheets: sheetNames, sheet_count: sheetNames.length };
+      }
+
+      var targetSheet = input.sheet_name;
+      if (!targetSheet && sheetNames.length > 0) {
+        targetSheet = sheetNames[0].name;
+      }
+
+      var range = targetSheet
+        ? "'" + targetSheet.replace(/'/g, "''") + "'!" + (input.range || 'A1:Z100')
         : (input.range || 'A1:Z100');
+
       var sheetRes = await sheets.spreadsheets.values.get({
         spreadsheetId: input.sheet_id,
         range: range,
@@ -1442,7 +1463,9 @@ async function eseguiTool(toolName, input, userId, userRole) {
       var rows = sheetRes.data.values || [];
       return {
         sheet_id: input.sheet_id,
+        current_sheet: targetSheet,
         range: range,
+        sheets_available: sheetNames.map(function(s) { return s.name; }),
         rows: rows,
         row_count: rows.length,
         preview: rows.slice(0, 5),
