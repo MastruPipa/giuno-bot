@@ -276,6 +276,40 @@ async function autoLearn(userId, userMessage, botReply) {
         }
       }
     }
+    // Auto-learn glossary terms
+    var hasInternalTerms =
+      userMessage.includes('cioè') || userMessage.includes('nel senso') ||
+      userMessage.includes('si chiama') || userMessage.includes('lo chiamiamo') ||
+      userMessage.includes('termine') || userMessage.includes('significa');
+    if (hasInternalTerms) {
+      try {
+        var glossaryCheck = await client.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 200,
+          system: 'Analizza questa conversazione aziendale.\n' +
+            'Identifica SOLO nuovi termini gergali, soprannomi o abbreviazioni specifiche dell\'azienda NON comuni.\n' +
+            'Rispondi in JSON: {"terms":[{"term":"string","definition":"string","synonyms":["array"],"category":"string"}]}\n' +
+            'Se non ci sono nuovi termini: {"terms":[]}\n' +
+            'NON includere termini già comuni in italiano.',
+          messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 300) + '\n\nBOT: ' + botReply.substring(0, 300) }],
+        });
+        var gtText = glossaryCheck.content[0].text.trim();
+        var gtJson = gtText.match(/\{[\s\S]*\}/);
+        if (gtJson) {
+          var gtData = JSON.parse(gtJson[0]);
+          if (gtData.terms && gtData.terms.length > 0) {
+            for (var gti = 0; gti < gtData.terms.length; gti++) {
+              var gt = gtData.terms[gti];
+              var existing = db.searchGlossary(gt.term);
+              if (existing.length === 0 && gt.term && gt.definition) {
+                db.addGlossaryTerm(gt.term, gt.definition, gt.synonyms || [], gt.category || 'gergo_interno', userId);
+                logger.info('[AUTO-LEARN] Nuovo termine glossario:', gt.term);
+              }
+            }
+          }
+        }
+      } catch(e) { /* silenzioso */ }
+    }
   } catch(e) {
     if (e.name !== 'SyntaxError') logger.error('[AUTO-LEARN] Errore:', e.message);
   }
@@ -334,6 +368,19 @@ async function askGiuno(userId, userMessage, options) {
     if (profile.clienti && profile.clienti.length > 0) contextData += 'Clienti: ' + profile.clienti.join(', ') + '\n';
     if (profile.competenze && profile.competenze.length > 0) contextData += 'Competenze: ' + profile.competenze.join(', ') + '\n';
     if (profile.stile_comunicativo) contextData += 'Stile: ' + profile.stile_comunicativo + '\n';
+  }
+
+  // Glossary injection
+  var glossaryMatches = db.searchGlossary(resolvedMessage);
+  if (glossaryMatches.length > 0) {
+    contextData += '\nGLOSSARIO AZIENDALE:\n';
+    glossaryMatches.slice(0, 5).forEach(function(g) {
+      contextData += '• ' + g.term + ': ' + g.definition;
+      if (g.synonyms && g.synonyms.length > 0) {
+        contextData += ' (sinonimi: ' + g.synonyms.join(', ') + ')';
+      }
+      contextData += '\n';
+    });
   }
 
   var messageWithContext = contextData

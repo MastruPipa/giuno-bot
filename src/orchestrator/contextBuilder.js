@@ -62,6 +62,10 @@ async function buildContext(params) {
   // Channel context
   var channelContext = options.channelContext || null;
 
+  // Glossary matches
+  var glossaryMatches = [];
+  try { glossaryMatches = db.searchGlossary(message) || []; } catch(e) {}
+
   return {
     userId:           userId,
     userRole:         userRole,
@@ -81,6 +85,12 @@ async function buildContext(params) {
     currentQuarter:   currentQuarter,
     temporalNote:     'Siamo nel ' + currentYear + ' ' + currentQuarter +
                       '. Informazioni più recenti hanno priorità su quelle vecchie.',
+    glossaryContext:  glossaryMatches.length > 0
+      ? glossaryMatches.slice(0, 5).map(function(g) {
+          return g.term + ': ' + g.definition +
+            (g.synonyms && g.synonyms.length > 0 ? ' (sinonimi: ' + g.synonyms.join(', ') + ')' : '');
+        }).join('\n')
+      : null,
   };
 }
 

@@ -264,6 +264,40 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (text === 'glossario' || text.startsWith('glossario ')) {
+    var searchTerm = text.replace(/^glossario\s*/, '').trim();
+    var glossary = db.getGlossaryCache();
+
+    if (searchTerm) {
+      var found = db.searchGlossary(searchTerm);
+      if (found.length === 0) {
+        await respond({ text: 'Termine "' + searchTerm + '" non trovato nel glossario.', response_type: 'ephemeral' });
+      } else {
+        var gMsg = found.map(function(g) {
+          var t = '*' + g.term + '*: ' + g.definition;
+          if (g.synonyms && g.synonyms.length > 0) t += '\n_Sinonimi: ' + g.synonyms.join(', ') + '_';
+          return t;
+        }).join('\n\n');
+        await respond({ text: gMsg, response_type: 'ephemeral' });
+      }
+    } else {
+      var byCategory = {};
+      glossary.forEach(function(g) {
+        var cat = g.category || 'altro';
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(g.term);
+      });
+      var gMsg = '*Glossario Katania Studio:*\n\n';
+      Object.keys(byCategory).forEach(function(cat) {
+        gMsg += '*' + cat.replace(/_/g, ' ') + ':*\n';
+        gMsg += byCategory[cat].join(', ') + '\n\n';
+      });
+      gMsg += '_Cerca un termine specifico con /giuno glossario [termine]_';
+      await respond({ text: gMsg, response_type: 'ephemeral' });
+    }
+    return;
+  }
+
   if (text === 'libero' || text.startsWith('libero ')) {
     try {
       var datePart = text.replace(/^libero\s*/, '').trim();

@@ -706,6 +706,51 @@ async function saveChannelDigest(channelId, digest, lastTs) {
 function getChannelDigestCache() { return _channelDigestCache || {}; }
 
 // ============================================================================
+// GLOSSARY
+// ============================================================================
+
+var _glossaryCache = null;
+
+async function loadGlossary() {
+  if (!useSupabase) { _glossaryCache = []; return []; }
+  try {
+    var res = await supabase.from('glossary').select('*');
+    _glossaryCache = res.data || [];
+    return _glossaryCache;
+  } catch(e) { logErr('loadGlossary', e); _glossaryCache = []; return []; }
+}
+
+async function addGlossaryTerm(term, definition, synonyms, category, addedBy) {
+  if (!useSupabase) return null;
+  try {
+    var res = await supabase.from('glossary').insert({
+      term: term,
+      definition: definition,
+      synonyms: synonyms || [],
+      category: category || 'altro',
+      added_by: addedBy,
+      source: 'auto-learn',
+    });
+    if (_glossaryCache) {
+      _glossaryCache.push({ term: term, definition: definition, synonyms: synonyms || [], category: category || 'altro' });
+    }
+    return res.data;
+  } catch(e) { logErr('addGlossaryTerm', e); return null; }
+}
+
+function searchGlossary(query) {
+  if (!_glossaryCache) return [];
+  var q = query.toLowerCase();
+  return _glossaryCache.filter(function(g) {
+    return g.term.toLowerCase().includes(q) ||
+      (g.synonyms || []).some(function(s) { return s.toLowerCase().includes(q); }) ||
+      g.definition.toLowerCase().includes(q);
+  });
+}
+
+function getGlossaryCache() { return _glossaryCache || []; }
+
+// ============================================================================
 // INIT: carica tutti i dati all'avvio
 // ============================================================================
 
@@ -721,6 +766,7 @@ async function initAll() {
     loadDriveIndex(),
     loadChannelMap(),
     loadChannelDigests(),
+    loadGlossary(),
   ]);
   return {
     tokens: results[0],
@@ -852,4 +898,9 @@ module.exports = {
   getRateCard: getRateCard,
   listRateCards: listRateCards,
   saveRateCard: saveRateCard,
+  // Glossary
+  loadGlossary: loadGlossary,
+  addGlossaryTerm: addGlossaryTerm,
+  searchGlossary: searchGlossary,
+  getGlossaryCache: getGlossaryCache,
 };
