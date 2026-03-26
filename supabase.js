@@ -510,6 +510,102 @@ async function saveFeedback(ts, userId, feedback, text) {
 }
 
 // ============================================================================
+// CHANNEL MAP (canale → progetto/cliente)
+// ============================================================================
+
+var _channelMapCache = null;
+
+async function loadChannelMap() {
+  if (!useSupabase) {
+    _channelMapCache = readJSON('channel_map.json', {});
+    return _channelMapCache;
+  }
+  try {
+    var res = await supabase.from('channel_map').select('*');
+    var map = {};
+    if (res.data) res.data.forEach(function(r) {
+      map[r.channel_id] = {
+        channel_name: r.channel_name,
+        cliente: r.cliente,
+        progetto: r.progetto,
+        tags: r.tags || [],
+        note: r.note,
+        updated_at: r.updated_at,
+      };
+    });
+    _channelMapCache = map;
+    return map;
+  } catch(e) { logErr('loadChannelMap', e); _channelMapCache = {}; return {}; }
+}
+
+async function saveChannelMapping(channelId, data) {
+  if (!_channelMapCache) _channelMapCache = {};
+  _channelMapCache[channelId] = data;
+  if (!useSupabase) {
+    writeJSON('channel_map.json', _channelMapCache);
+    return;
+  }
+  try {
+    await supabase.from('channel_map').upsert({
+      channel_id: channelId,
+      channel_name: data.channel_name,
+      cliente: data.cliente,
+      progetto: data.progetto,
+      tags: data.tags || [],
+      note: data.note || null,
+      updated_at: new Date().toISOString(),
+    });
+  } catch(e) { logErr('saveChannelMapping', e); }
+}
+
+function getChannelMapCache() { return _channelMapCache || {}; }
+
+// ============================================================================
+// CHANNEL DIGEST (riassunti periodici dei canali)
+// ============================================================================
+
+var _channelDigestCache = null;
+
+async function loadChannelDigests() {
+  if (!useSupabase) {
+    _channelDigestCache = readJSON('channel_digests.json', {});
+    return _channelDigestCache;
+  }
+  try {
+    var res = await supabase.from('channel_digests').select('*');
+    var digests = {};
+    if (res.data) res.data.forEach(function(r) {
+      digests[r.channel_id] = {
+        last_digest: r.last_digest,
+        last_ts: r.last_ts,
+        updated_at: r.updated_at,
+      };
+    });
+    _channelDigestCache = digests;
+    return digests;
+  } catch(e) { logErr('loadChannelDigests', e); _channelDigestCache = {}; return {}; }
+}
+
+async function saveChannelDigest(channelId, digest, lastTs) {
+  if (!_channelDigestCache) _channelDigestCache = {};
+  _channelDigestCache[channelId] = { last_digest: digest, last_ts: lastTs, updated_at: new Date().toISOString() };
+  if (!useSupabase) {
+    writeJSON('channel_digests.json', _channelDigestCache);
+    return;
+  }
+  try {
+    await supabase.from('channel_digests').upsert({
+      channel_id: channelId,
+      last_digest: digest,
+      last_ts: lastTs,
+      updated_at: new Date().toISOString(),
+    });
+  } catch(e) { logErr('saveChannelDigest', e); }
+}
+
+function getChannelDigestCache() { return _channelDigestCache || {}; }
+
+// ============================================================================
 // INIT: carica tutti i dati all'avvio
 // ============================================================================
 
@@ -523,6 +619,8 @@ async function initAll() {
     loadKB(),
     loadStandup(),
     loadDriveIndex(),
+    loadChannelMap(),
+    loadChannelDigests(),
   ]);
   return {
     tokens: results[0],
@@ -574,4 +672,10 @@ module.exports = {
   getDriveCache: getDriveCache,
   // Feedback
   saveFeedback: saveFeedback,
+  // Channel Map
+  saveChannelMapping: saveChannelMapping,
+  getChannelMapCache: getChannelMapCache,
+  // Channel Digests
+  saveChannelDigest: saveChannelDigest,
+  getChannelDigestCache: getChannelDigestCache,
 };
