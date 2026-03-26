@@ -8,7 +8,7 @@ var { getSheetPerUtente } = require('../services/googleAuthService');
 var { withTimeout } = require('../utils/timeout');
 var db = require('../../supabase');
 
-var CRM_SHEET_ID = '1Mal6SxBOKgpzxu8mXs7EH3KdXX74bg0IJNHkj0Z1QyY';
+var CRM_SHEET_ID = '1xx2GC5AHJLNCUgZZAaMEFDK8mdalEcgFzJFXpdY9db0';
 var CORRADO_SLACK_ID = 'U053D9B7WNL';
 
 // ─── Column mapping: Sheet header → leads table field ────────────────────────
