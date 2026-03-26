@@ -246,9 +246,8 @@ async function askGiuno(userId, userMessage, options) {
 
   // OAuth link injection
   var msgLow = (resolvedMessage || '').toLowerCase();
-  if ((msgLow.includes('collega') || msgLow.includes('connetti') || msgLow.includes('autorizza')) &&
-      (msgLow.includes('google') || msgLow.includes('calendar') || msgLow.includes('gmail') ||
-       msgLow.includes('account') || msgLow.includes('email') || msgLow.includes('mail'))) {
+  if ((/colleg[a-z]|connett[a-z]|autorizz[a-z]/i.test(msgLow)) &&
+      (/google|calendar|gmail|account|email|mail/i.test(msgLow))) {
     var oauthUrl = generaLinkOAuth(userId);
     contextData += '\nLINK_OAUTH "<' + oauthUrl + '|Collega il tuo Google>"\n';
   }
