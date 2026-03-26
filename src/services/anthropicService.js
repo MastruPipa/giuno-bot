@@ -231,6 +231,20 @@ async function autoLearn(userId, userMessage, botReply) {
       for (var ki = 0; ki < analysis.kb.length; ki++) {
         var entry = analysis.kb[ki];
         if (entry.content && entry.content.length > 5) {
+          // Non sovrascrivere info ufficiali (ruoli, rate card, organigramma)
+          var contentLow = entry.content.toLowerCase();
+          var isAboutRoles = contentLow.includes('ceo') ||
+            contentLow.includes('coo') ||
+            contentLow.includes('gm') ||
+            contentLow.includes('cco') ||
+            contentLow.includes('organigramma') ||
+            contentLow.includes('rate card') ||
+            contentLow.includes('€/h') ||
+            contentLow.includes('ruolo');
+          if (isAboutRoles) {
+            logger.info('[AUTO-LEARN] Skip KB entry su ruoli/rate card — info ufficiali protette:', entry.content.substring(0, 60));
+            continue;
+          }
           var shouldSave = true;
           try {
             var autoKbReview = await askGemini(

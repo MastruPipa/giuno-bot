@@ -505,6 +505,16 @@ async function digerisciCanali() {
         if (analysis.kb && analysis.kb.length > 0) {
           analysis.kb.forEach(function(entry) {
             if (entry.content && entry.content.length > 5) {
+              var cLow = entry.content.toLowerCase();
+              var isAboutRoles = cLow.includes('ceo') ||
+                cLow.includes('coo') || cLow.includes('gm') ||
+                cLow.includes('cco') || cLow.includes('organigramma') ||
+                cLow.includes('rate card') || cLow.includes('€/h') ||
+                cLow.includes('ruolo');
+              if (isAboutRoles) {
+                logger.info('[CHANNEL-DIGEST] Skip KB su ruoli/rate card — protetta:', entry.content.substring(0, 60));
+                return;
+              }
               var tags = (entry.tags || []);
               if (channelMapping.cliente) tags.push('cliente:' + channelMapping.cliente.toLowerCase());
               if (channelMapping.progetto) tags.push('progetto:' + channelMapping.progetto.toLowerCase());
