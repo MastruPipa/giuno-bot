@@ -244,15 +244,10 @@ async function execute(toolName, input, userId, userRole) {
     if (sources.includes('slack')) {
       try {
         var { app } = require('../services/slackService');
-        var slkClient = null;
-        try {
-          var BoltWebClient = require('@slack/bolt').WebClient;
-          if (process.env.SLACK_USER_TOKEN) slkClient = new BoltWebClient(process.env.SLACK_USER_TOKEN);
-        } catch(we) {}
-        var searchCl = slkClient || app.client;
-        var slkOpts = { query: input.query, count: 15, sort: 'timestamp', sort_dir: 'desc' };
-        if (!slkClient) slkOpts.token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
-        var slkRes = await searchCl.search.messages(slkOpts);
+        var slkRes = await app.client.search.messages({
+          token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN,
+          query: input.query, count: 15, sort: 'timestamp', sort_dir: 'desc',
+        });
         var matches = (slkRes.messages && slkRes.messages.matches) || [];
         if (matches.length > 0) {
           results.slack = matches.map(function(m) {

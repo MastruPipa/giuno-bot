@@ -9,22 +9,9 @@ require('dotenv').config();
 var db = require('../../supabase');
 var logger = require('../utils/logger');
 var { SLACK_FORMAT_RULES } = require('../utils/slackFormat');
-// Separate WebClient for user token (needed for search API)
-var _userClient = null;
-function getUserClient() {
-  if (_userClient) return _userClient;
-  var token = process.env.SLACK_USER_TOKEN;
-  if (!token) return null;
-  try {
-    // @slack/bolt re-exports WebClient
-    var WebClient = require('@slack/bolt').WebClient;
-    _userClient = new WebClient(token);
-    logger.info('[SLACK-TOOLS] WebClient creato con SLACK_USER_TOKEN');
-    return _userClient;
-  } catch(e) {
-    logger.warn('[SLACK-TOOLS] WebClient da bolt non disponibile, uso https fallback');
-    return null;
-  }
+// Search token — use SLACK_USER_TOKEN for search APIs
+function getSearchToken() {
+  return process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
 }
 
 // Lazy-loaded to avoid circular deps at module load time
@@ -402,27 +389,19 @@ async function execute(toolName, input, userId) {
     try {
       var max = input.max || 20;
 
-      // Try user token WebClient first, fall back to app.client
-      var userClient = getUserClient();
-      var searchClient = userClient || app.client;
-
       var allMatches = [];
       var page = 1;
       var totalFetched = 0;
       while (totalFetched < max) {
         var pageCount = Math.min(max - totalFetched, 100);
-        var searchOpts = {
+        var res = await app.client.search.messages({
+          token: getSearchToken(),
           query: input.query,
           count: pageCount,
           page: page,
           sort: 'timestamp',
           sort_dir: 'desc',
-        };
-        // If using app.client (no user client), pass token explicitly
-        if (!userClient) {
-          searchOpts.token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
-        }
-        var res = await searchClient.search.messages(searchOpts);
+        });
         var matches = (res.messages && res.messages.matches) || [];
         if (matches.length === 0) break;
         allMatches = allMatches.concat(matches);
@@ -597,18 +576,13 @@ async function execute(toolName, input, userId) {
   if (toolName === 'search_files') {
     try {
       var fileMax = input.max || 10;
-      var fileUserClient = getUserClient();
-      var fileSearchClient = fileUserClient || app.client;
-      var fileOpts = {
+      var fileRes = await app.client.search.files({
+        token: getSearchToken(),
         query: input.query,
         count: fileMax,
         sort: 'timestamp',
         sort_dir: 'desc',
-      };
-      if (!fileUserClient) {
-        fileOpts.token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
-      }
-      var fileRes = await fileSearchClient.search.files(fileOpts);
+      });
       var files = (fileRes.files && fileRes.files.matches) || [];
       return {
         results: files.map(function(f) {
