@@ -654,6 +654,14 @@ async function searchQuotes(query) {
   } catch(e) { logErr('searchQuotes', e); return []; }
 }
 
+async function quoteExistsByDocId(sourceDocId) {
+  if (!useSupabase) return false;
+  try {
+    var res = await supabase.from('quotes').select('id').eq('source_doc_id', sourceDocId).single();
+    return !!(res.data);
+  } catch(e) { return false; }
+}
+
 async function saveQuote(quote) {
   if (!useSupabase) return false;
   try {
@@ -739,6 +747,7 @@ module.exports = {
   // Quotes
   searchQuotes: searchQuotes,
   saveQuote: saveQuote,
+  quoteExistsByDocId: quoteExistsByDocId,
   // Rate Card
   getRateCard: getRateCard,
   listRateCards: listRateCards,
