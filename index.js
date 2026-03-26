@@ -1934,6 +1934,11 @@ const SYSTEM_PROMPT =
   "Per email e documenti, mostra solo oggetto/titolo e mittente, mai il corpo intero a meno che l'utente non lo chieda esplicitamente.\n\n" +
   "HAI ACCESSO A:\n" +
   "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
+  "CONTESTO CANALE:\n" +
+  "Quando vieni menzionato in un canale, ricevi automaticamente: nome canale, topic, messaggi recenti e membri presenti.\n" +
+  "LEGGI SEMPRE la conversazione recente prima di rispondere. Capisci di cosa si sta parlando, quale progetto/cliente e' in discussione, chi ha detto cosa.\n" +
+  "Rispondi nel contesto della discussione in corso, come un collega che segue la conversazione.\n" +
+  "Non chiedere info che sono gia' visibili nei messaggi recenti del canale.\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
@@ -2020,6 +2025,11 @@ async function askGiuno(userId, userMessage, options) {
 
   if (options.mentionedBy) {
     contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
+  }
+
+  // Contesto canale (nome, topic, messaggi recenti, membri)
+  if (options.channelContext) {
+    contextData += '\n' + options.channelContext + '\n';
   }
 
   // Inietta profilo utente
@@ -2229,7 +2239,48 @@ app.event('app_mention', async function(args) {
   stats.messagesHandled++;
   try {
     const text  = event.text.replace(/<@[^>]+>/g, '').trim();
-    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs });
+
+    // Raccogli contesto del canale: info, messaggi recenti, partecipanti
+    var channelContext = '';
+    try {
+      var chInfo = await app.client.conversations.info({ channel: event.channel });
+      var ch = chInfo.channel || {};
+      channelContext += 'CANALE: #' + (ch.name || 'sconosciuto');
+      if (ch.topic && ch.topic.value) channelContext += '\nTopic: ' + ch.topic.value;
+      if (ch.purpose && ch.purpose.value) channelContext += '\nDescrizione: ' + ch.purpose.value;
+      channelContext += '\n';
+    } catch(e) {}
+
+    // Messaggi recenti nel thread (se in thread) o nel canale
+    try {
+      var recentMsgs;
+      if (event.thread_ts) {
+        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 15 });
+        recentMsgs = (threadRes.messages || []).slice(-15);
+      } else {
+        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 10 });
+        recentMsgs = (histRes.messages || []).reverse();
+      }
+      if (recentMsgs.length > 0) {
+        channelContext += '\nCONVERSAZIONE RECENTE NEL CANALE:\n';
+        for (var rm of recentMsgs) {
+          if (rm.ts === event.ts) continue; // salta il messaggio corrente
+          var who = rm.user ? '<@' + rm.user + '>' : 'bot';
+          channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
+        }
+      }
+    } catch(e) {}
+
+    // Membri del canale
+    try {
+      var membersRes = await app.client.conversations.members({ channel: event.channel, limit: 50 });
+      var memberIds = (membersRes.members || []).filter(function(id) { return id !== event.user; });
+      if (memberIds.length > 0) {
+        channelContext += '\nMEMBRI PRESENTI NEL CANALE: ' + memberIds.map(function(id) { return '<@' + id + '>'; }).join(', ') + '\n';
+      }
+    } catch(e) {}
+
+    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext });
     const formatted = formatPerSlack(reply);
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
