@@ -239,6 +239,80 @@ function deleteMemory(userId, memoryId) {
   return false;
 }
 
+// ─── Profili utente ─────────────────────────────────────────────────────────
+
+const PROFILES_FILE = 'user_profiles.json';
+let userProfiles = {};
+try { userProfiles = JSON.parse(fs.readFileSync(PROFILES_FILE)); } catch(e) {}
+
+function salvaProfiles() {
+  try { fs.writeFileSync(PROFILES_FILE, JSON.stringify(userProfiles, null, 2)); } catch(e) {}
+}
+
+function getProfile(userId) {
+  if (!userProfiles[userId]) {
+    userProfiles[userId] = {
+      ruolo: null,
+      progetti: [],
+      clienti: [],
+      competenze: [],
+      stile_comunicativo: null,
+      note: [],
+      ultimo_aggiornamento: null,
+    };
+  }
+  return userProfiles[userId];
+}
+
+function updateProfile(userId, updates) {
+  var profile = getProfile(userId);
+  if (updates.ruolo) profile.ruolo = updates.ruolo;
+  if (updates.progetto && !profile.progetti.includes(updates.progetto)) profile.progetti.push(updates.progetto);
+  if (updates.cliente && !profile.clienti.includes(updates.cliente)) profile.clienti.push(updates.cliente);
+  if (updates.competenza && !profile.competenze.includes(updates.competenza)) profile.competenze.push(updates.competenza);
+  if (updates.stile_comunicativo) profile.stile_comunicativo = updates.stile_comunicativo;
+  if (updates.nota) profile.note.push(updates.nota);
+  if (profile.note.length > 20) profile.note = profile.note.slice(-20);
+  profile.ultimo_aggiornamento = new Date().toISOString();
+  salvaProfiles();
+}
+
+// ─── Knowledge base aziendale ───────────────────────────────────────────────
+
+const KB_FILE = 'knowledge_base.json';
+let knowledgeBase = [];
+try { knowledgeBase = JSON.parse(fs.readFileSync(KB_FILE)); } catch(e) {}
+
+function salvaKB() {
+  try { fs.writeFileSync(KB_FILE, JSON.stringify(knowledgeBase, null, 2)); } catch(e) {}
+}
+
+function addKBEntry(content, tags, addedBy) {
+  knowledgeBase.push({
+    id: Date.now().toString(36),
+    content: content,
+    tags: tags || [],
+    added_by: addedBy,
+    created: new Date().toISOString(),
+  });
+  salvaKB();
+}
+
+function searchKB(query) {
+  var q = query.toLowerCase();
+  return knowledgeBase.filter(function(entry) {
+    return entry.content.toLowerCase().includes(q) ||
+      entry.tags.some(function(t) { return t.toLowerCase().includes(q); });
+  });
+}
+
+function deleteKBEntry(entryId) {
+  var before = knowledgeBase.length;
+  knowledgeBase = knowledgeBase.filter(function(e) { return e.id !== entryId; });
+  if (knowledgeBase.length < before) { salvaKB(); return true; }
+  return false;
+}
+
 // ─── Standup asincrono ───────────────────────────────────────────────────────
 
 const STANDUP_FILE = 'standup_data.json';
@@ -602,6 +676,67 @@ const tools = [
         max:     { type: 'number', description: 'Numero massimo risultati (default 10)' },
       },
       required: ['query'],
+    },
+  },
+  // Profilo utente
+  {
+    name: 'update_user_profile',
+    description: 'Aggiorna il profilo di un utente. Usalo PROATTIVAMENTE quando scopri info su ruolo, progetti, clienti, competenze di un collega.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ruolo:              { type: 'string', description: 'Ruolo dell\'utente (es. "developer", "project manager", "designer")' },
+        progetto:           { type: 'string', description: 'Progetto su cui lavora (aggiunge alla lista)' },
+        cliente:            { type: 'string', description: 'Cliente che segue (aggiunge alla lista)' },
+        competenza:         { type: 'string', description: 'Competenza specifica (es. "React", "SEO", "branding")' },
+        stile_comunicativo: { type: 'string', description: 'Descrizione dello stile comunicativo preferito' },
+        nota:               { type: 'string', description: 'Nota libera sul profilo' },
+      },
+    },
+  },
+  {
+    name: 'get_user_profile',
+    description: 'Legge il profilo di un utente: ruolo, progetti, clienti, competenze, stile.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'ID Slack dell\'utente (opzionale, default utente corrente)' },
+      },
+    },
+  },
+  // Knowledge base aziendale
+  {
+    name: 'add_to_kb',
+    description: 'Aggiunge un\'informazione alla knowledge base aziendale condivisa. Usalo per procedure, info clienti, decisioni aziendali che valgono per TUTTI, non per un singolo utente.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Informazione da salvare' },
+        tags:    { type: 'array', items: { type: 'string' }, description: 'Tag (es. "procedura", "cliente-rossi", "hosting", "contratto")' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'search_kb',
+    description: 'Cerca nella knowledge base aziendale condivisa. Usalo SEMPRE prima di rispondere su procedure aziendali, info clienti condivise, decisioni del team.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'delete_from_kb',
+    description: 'Cancella un\'informazione dalla knowledge base. Solo su richiesta esplicita.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entry_id: { type: 'string', description: 'ID dell\'entry da cancellare' },
+      },
+      required: ['entry_id'],
     },
   },
   // Gemini (dual-brain)
@@ -1213,6 +1348,34 @@ async function eseguiTool(toolName, input, userId) {
     } catch(e) { return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' }; }
   }
 
+  // Tool Profilo utente
+  if (toolName === 'update_user_profile') {
+    updateProfile(userId, input);
+    return { success: true, profile: getProfile(userId) };
+  }
+
+  if (toolName === 'get_user_profile') {
+    var targetId = input.user_id || userId;
+    var profile = getProfile(targetId);
+    return { profile: profile };
+  }
+
+  // Tool Knowledge base
+  if (toolName === 'add_to_kb') {
+    addKBEntry(input.content, input.tags || [], userId);
+    return { success: true, message: 'Aggiunto alla knowledge base aziendale.' };
+  }
+
+  if (toolName === 'search_kb') {
+    var kbResults = searchKB(input.query);
+    return { entries: kbResults, count: kbResults.length };
+  }
+
+  if (toolName === 'delete_from_kb') {
+    var kbDeleted = deleteKBEntry(input.entry_id);
+    return kbDeleted ? { success: true } : { error: 'Entry non trovata.' };
+  }
+
   // Tool Gemini (dual-brain)
   if (toolName === 'ask_gemini') {
     var prompt = input.prompt;
@@ -1786,11 +1949,24 @@ const SYSTEM_PROMPT =
   "Per invitare qualcuno per nome, usa get_slack_users per trovare l'email.\n\n" +
   "MEMORIA (tool use):\n" +
   "Hai una memoria permanente per ogni utente. DEVI usarla:\n" +
-  "- save_memory: salva PROATTIVAMENTE info importanti dette dall'utente (preferenze clienti, decisioni, procedure, contatti, info progetti). Non chiedere, salva e basta. Usa tag pertinenti.\n" +
-  "- recall_memory: SEMPRE prima di rispondere su clienti, progetti, procedure, decisioni passate. Cerca prima nella memoria.\n" +
-  "- list_memories: per mostrare cosa ricordi dell'utente.\n" +
-  "- delete_memory: per cancellare una memoria su richiesta.\n" +
+  "- save_memory: salva PROATTIVAMENTE info importanti (preferenze clienti, decisioni, procedure). Non chiedere, salva e basta.\n" +
+  "- recall_memory: SEMPRE prima di rispondere su clienti, progetti, procedure.\n" +
+  "- list_memories / delete_memory: per gestire le memorie.\n" +
   "Sii proattivo: se l'utente dice 'il cliente Rossi vuole il sito in blu', salva subito senza chiedere.\n\n" +
+  "PROFILO UTENTE:\n" +
+  "Ogni utente ha un profilo che si arricchisce nel tempo: ruolo, progetti, clienti, competenze, stile comunicativo.\n" +
+  "- update_user_profile: aggiorna PROATTIVAMENTE quando scopri info sul ruolo, progetti, clienti, competenze di chi ti parla.\n" +
+  "- get_user_profile: per consultare il profilo di un collega.\n" +
+  "Il profilo viene iniettato automaticamente nel contesto di ogni conversazione.\n\n" +
+  "KNOWLEDGE BASE AZIENDALE:\n" +
+  "Esiste una memoria condivisa per tutta l'azienda (procedure, info clienti, decisioni team).\n" +
+  "- add_to_kb: salva info che valgono per TUTTI (es. 'L'hosting di ClienteX scade il 15 maggio').\n" +
+  "- search_kb: cerca SEMPRE nella KB prima di rispondere su procedure o info aziendali.\n" +
+  "La KB viene iniettata automaticamente nel contesto quando rilevante.\n" +
+  "NON duplicare: se un'info e' personale usa save_memory, se e' aziendale usa add_to_kb.\n\n" +
+  "AUTO-APPRENDIMENTO:\n" +
+  "Dopo ogni conversazione, il sistema analizza automaticamente se ci sono info utili da salvare.\n" +
+  "Questo avviene in background. Tu comunque usa save_memory e update_user_profile proattivamente quando e' ovvio.\n\n" +
   "GOOGLE DRIVE (tool use):\n" +
   "search_drive ora cerca full-text DENTRO i documenti, non solo nel nome.\n" +
   "Filtri disponibili: mime_type (document/spreadsheet/pdf/image), folder_name, modified_after, modified_before, shared_with.\n" +
@@ -1839,12 +2015,32 @@ async function askGiuno(userId, userMessage, options) {
     contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
   }
 
+  // Inietta profilo utente
+  var profile = getProfile(userId);
+  if (profile.ruolo || profile.progetti.length > 0 || profile.clienti.length > 0) {
+    contextData += '\nPROFILO UTENTE:\n';
+    if (profile.ruolo) contextData += 'Ruolo: ' + profile.ruolo + '\n';
+    if (profile.progetti.length > 0) contextData += 'Progetti: ' + profile.progetti.join(', ') + '\n';
+    if (profile.clienti.length > 0) contextData += 'Clienti: ' + profile.clienti.join(', ') + '\n';
+    if (profile.competenze.length > 0) contextData += 'Competenze: ' + profile.competenze.join(', ') + '\n';
+    if (profile.stile_comunicativo) contextData += 'Stile: ' + profile.stile_comunicativo + '\n';
+  }
+
   // Inietta memorie rilevanti automaticamente
   var relevantMemories = searchMemories(userId, resolvedMessage);
   if (relevantMemories.length > 0) {
     contextData += '\nMEMORIE RILEVANTI:\n';
     relevantMemories.slice(0, 5).forEach(function(m) {
       contextData += '[' + m.tags.join(', ') + '] ' + m.content + '\n';
+    });
+  }
+
+  // Inietta knowledge base rilevante
+  var kbResults = searchKB(resolvedMessage);
+  if (kbResults.length > 0) {
+    contextData += '\nKNOWLEDGE BASE AZIENDALE:\n';
+    kbResults.slice(0, 3).forEach(function(entry) {
+      contextData += '[' + entry.tags.join(', ') + '] ' + entry.content + '\n';
     });
   }
 
@@ -1888,7 +2084,84 @@ async function askGiuno(userId, userMessage, options) {
   if (conversations[convKey].length > 20) conversations[convKey] = conversations[convKey].slice(-20);
   salvaConversazioni();
 
+  // Auto-learn in background: analizza la conversazione e salva info utili
+  autoLearn(userId, resolvedMessage, finalReply).catch(function(e) {
+    logger.error('Auto-learn error:', e.message);
+  });
+
   return finalReply;
+}
+
+// ─── Auto-learn ──────────────────────────────────────────────────────────────
+
+async function autoLearn(userId, userMessage, botReply) {
+  // Evita di analizzare messaggi troppo corti o comandi
+  if (userMessage.length < 20) return;
+  if (userMessage.toLowerCase().startsWith('collega') || userMessage.toLowerCase().startsWith('/')) return;
+
+  try {
+    var analysisRes = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      system: 'Analizzi conversazioni per estrarre informazioni utili da ricordare.\n' +
+        'Rispondi SOLO in formato JSON valido. Se non c\'e\' nulla di utile rispondi: {"skip": true}\n' +
+        'Altrimenti rispondi con:\n' +
+        '{\n' +
+        '  "memories": [{"content": "info da ricordare", "tags": ["tag1"]}],\n' +
+        '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
+        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tag1"]}]\n' +
+        '}\n' +
+        'Regole:\n' +
+        '- memories: info personali dell\'utente (preferenze, abitudini, contesti)\n' +
+        '- profile: aggiornamenti al profilo professionale (ruolo, progetti, clienti, competenze)\n' +
+        '- kb: SOLO info che valgono per tutta l\'azienda (procedure, info clienti condivise, decisioni team)\n' +
+        '- NON salvare conversazioni banali, saluti, domande generiche\n' +
+        '- NON duplicare info gia\' ovvie dal contesto\n' +
+        '- Sii selettivo: salva SOLO cose che vale la pena ricordare tra settimane',
+      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage + '\n\nBOT: ' + botReply }],
+    });
+
+    var analysisText = analysisRes.content[0].text.trim();
+    // Estrai JSON anche se wrapped in ```json
+    var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return;
+
+    var analysis = JSON.parse(jsonMatch[0]);
+    if (analysis.skip) return;
+
+    // Salva memorie personali
+    if (analysis.memories && analysis.memories.length > 0) {
+      analysis.memories.forEach(function(m) {
+        if (m.content && m.content.length > 5) {
+          addMemory(userId, m.content, m.tags || []);
+          logger.info('[AUTO-LEARN] Memoria salvata per', userId + ':', m.content.substring(0, 60));
+        }
+      });
+    }
+
+    // Aggiorna profilo
+    if (analysis.profile) {
+      var p = analysis.profile;
+      var hasUpdate = p.ruolo || p.progetto || p.cliente || p.competenza || p.nota;
+      if (hasUpdate) {
+        updateProfile(userId, p);
+        logger.info('[AUTO-LEARN] Profilo aggiornato per', userId);
+      }
+    }
+
+    // Salva nella knowledge base
+    if (analysis.kb && analysis.kb.length > 0) {
+      analysis.kb.forEach(function(entry) {
+        if (entry.content && entry.content.length > 5) {
+          addKBEntry(entry.content, entry.tags || [], userId);
+          logger.info('[AUTO-LEARN] KB aggiornata:', entry.content.substring(0, 60));
+        }
+      });
+    }
+  } catch(e) {
+    // JSON parse error o API error, ignora silenziosamente
+    if (e.name !== 'SyntaxError') logger.error('[AUTO-LEARN] Errore:', e.message);
+  }
 }
 
 // ─── Admin command ────────────────────────────────────────────────────────────
