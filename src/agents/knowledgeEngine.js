@@ -310,6 +310,43 @@ async function runKnowledgeEngine(userId) {
     '| Errori:', report.errorsCount
   );
 
+  // DM report ad Antonio
+  var antonioId = process.env.ANTONIO_SLACK_ID || 'U052S2RT7B6';
+  try {
+    var { app } = require('../services/slackService');
+    var { formatPerSlack } = require('../utils/slackFormat');
+
+    var msg = '*Knowledge Engine — Report*\n\n';
+    msg += '*Completato in:* ' + Math.round(report.durationMs / 1000) + 's\n';
+    msg += '*Drive:* ' + report.filesIndexed + ' file indicizzati su ' + report.filesScanned + ' scansionati\n';
+    msg += '*Slack:* ' + report.threadsIndexed + ' thread indicizzati su ' + report.threadsScanned + ' scansionati\n';
+
+    if (report.clientsFound.length > 0) {
+      msg += '\n*Clienti identificati:*\n';
+      report.clientsFound.slice(0, 10).forEach(function(c) { msg += '• ' + c + '\n'; });
+    }
+    if (report.decisionsFound.length > 0) {
+      msg += '\n*Decisioni importanti:*\n';
+      report.decisionsFound.slice(0, 5).forEach(function(d) { msg += '• ' + d + '\n'; });
+    }
+    if (report.deadlinesFound.length > 0) {
+      msg += '\n*Scadenze trovate:*\n';
+      report.deadlinesFound.slice(0, 5).forEach(function(d) { msg += '• ' + d + '\n'; });
+    }
+    if (report.errorsCount > 0) {
+      msg += '\n*Errori non bloccanti:* ' + report.errorsCount + '\n';
+      report.errors.slice(0, 3).forEach(function(e) { msg += '• ' + e + '\n'; });
+    }
+
+    await app.client.chat.postMessage({
+      channel: antonioId,
+      text: formatPerSlack(msg),
+    });
+    logger.info('[KB-ENGINE] Report DM inviato a', antonioId);
+  } catch(e) {
+    logger.error('[KB-ENGINE] Errore invio report DM:', e.message);
+  }
+
   return report;
 }
 
