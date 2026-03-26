@@ -53,6 +53,44 @@ var oauthServer = http.createServer(async function(req, res) {
     return;
   }
 
+  if (parsed.pathname === '/debug/search') {
+    var results = {};
+    try {
+      results.slack_user_token = !!process.env.SLACK_USER_TOKEN;
+      results.slack_bot_token = !!process.env.SLACK_BOT_TOKEN;
+
+      // Test 1: try with WebClient from bolt
+      try {
+        var WebClient = require('@slack/bolt').WebClient;
+        results.webclient_import = 'ok';
+        if (process.env.SLACK_USER_TOKEN) {
+          var wc = new WebClient(process.env.SLACK_USER_TOKEN);
+          var sr = await wc.search.messages({ query: 'test', count: 1 });
+          results.webclient_search = 'ok - ' + ((sr.messages && sr.messages.total) || 0) + ' total';
+        }
+      } catch(e) {
+        results.webclient_error = e.message;
+      }
+
+      // Test 2: try with app.client + token param
+      try {
+        var { app } = require('../services/slackService');
+        var sr2 = await app.client.search.messages({
+          token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN,
+          query: 'test', count: 1,
+        });
+        results.appclient_search = 'ok - ' + ((sr2.messages && sr2.messages.total) || 0) + ' total';
+      } catch(e) {
+        results.appclient_error = e.message;
+      }
+    } catch(e) {
+      results.general_error = e.message;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(results, null, 2));
+    return;
+  }
+
   if (parsed.pathname !== '/oauth/callback') { res.writeHead(404); res.end('Not found'); return; }
 
   var code = parsed.query.code;
