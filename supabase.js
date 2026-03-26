@@ -913,6 +913,69 @@ async function saveRateCard(rateCard) {
 }
 
 // ============================================================================
+// LEADS (CRM)
+// ============================================================================
+
+async function leadExists(companyName, contactEmail) {
+  if (!useSupabase) return false;
+  try {
+    var q = supabase.from('leads').select('id').ilike('company_name', companyName);
+    if (contactEmail) q = q.eq('contact_email', contactEmail);
+    var res = await q.limit(1);
+    return !!(res.data && res.data.length > 0);
+  } catch(e) { return false; }
+}
+
+async function insertLead(lead) {
+  if (!useSupabase) return null;
+  try {
+    var row = {
+      company_name: lead.company_name,
+      contact_name: lead.contact_name || null,
+      contact_email: lead.contact_email || null,
+      contact_role: lead.contact_role || null,
+      source: lead.source || 'sheet_import',
+      service_interest: lead.service_interest || null,
+      estimated_value: lead.estimated_value || null,
+      status: lead.status || 'new',
+      owner_slack_id: lead.owner_slack_id || null,
+      first_contact: lead.first_contact || null,
+      last_contact: lead.last_contact || null,
+      next_followup: lead.next_followup || null,
+      notes: lead.notes || null,
+    };
+    var res = await supabase.from('leads').insert(row);
+    if (res.error) throw res.error;
+    return res.data;
+  } catch(e) { logErr('insertLead', e); throw e; }
+}
+
+async function getLeadsPipeline() {
+  if (!useSupabase) return { byStatus: {}, upcoming: [] };
+  try {
+    // Count by status
+    var res = await supabase.from('leads').select('status');
+    var byStatus = {};
+    (res.data || []).forEach(function(r) {
+      var s = r.status || 'new';
+      byStatus[s] = (byStatus[s] || 0) + 1;
+    });
+
+    // Upcoming followups (today + tomorrow)
+    var today = new Date().toISOString().slice(0, 10);
+    var tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    var upRes = await supabase.from('leads')
+      .select('company_name, contact_name, next_followup, status')
+      .lte('next_followup', tomorrow)
+      .gte('next_followup', today)
+      .order('next_followup');
+    var upcoming = upRes.data || [];
+
+    return { byStatus: byStatus, upcoming: upcoming, total: (res.data || []).length };
+  } catch(e) { logErr('getLeadsPipeline', e); return { byStatus: {}, upcoming: [], total: 0 }; }
+}
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 
@@ -964,6 +1027,10 @@ module.exports = {
   getRateCard: getRateCard,
   listRateCards: listRateCards,
   saveRateCard: saveRateCard,
+  // Leads
+  leadExists: leadExists,
+  insertLead: insertLead,
+  getLeadsPipeline: getLeadsPipeline,
   // Glossary
   loadGlossary: loadGlossary,
   addGlossaryTerm: addGlossaryTerm,

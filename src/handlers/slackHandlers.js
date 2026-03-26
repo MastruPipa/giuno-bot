@@ -195,6 +195,32 @@ app.message(async function(args) {
     }
   }
 
+  // import-leads confirm
+  var importKey = 'import_leads_' + message.user;
+  if (catalogaConfirm.has(importKey)) {
+    var impTesto = (message.text || '').toLowerCase().trim();
+    if (impTesto === 'sì' || impTesto === 'si' || impTesto === 'ok' || impTesto === 'yes') {
+      var impPending = catalogaConfirm.get(importKey);
+      catalogaConfirm.delete(importKey);
+      await app.client.chat.postMessage({ channel: message.channel, text: 'Importo ' + impPending.leads.length + ' lead...' });
+      try {
+        var leadsTools = require('../tools/leadsTools');
+        var impResult = await leadsTools.importLeadsToSupabase(impPending.leads);
+        await app.client.chat.postMessage({
+          channel: message.channel,
+          text: '*Import completato!*\n• Importati: ' + impResult.imported + '\n• Saltati (duplicati): ' + impResult.skipped + '\n• Errori: ' + impResult.errors,
+        });
+      } catch(e) {
+        await app.client.chat.postMessage({ channel: message.channel, text: 'Errore import: ' + e.message });
+      }
+      return;
+    } else if (impTesto === 'no' || impTesto === 'annulla') {
+      catalogaConfirm.delete(importKey);
+      await app.client.chat.postMessage({ channel: message.channel, text: 'Import annullato.' });
+      return;
+    }
+  }
+
   // cataloga confirm
   var catConfirmKey = 'cataloga_confirm_' + message.user;
   if (catalogaConfirm.has(catConfirmKey)) {
@@ -261,6 +287,33 @@ app.command('/giuno', async function(args) {
       var parti = await buildBriefingUtente(command.user_id, canaliBriefing);
       await respond({ text: formatPerSlack(parti.join('\n\n')) || 'Niente di nuovo, mbare.', response_type: 'ephemeral' });
     } catch(err) { await respond({ text: 'Errore recap: ' + err.message, response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (text === 'leads' || text === 'pipeline') {
+    var leadsRole = await getUserRole(command.user_id);
+    if (leadsRole !== 'admin' && leadsRole !== 'manager' && leadsRole !== 'finance') {
+      await respond({ text: 'Non hai accesso alla pipeline lead.', response_type: 'ephemeral' });
+      return;
+    }
+    try {
+      var leadsTools = require('../tools/leadsTools');
+      var pipeline = await leadsTools.getLeadsPipeline();
+      var pMsg = '*Pipeline Lead — ' + (pipeline.total || 0) + ' totali*\n\n';
+      var statusLabels = { 'new': 'Nuovi', 'contacted': 'Contattati', 'proposal_sent': 'Proposta inviata', 'negotiating': 'In trattativa', 'won': 'Vinti', 'lost': 'Persi', 'dormant': 'Dormienti' };
+      for (var s in statusLabels) {
+        if (pipeline.byStatus[s]) pMsg += '• *' + statusLabels[s] + ':* ' + pipeline.byStatus[s] + '\n';
+      }
+      if (pipeline.upcoming && pipeline.upcoming.length > 0) {
+        pMsg += '\n*Followup oggi/domani:*\n';
+        pipeline.upcoming.forEach(function(l) {
+          pMsg += '• ' + l.company_name + (l.contact_name ? ' (' + l.contact_name + ')' : '') + ' — ' + l.next_followup + '\n';
+        });
+      } else {
+        pMsg += '\n_Nessun followup in scadenza oggi/domani._';
+      }
+      await respond({ text: pMsg, response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: 'Errore: ' + e.message, response_type: 'ephemeral' }); }
     return;
   }
 
@@ -475,7 +528,36 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  if (sub === 'import-leads') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono importare lead.', response_type: 'ephemeral' }); return; }
+    await respond({ text: 'Leggo il CRM Sheet...', response_type: 'ephemeral' });
+    try {
+      var leadsTools = require('../tools/leadsTools');
+      var result = await leadsTools.importCRMSheet(leadsTools.CORRADO_SLACK_ID, leadsTools.CRM_SHEET_ID);
+      if (result.error) { await respond({ text: 'Errore: ' + result.error, response_type: 'ephemeral' }); return; }
+
+      var previewMsg = '*CRM Sheet: ' + result.sheetName + '*\n' +
+        'Trovati *' + result.leads.length + '* lead su ' + result.totalRows + ' righe.\n\n' +
+        '*Mapping colonne:*\n';
+      for (var col in result.mapping) {
+        previewMsg += '• ' + col + ' → `' + result.mapping[col] + '`\n';
+      }
+      previewMsg += '\n*Anteprima:* ' + result.preview.join(', ') + '\n\n' +
+        'Rispondi "sì" per importare o "annulla" per fermarti.';
+
+      var importKey = 'import_leads_' + command.user_id;
+      catalogaConfirm.set(importKey, { leads: result.leads, userId: command.user_id, channelId: command.channel_id });
+      await respond({ text: previewMsg, response_type: 'ephemeral' });
+
+      // Auto-expire after 2 minutes
+      setTimeout(function() { catalogaConfirm.delete(importKey); }, 120000);
+    } catch(e) {
+      await respond({ text: 'Errore lettura CRM: ' + e.message, response_type: 'ephemeral' });
+    }
+    return;
+  }
+
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {
