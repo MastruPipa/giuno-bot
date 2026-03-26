@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const url = require('url');
 const cron = require('node-cron');
+const db = require('./supabase');
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
@@ -88,20 +89,16 @@ logger.info('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 const docs  = google.docs({ version: 'v1', auth: oAuth2Client });
 
-// ─── Token per utente ─────────────────────────────────────────────────────────
+// ─── Token per utente (Supabase) ──────────────────────────────────────────────
 
-const USER_TOKENS_FILE = 'user_tokens.json';
-let userTokens = {};
-try { userTokens = JSON.parse(fs.readFileSync(USER_TOKENS_FILE)); } catch(e) {}
+function getUserTokens() { return db.getTokenCache(); }
 
 function salvaTokenUtente(slackUserId, refreshToken) {
-  userTokens[slackUserId] = refreshToken;
-  fs.writeFileSync(USER_TOKENS_FILE, JSON.stringify(userTokens, null, 2));
+  db.saveToken(slackUserId, refreshToken);
 }
 
 function rimuoviTokenUtente(slackUserId) {
-  delete userTokens[slackUserId];
-  fs.writeFileSync(USER_TOKENS_FILE, JSON.stringify(userTokens, null, 2));
+  db.removeToken(slackUserId);
   logger.warn('Token rimosso per utente:', slackUserId);
 }
 
@@ -111,7 +108,7 @@ function generaLinkOAuth(slackUserId) {
 }
 
 function getAuthPerUtente(slackUserId) {
-  const refreshToken = userTokens[slackUserId];
+  const refreshToken = getUserTokens()[slackUserId];
   if (!refreshToken) return null;
   const auth = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
   auth.setCredentials({ refresh_token: refreshToken });
@@ -154,23 +151,15 @@ async function handleTokenScaduto(slackUserId, err) {
   return true;
 }
 
-// ─── Preferenze utente ────────────────────────────────────────────────────────
-
-const USER_PREFS_FILE = 'user_prefs.json';
-let userPrefs = {};
-try { userPrefs = JSON.parse(fs.readFileSync(USER_PREFS_FILE)); } catch(e) {}
-
-function salvaPrefs() {
-  try { fs.writeFileSync(USER_PREFS_FILE, JSON.stringify(userPrefs, null, 2)); } catch(e) {}
-}
+// ─── Preferenze utente (Supabase) ─────────────────────────────────────────────
 
 function getPrefs(userId) {
-  return Object.assign({ routine_enabled: true, notifiche_enabled: true, standup_enabled: true }, userPrefs[userId] || {});
+  return Object.assign({ routine_enabled: true, notifiche_enabled: true, standup_enabled: true }, db.getPrefsCache()[userId] || {});
 }
 
 function setPrefs(userId, prefs) {
-  userPrefs[userId] = Object.assign(getPrefs(userId), prefs);
-  salvaPrefs();
+  var merged = Object.assign(getPrefs(userId), prefs);
+  db.savePrefs(userId, merged);
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
@@ -191,67 +180,30 @@ function checkRateLimit(userId) {
   return true;
 }
 
-// ─── Persistenza conversazioni ────────────────────────────────────────────────
+// ─── Persistenza conversazioni (Supabase) ─────────────────────────────────────
 
-const CONVERSATIONS_FILE = 'conversations.json';
-let conversations = {};
-try { conversations = JSON.parse(fs.readFileSync(CONVERSATIONS_FILE)); } catch(e) {}
+function getConversations() { return db.getConvCache(); }
 
-function salvaConversazioni() {
-  try { fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations)); } catch(e) {}
-}
-
-// ─── Memoria persistente ─────────────────────────────────────────────────────
-
-const MEMORY_FILE = 'memories.json';
-let memories = {};
-try { memories = JSON.parse(fs.readFileSync(MEMORY_FILE)); } catch(e) {}
-
-function salvaMemorie() {
-  try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(memories, null, 2)); } catch(e) {}
-}
+// ─── Memoria persistente (Supabase) ──────────────────────────────────────────
 
 function addMemory(userId, content, tags) {
-  if (!memories[userId]) memories[userId] = [];
-  memories[userId].push({
-    id: Date.now().toString(36),
-    content: content,
-    tags: tags || [],
-    created: new Date().toISOString(),
-  });
-  salvaMemorie();
+  db.addMemory(userId, content, tags);
 }
 
 function searchMemories(userId, query) {
-  if (!memories[userId]) return [];
-  const q = query.toLowerCase();
-  return memories[userId].filter(function(m) {
-    return m.content.toLowerCase().includes(q) ||
-      m.tags.some(function(t) { return t.toLowerCase().includes(q); });
-  });
+  return db.searchMemories(userId, query);
 }
 
 function deleteMemory(userId, memoryId) {
-  if (!memories[userId]) return false;
-  const before = memories[userId].length;
-  memories[userId] = memories[userId].filter(function(m) { return m.id !== memoryId; });
-  if (memories[userId].length < before) { salvaMemorie(); return true; }
-  return false;
+  return db.deleteMemory(userId, memoryId);
 }
 
-// ─── Profili utente ─────────────────────────────────────────────────────────
-
-const PROFILES_FILE = 'user_profiles.json';
-let userProfiles = {};
-try { userProfiles = JSON.parse(fs.readFileSync(PROFILES_FILE)); } catch(e) {}
-
-function salvaProfiles() {
-  try { fs.writeFileSync(PROFILES_FILE, JSON.stringify(userProfiles, null, 2)); } catch(e) {}
-}
+// ─── Profili utente (Supabase) ───────────────────────────────────────────────
 
 function getProfile(userId) {
-  if (!userProfiles[userId]) {
-    userProfiles[userId] = {
+  var profiles = db.getProfileCache();
+  if (!profiles[userId]) {
+    profiles[userId] = {
       ruolo: null,
       progetti: [],
       clienti: [],
@@ -261,7 +213,7 @@ function getProfile(userId) {
       ultimo_aggiornamento: null,
     };
   }
-  return userProfiles[userId];
+  return profiles[userId];
 }
 
 function updateProfile(userId, updates) {
@@ -274,54 +226,27 @@ function updateProfile(userId, updates) {
   if (updates.nota) profile.note.push(updates.nota);
   if (profile.note.length > 20) profile.note = profile.note.slice(-20);
   profile.ultimo_aggiornamento = new Date().toISOString();
-  salvaProfiles();
+  db.saveProfile(userId, profile);
 }
 
-// ─── Knowledge base aziendale ───────────────────────────────────────────────
-
-const KB_FILE = 'knowledge_base.json';
-let knowledgeBase = [];
-try { knowledgeBase = JSON.parse(fs.readFileSync(KB_FILE)); } catch(e) {}
-
-function salvaKB() {
-  try { fs.writeFileSync(KB_FILE, JSON.stringify(knowledgeBase, null, 2)); } catch(e) {}
-}
+// ─── Knowledge base aziendale (Supabase) ────────────────────────────────────
 
 function addKBEntry(content, tags, addedBy) {
-  knowledgeBase.push({
-    id: Date.now().toString(36),
-    content: content,
-    tags: tags || [],
-    added_by: addedBy,
-    created: new Date().toISOString(),
-  });
-  salvaKB();
+  db.addKBEntry(content, tags, addedBy);
 }
 
 function searchKB(query) {
-  var q = query.toLowerCase();
-  return knowledgeBase.filter(function(entry) {
-    return entry.content.toLowerCase().includes(q) ||
-      entry.tags.some(function(t) { return t.toLowerCase().includes(q); });
-  });
+  return db.searchKB(query);
 }
 
 function deleteKBEntry(entryId) {
-  var before = knowledgeBase.length;
-  knowledgeBase = knowledgeBase.filter(function(e) { return e.id !== entryId; });
-  if (knowledgeBase.length < before) { salvaKB(); return true; }
-  return false;
+  return db.deleteKBEntry(entryId);
 }
 
-// ─── Standup asincrono ───────────────────────────────────────────────────────
+// ─── Standup asincrono (Supabase) ─────────────────────────────────────────────
 
-const STANDUP_FILE = 'standup_data.json';
-let standupData = { oggi: null, risposte: {} };
-try { standupData = JSON.parse(fs.readFileSync(STANDUP_FILE)); } catch(e) {}
-
-function salvaStandup() {
-  try { fs.writeFileSync(STANDUP_FILE, JSON.stringify(standupData, null, 2)); } catch(e) {}
-}
+function getStandupData() { return db.getStandupCache(); }
+function salvaStandup() { db.saveStandup(db.getStandupCache()); }
 
 const STANDUP_CHANNEL = process.env.STANDUP_CHANNEL || 'daily';
 const standupInAttesa = new Set();
@@ -340,7 +265,7 @@ const oauthServer = http.createServer(async function(req, res) {
 
   // Dashboard
   if (parsed.pathname === '/dashboard') {
-    const connectedUsers = Object.keys(userTokens);
+    const connectedUsers = Object.keys(getUserTokens());
     let rows = connectedUsers.map(function(uid) {
       return '<tr><td>' + uid + '</td><td style="color:green">Collegato</td></tr>';
     }).join('');
@@ -936,7 +861,7 @@ async function eseguiTool(toolName, input, userId) {
   }
 
   if (toolName === 'list_memories') {
-    const userMems = memories[userId] || [];
+    const userMems = db.getMemCache()[userId] || [];
     const filtered = input.tag
       ? userMems.filter(function(m) { return m.tags.some(function(t) { return t.toLowerCase().includes(input.tag.toLowerCase()); }); })
       : userMems;
@@ -1444,9 +1369,9 @@ async function eseguiTool(toolName, input, userId) {
     }
 
     // Drive index locale (veloce, senza API call)
-    if (sources.includes('drive') && driveIndex[userId]) {
+    if (sources.includes('drive') && getDriveIndex()[userId]) {
       var queryLower = input.query.toLowerCase();
-      var indexed = Object.values(driveIndex[userId]).filter(function(f) {
+      var indexed = Object.values(getDriveIndex()[userId]).filter(function(f) {
         return f.name.toLowerCase().includes(queryLower) || (f.description && f.description.toLowerCase().includes(queryLower));
       }).slice(0, 3);
       if (indexed.length > 0) {
@@ -2002,7 +1927,8 @@ async function askGiuno(userId, userMessage, options) {
   }
 
   const convKey = conversationKey(userId, options.threadTs);
-  if (!conversations[convKey]) conversations[convKey] = [];
+  var convCache = getConversations();
+  if (!convCache[convKey]) convCache[convKey] = [];
 
   const resolvedMessage = await resolveSlackMentions(userMessage);
 
@@ -2048,7 +1974,7 @@ async function askGiuno(userId, userMessage, options) {
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
     : resolvedMessage;
 
-  const messages = conversations[convKey].concat([{ role: 'user', content: messageWithContext }]);
+  const messages = convCache[convKey].concat([{ role: 'user', content: messageWithContext }]);
 
   let finalReply = '';
 
@@ -2079,10 +2005,10 @@ async function askGiuno(userId, userMessage, options) {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  conversations[convKey].push({ role: 'user', content: messageWithContext });
-  conversations[convKey].push({ role: 'assistant', content: finalReply });
-  if (conversations[convKey].length > 20) conversations[convKey] = conversations[convKey].slice(-20);
-  salvaConversazioni();
+  convCache[convKey].push({ role: 'user', content: messageWithContext });
+  convCache[convKey].push({ role: 'assistant', content: finalReply });
+  if (convCache[convKey].length > 20) convCache[convKey] = convCache[convKey].slice(-20);
+  db.saveConversation(convKey, convCache[convKey]);
 
   // Auto-learn in background: analizza la conversazione e salva info utili
   autoLearn(userId, resolvedMessage, finalReply).catch(function(e) {
@@ -2180,7 +2106,7 @@ async function handleAdmin(command, respond) {
     const utenti = await getUtenti();
     let msg = '*Utenti e token Google:*\n';
     utenti.forEach(function(u) {
-      msg += (userTokens[u.id] ? '✅' : '❌') + ' ' + u.name + ' (<@' + u.id + '>)\n';
+      msg += (getUserTokens()[u.id] ? '✅' : '❌') + ' ' + u.name + ' (<@' + u.id + '>)\n';
     });
     await respond({ text: msg, response_type: 'ephemeral' });
     return;
@@ -2188,7 +2114,7 @@ async function handleAdmin(command, respond) {
 
   if (sub === 'revoke' && args[1]) {
     const targetId = args[1].replace(/<@|>/g, '').split('|')[0];
-    if (!userTokens[targetId]) { await respond({ text: 'Nessun token trovato per quell\'utente.', response_type: 'ephemeral' }); return; }
+    if (!getUserTokens()[targetId]) { await respond({ text: 'Nessun token trovato per quell\'utente.', response_type: 'ephemeral' }); return; }
     rimuoviTokenUtente(targetId);
     await respond({ text: 'Token revocato per <@' + targetId + '>.', response_type: 'ephemeral' });
     return;
@@ -2221,8 +2147,9 @@ app.message(async function(args) {
   if (standupInAttesa.has(message.user)) {
     standupInAttesa.delete(message.user);
     const oggi = new Date().toISOString().slice(0, 10);
-    if (standupData.oggi === oggi) {
-      standupData.risposte[message.user] = {
+    var sd = getStandupData();
+    if (sd.oggi === oggi) {
+      sd.risposte[message.user] = {
         testo: message.text,
         timestamp: Date.now(),
       };
@@ -2323,10 +2250,7 @@ app.event('reaction_added', async function(args) {
   const feedback = event.reaction === '+1' ? 'positivo' : 'negativo';
   logger.info('[FEEDBACK]', feedback, '| user:', event.user, '| text:', (botMsg.text || '').substring(0, 80));
   try {
-    let log = [];
-    try { log = JSON.parse(fs.readFileSync('feedback.json')); } catch(e) {}
-    log.push({ ts: event.item.ts, user: event.user, feedback: feedback, text: (botMsg.text || '').substring(0, 200), date: new Date().toISOString() });
-    fs.writeFileSync('feedback.json', JSON.stringify(log, null, 2));
+    db.saveFeedback(event.item.ts, event.user, feedback, (botMsg.text || '').substring(0, 200));
   } catch(e) { logger.error('[FEEDBACK]', e.message); }
 });
 
@@ -2448,8 +2372,9 @@ async function inviaStandupDomande() {
   logger.info('[STANDUP] Invio domande standup per', oggi);
 
   // Reset dati se è un nuovo giorno
-  standupData.oggi = oggi;
-  standupData.risposte = {};
+  var sd = getStandupData();
+  sd.oggi = oggi;
+  sd.risposte = {};
   salvaStandup();
 
   const utenti = await getUtenti();
@@ -2474,12 +2399,13 @@ async function inviaStandupDomande() {
 
 async function pubblicaRecapStandup() {
   const oggi = new Date().toISOString().slice(0, 10);
-  if (standupData.oggi !== oggi) {
+  var sd = getStandupData();
+  if (sd.oggi !== oggi) {
     logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.');
     return;
   }
 
-  const risposte = standupData.risposte;
+  const risposte = sd.risposte;
   const userIds = Object.keys(risposte);
   if (userIds.length === 0) {
     logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.');
@@ -2646,15 +2572,9 @@ async function inviaRecapSettimanale() {
   } catch(e) { logger.error('[RECAP] Errore generale:', e.message); }
 }
 
-// ─── Auto-index Drive ────────────────────────────────────────────────────────
+// ─── Auto-index Drive (Supabase) ─────────────────────────────────────────────
 
-const DRIVE_INDEX_FILE = 'drive_index.json';
-let driveIndex = {};
-try { driveIndex = JSON.parse(fs.readFileSync(DRIVE_INDEX_FILE)); } catch(e) {}
-
-function salvaDriveIndex() {
-  try { fs.writeFileSync(DRIVE_INDEX_FILE, JSON.stringify(driveIndex, null, 2)); } catch(e) {}
-}
+function getDriveIndex() { return db.getDriveCache(); }
 
 async function indicizzaDriveUtente(slackUserId) {
   var drv = getDrivePerUtente(slackUserId);
@@ -2671,19 +2591,7 @@ async function indicizzaDriveUtente(slackUserId) {
     var files = res.data.files || [];
     if (files.length === 0) return 0;
 
-    if (!driveIndex[slackUserId]) driveIndex[slackUserId] = {};
-    files.forEach(function(f) {
-      driveIndex[slackUserId][f.id] = {
-        name: f.name,
-        type: f.mimeType,
-        link: f.webViewLink,
-        modified: f.modifiedTime,
-        owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null,
-        description: f.description || null,
-        indexed: new Date().toISOString(),
-      };
-    });
-    salvaDriveIndex();
+    db.saveDriveFiles(slackUserId, files);
     return files.length;
   } catch(e) {
     await handleTokenScaduto(slackUserId, e);
@@ -2694,7 +2602,7 @@ async function indicizzaDriveUtente(slackUserId) {
 async function indicizzaDriveTutti() {
   logger.info('[DRIVE-INDEX] Avvio indicizzazione...');
   var totale = 0;
-  for (var uid of Object.keys(userTokens)) {
+  for (var uid of Object.keys(getUserTokens())) {
     var n = await indicizzaDriveUtente(uid);
     totale += n;
   }
@@ -2710,7 +2618,7 @@ const ultimaVerificaEmail = new Map();
 cron.schedule('*/2 * * * *', async function() {
   const now = new Date();
   const fra15 = new Date(now.getTime() + 15 * 60 * 1000);
-  for (const slackUserId of Object.keys(userTokens)) {
+  for (const slackUserId of Object.keys(getUserTokens())) {
     if (!getPrefs(slackUserId).notifiche_enabled) continue;
     const cal = getCalendarPerUtente(slackUserId);
     if (!cal) continue;
@@ -2734,7 +2642,7 @@ cron.schedule('0 * * * *', function() { notificheRiunioniInviate.clear(); });
 
 // Ogni 10 minuti: avvisa per nuove email importanti
 cron.schedule('*/10 * * * *', async function() {
-  for (const slackUserId of Object.keys(userTokens)) {
+  for (const slackUserId of Object.keys(getUserTokens())) {
     if (!getPrefs(slackUserId).notifiche_enabled) continue;
     const gm = getGmailPerUtente(slackUserId);
     if (!gm) continue;
@@ -2758,6 +2666,10 @@ cron.schedule('*/10 * * * *', async function() {
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 (async function() {
+  // Carica tutti i dati da Supabase (o JSON fallback) prima di avviare
+  await db.initAll();
+  logger.info('Persistenza inizializzata:', db.isSupabase() ? 'Supabase' : 'JSON locale (fallback)');
+
   oauthServer.listen(OAUTH_PORT, function() {
     logger.info('OAuth + Dashboard server su porta ' + OAUTH_PORT);
     logger.info('Dashboard: http://localhost:' + OAUTH_PORT + '/dashboard');
