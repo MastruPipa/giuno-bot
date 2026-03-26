@@ -16,7 +16,12 @@ var cronHandlers = require('./handlers/cronHandlers');
 var slackHandlers = require('./handlers/slackHandlers');
 
 async function main() {
+  var db = require('../supabase');
   var app = slackService.app;
+
+  // Load token cache from Supabase/JSON before anything else
+  await db.initAll();
+  logger.info('Token cache caricata');
 
   // Inject Bolt app into googleAuthService (needed for token-expiry DMs)
   googleAuth.setSlackApp(app);
