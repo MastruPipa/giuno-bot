@@ -27,7 +27,7 @@ const SLACK_FORMAT_RULES =
   '`codice`. MAI ** o ##. Liste con • o numeri. Risposte concise.';
 
 function formatPerSlack(text) {
-  if (!text) return text;
+  if (!text) return '';
   return text
     .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
     .replace(/\*\*([^*]+)\*\*/g, '*$1*')
@@ -2777,8 +2777,17 @@ async function handleAdmin(command, respond) {
 
 // ─── Slack handlers ───────────────────────────────────────────────────────────
 
+var processedEvents = new Set();
 app.event('app_mention', async function(args) {
   const event = args.event;
+  // Dedup: ignora eventi già processati (Slack può inviarli due volte)
+  if (processedEvents.has(event.ts)) return;
+  processedEvents.add(event.ts);
+  // Pulizia periodica (max 200 eventi)
+  if (processedEvents.size > 200) {
+    var arr = Array.from(processedEvents);
+    for (var di = 0; di < arr.length - 100; di++) processedEvents.delete(arr[di]);
+  }
   const threadTs = event.thread_ts || event.ts;
   stats.messagesHandled++;
   try {
@@ -2843,6 +2852,10 @@ app.event('app_mention', async function(args) {
       } catch(e) { logger.error('Gemini quality gate error:', e.message); }
     }
     const formatted = formatPerSlack(reply);
+    if (!formatted) {
+      logger.warn('[MENTION] Reply vuota per', event.user, '- skip postMessage');
+      return;
+    }
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
   } catch(err) {
