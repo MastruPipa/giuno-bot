@@ -42,6 +42,7 @@ function formatPerSlack(text) {
 
 const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file'];
 const confermeInAttesa = new Map(); // convKey -> { toolName, input, toolUseId }
+const catalogaConfirm = new Map(); // cataloga_confirm_userId -> { files, userId, channelId, rateCard }
 
 // ─── Slack + Anthropic ────────────────────────────────────────────────────────
 
@@ -158,6 +159,11 @@ function getDrivePerUtente(slackUserId) {
 function getDocsPerUtente(slackUserId) {
   const auth = getAuthPerUtente(slackUserId);
   return auth ? google.docs({ version: 'v1', auth: auth }) : null;
+}
+
+function getSheetPerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  return auth ? google.sheets({ version: 'v4', auth: auth }) : null;
 }
 
 // Gestione token scaduto: rimuove il token e avvisa l'utente via DM
@@ -845,6 +851,20 @@ const tools = [
       required: ['channel', 'question', 'options'],
     },
   },
+  // Google Sheets
+  {
+    name: 'read_sheet',
+    description: 'Legge il contenuto di un Google Sheet. Restituisce righe e colonne come array di array. Usa search_drive prima per trovare il file ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sheet_id:   { type: 'string', description: 'ID del Google Sheet (dalla URL o da search_drive)' },
+        range:      { type: 'string', description: 'Range da leggere, es. "A1:Z100" (default "A1:Z100")' },
+        sheet_name: { type: 'string', description: 'Nome del foglio specifico (opzionale, default primo foglio)' },
+      },
+      required: ['sheet_id'],
+    },
+  },
   // Preventivi (quotes)
   {
     name: 'search_quotes',
@@ -1389,6 +1409,32 @@ async function eseguiTool(toolName, input, userId, userRole) {
       }
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
+      return { error: e.message };
+    }
+  }
+
+  // Tool Google Sheets
+  if (toolName === 'read_sheet') {
+    var sheets = getSheetPerUtente(userId);
+    if (!sheets) return { error: 'Google Sheets non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var range = input.sheet_name
+        ? input.sheet_name + '!' + (input.range || 'A1:Z100')
+        : (input.range || 'A1:Z100');
+      var sheetRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: input.sheet_id,
+        range: range,
+      });
+      var rows = sheetRes.data.values || [];
+      return {
+        sheet_id: input.sheet_id,
+        range: range,
+        rows: rows,
+        row_count: rows.length,
+        preview: rows.slice(0, 5),
+      };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
       return { error: e.message };
     }
   }
@@ -2487,6 +2533,27 @@ app.message(async function(args) {
     }
   }
 
+  // Conferma /giuno cataloga
+  var catConfirmKey = 'cataloga_confirm_' + message.user;
+  if (catalogaConfirm.has(catConfirmKey)) {
+    var catTesto = (message.text || '').toLowerCase().trim();
+    if (catTesto === 'sì' || catTesto === 'si' || catTesto === 'ok' || catTesto === 'yes' || catTesto === 'procedi') {
+      var catPending = catalogaConfirm.get(catConfirmKey);
+      catalogaConfirm.delete(catConfirmKey);
+      elaboraPreventivi(catPending.userId, catPending.channelId, catPending.files, catPending.rateCard)
+        .catch(function(e) { logger.error('[CATALOGA] Errore elaborazione:', e.message); });
+      await app.client.chat.postMessage({
+        channel: message.channel,
+        text: 'Perfetto! Elaboro ' + catPending.files.length + ' file in background. Ti avviso quando ho finito.',
+      });
+      return;
+    } else if (catTesto === 'no' || catTesto === 'annulla' || catTesto === 'stop') {
+      catalogaConfirm.delete(catConfirmKey);
+      await app.client.chat.postMessage({ channel: message.channel, text: 'Catalogazione annullata.' });
+      return;
+    }
+  }
+
   stats.messagesHandled++;
   const threadTs = message.thread_ts || null;
   try {
@@ -2553,6 +2620,19 @@ app.command('/giuno', async function(args) {
       const reply = await askGiuno(command.user_id, 'Mostrami le email: ' + query);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
     } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (text === 'cataloga' || text.startsWith('cataloga ')) {
+    var catRole = await getUserRole(command.user_id);
+    if (!checkPermission(catRole, 'view_financials')) {
+      await respond({ text: getAccessDeniedMessage(catRole), response_type: 'ephemeral' });
+      return;
+    }
+    try {
+      await respond({ text: 'Avvio scansione preventivi su Drive... dammi un momento.', response_type: 'ephemeral' });
+      await catalogaPreventivi(command.user_id, command.channel_id);
+    } catch(err) { await respond({ text: 'Errore cataloga: ' + err.message, response_type: 'ephemeral' }); }
     return;
   }
 
@@ -2951,6 +3031,290 @@ async function indicizzaDriveTutti() {
     totale += n;
   }
   logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
+}
+
+// ─── Catalogazione preventivi ─────────────────────────────────────────────────
+
+async function catalogaPreventivi(userId, channelId) {
+  var drv = getDrivePerUtente(userId);
+  var sheets = getSheetPerUtente(userId);
+  if (!drv || !sheets) {
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: 'Google non collegato. Scrivi "collega il mio Google" prima.',
+    });
+    return;
+  }
+
+  // STEP A: Trova rate card
+  var rateCard = null;
+  try {
+    var rcRes = await drv.files.list({
+      q: "fullText contains 'rate card' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+      fields: 'files(id, name)',
+      pageSize: 5,
+      orderBy: 'modifiedTime desc',
+    });
+    if (rcRes.data.files && rcRes.data.files.length > 0) {
+      var rcFile = rcRes.data.files[0];
+      var rcData = await sheets.spreadsheets.values.get({
+        spreadsheetId: rcFile.id,
+        range: 'A1:Z50',
+      });
+      var rcExtract = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: 'Estrai la rate card da questo foglio. Rispondi SOLO in JSON valido:\n' +
+          '{"version":"current","effective_from":null,"resources":[{"person":null,"role":"nome ruolo","day_rate":null,"hour_rate":null,"notes":null}]}\n' +
+          'Se non riesci a estrarre nulla di utile rispondi: {"skip":true}',
+        messages: [{ role: 'user', content: 'Rate card dal file "' + rcFile.name + '":\n' + JSON.stringify(rcData.data.values || []).substring(0, 3000) }],
+      });
+      var rcText = rcExtract.content[0].text.trim();
+      var rcJson = rcText.match(/\{[\s\S]*\}/);
+      if (rcJson) {
+        var parsed = JSON.parse(rcJson[0]);
+        if (!parsed.skip) {
+          rateCard = parsed;
+          rateCard.source_doc_id = rcFile.id;
+          await db.saveRateCard({
+            version: 'current',
+            effective_from: null,
+            resources: rateCard.resources,
+            source_doc_id: rcFile.id,
+            notes: 'Estratto automaticamente da /giuno cataloga',
+          });
+          logger.info('[CATALOGA] Rate card trovata e salvata:', rcFile.name);
+        }
+      }
+    }
+  } catch(e) {
+    logger.error('[CATALOGA] Errore rate card:', e.message);
+  }
+
+  // STEP B: Discovery preventivi
+  var searchTerms = ['economics', 'preventivo', 'proposta', 'quotation', 'offerta'];
+  var foundFiles = new Map();
+
+  for (var i = 0; i < searchTerms.length; i++) {
+    try {
+      var sRes = await drv.files.list({
+        q: "fullText contains '" + searchTerms[i] + "' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+        fields: 'files(id, name, modifiedTime)',
+        pageSize: 20,
+        orderBy: 'modifiedTime desc',
+      });
+      (sRes.data.files || []).forEach(function(f) {
+        if (!foundFiles.has(f.id)) foundFiles.set(f.id, f);
+      });
+    } catch(e) {
+      logger.error('[CATALOGA] Errore search "' + searchTerms[i] + '":', e.message);
+    }
+  }
+
+  var files = Array.from(foundFiles.values());
+
+  if (files.length === 0) {
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: 'Nessun file preventivo trovato su Drive. Assicurati che i file contengano le parole chiave: economics, preventivo, proposta, quotation, offerta.',
+    });
+    return;
+  }
+
+  // Chiedi conferma
+  await app.client.chat.postMessage({
+    channel: channelId,
+    text: formatPerSlack('*Trovati ' + files.length + ' file* da analizzare:\n' +
+      files.slice(0, 10).map(function(f) { return '• ' + f.name; }).join('\n') +
+      (files.length > 10 ? '\n...e altri ' + (files.length - 10) : '') +
+      '\n\nRispondi *si* per procedere con la catalogazione.'),
+  });
+
+  var confirmKey = 'cataloga_confirm_' + userId;
+  catalogaConfirm.set(confirmKey, {
+    files: files,
+    userId: userId,
+    channelId: channelId,
+    rateCard: rateCard,
+    created: Date.now(),
+  });
+}
+
+async function elaboraPreventivi(userId, channelId, files, rateCard) {
+  var sheets = getSheetPerUtente(userId);
+
+  var results = {
+    catalogati: 0,
+    saltati: 0,
+    da_rivedere: [],
+    per_era: { 'pre-ratecard': 0, 'ratecard-v1': 0, 'ratecard-v2': 0, 'unknown': 0 },
+    per_categoria: {},
+    per_stato: { accepted: 0, rejected: 0, draft: 0, unknown: 0 },
+    valori: [],
+  };
+
+  var toProcess = files.slice(0, 50);
+
+  for (var i = 0; i < toProcess.length; i++) {
+    var file = toProcess[i];
+    try {
+      // Controlla se gia' catalogato
+      var exists = await db.quoteExistsByDocId(file.id);
+      if (exists) {
+        results.saltati++;
+        continue;
+      }
+
+      // Leggi contenuto
+      var sheetData = await sheets.spreadsheets.values.get({
+        spreadsheetId: file.id,
+        range: 'A1:Z100',
+      });
+      var rows = sheetData.data.values || [];
+      if (rows.length === 0) {
+        results.saltati++;
+        continue;
+      }
+
+      // Estrai dati con Claude
+      var extraction = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        system: 'Estrai dati da un preventivo/economics di agenzia digitale.\n' +
+          'Rispondi SOLO in JSON valido, nessun testo prima o dopo:\n' +
+          '{"client_name":"string o null","project_name":"string o null",' +
+          '"service_category":"branding|content|performance|video|web|event|altro",' +
+          '"service_tags":["array"],"deliverables":["array"],' +
+          '"resources":[{"person":"string","days":0,"hours":0,"day_rate":0,"hour_rate":0,"subtotal":0}],' +
+          '"total_days":0,"total_cost_interno":0,"price_quoted":0,"markup_pct":0,' +
+          '"status":"accepted|rejected|draft|unknown","date":"YYYY-MM-DD o null",' +
+          '"confidence":"high|medium|low","notes":"string o null"}',
+        messages: [{
+          role: 'user',
+          content: 'File: "' + file.name + '"\n\nContenuto Sheet:\n' +
+            JSON.stringify(rows).substring(0, 4000) +
+            (rateCard ? '\n\nRate card corrente:\n' + JSON.stringify(rateCard.resources).substring(0, 1000) : ''),
+        }],
+      });
+
+      var extText = extraction.content[0].text.trim();
+      var extJson = extText.match(/\{[\s\S]*\}/);
+      if (!extJson) {
+        results.da_rivedere.push(file.name + ' (parsing fallito)');
+        continue;
+      }
+
+      var data = JSON.parse(extJson[0]);
+
+      // Calcola pricing_era
+      var pricing_era = 'unknown';
+      if (data.date) {
+        var d = new Date(data.date);
+        if (d < new Date('2024-01-01')) pricing_era = 'pre-ratecard';
+        else if (d < new Date('2025-06-01')) pricing_era = 'ratecard-v1';
+        else pricing_era = 'ratecard-v2';
+      }
+
+      // Calcola markup se manca
+      if (!data.markup_pct && data.price_quoted && data.total_cost_interno) {
+        data.markup_pct = Math.round(
+          (data.price_quoted - data.total_cost_interno) / data.total_cost_interno * 100
+        );
+      }
+
+      var needs_review = data.confidence === 'low' || !data.client_name || !data.price_quoted;
+
+      // Salva in Supabase
+      await db.saveQuote({
+        client_name: data.client_name,
+        project_name: data.project_name,
+        service_category: data.service_category,
+        service_tags: data.service_tags || [],
+        deliverables: data.deliverables || [],
+        resources: data.resources || [],
+        total_days: data.total_days,
+        total_cost_interno: data.total_cost_interno,
+        price_quoted: data.price_quoted,
+        markup_pct: data.markup_pct,
+        status: data.status || 'unknown',
+        date: data.date || null,
+        quote_year: data.date ? new Date(data.date).getFullYear() : null,
+        quote_quarter: data.date
+          ? 'Q' + Math.ceil((new Date(data.date).getMonth() + 1) / 3) + ' ' + new Date(data.date).getFullYear()
+          : null,
+        pricing_era: pricing_era,
+        source_doc_id: file.id,
+        source_doc_name: file.name,
+        needs_review: needs_review,
+        confidence: data.confidence,
+        notes: data.notes,
+        cataloged_at: new Date().toISOString(),
+      });
+
+      // Aggiorna contatori
+      results.catalogati++;
+      results.per_era[pricing_era] = (results.per_era[pricing_era] || 0) + 1;
+      if (data.service_category) {
+        results.per_categoria[data.service_category] = (results.per_categoria[data.service_category] || 0) + 1;
+      }
+      results.per_stato[data.status || 'unknown']++;
+      if (data.price_quoted && data.status === 'accepted') {
+        results.valori.push(data.price_quoted);
+      }
+      if (needs_review) results.da_rivedere.push(file.name);
+
+      // Pausa per non bucare quota API
+      await new Promise(function(r) { setTimeout(r, 500); });
+
+    } catch(e) {
+      logger.error('[CATALOGA] Errore file ' + file.name + ':', e.message);
+      results.da_rivedere.push(file.name + ' (errore: ' + e.message.substring(0, 50) + ')');
+    }
+  }
+
+  // STEP D: Report finale
+  var totaleValore = results.valori.reduce(function(a, b) { return a + b; }, 0);
+
+  var report = '*Scansione preventivi completata*\n\n';
+  report += '*Trovati:* ' + files.length + ' file analizzati\n';
+  report += '*Catalogati:* ' + results.catalogati + ' nuovi';
+  if (results.saltati > 0) report += ' | *Gia\' presenti:* ' + results.saltati;
+  report += '\n\n';
+
+  report += '*Per era:*\n';
+  report += '• Pre-ratecard (< 2024): ' + results.per_era['pre-ratecard'] + '\n';
+  report += '• Ratecard v1 (2024-mid2025): ' + results.per_era['ratecard-v1'] + '\n';
+  report += '• Ratecard v2 (2025-oggi): ' + results.per_era['ratecard-v2'] + '\n\n';
+
+  if (Object.keys(results.per_categoria).length > 0) {
+    report += '*Per categoria:*\n';
+    Object.keys(results.per_categoria).forEach(function(k) {
+      report += '• ' + k + ': ' + results.per_categoria[k] + '\n';
+    });
+    report += '\n';
+  }
+
+  report += '*Per stato:*\n';
+  report += '• Accettati: ' + results.per_stato.accepted;
+  if (totaleValore > 0) report += ' (tot. ' + totaleValore.toLocaleString('it-IT') + ')';
+  report += '\n';
+  report += '• Rifiutati: ' + results.per_stato.rejected + '\n';
+  report += '• Bozze/sconosciuto: ' + (results.per_stato.draft + results.per_stato.unknown) + '\n';
+
+  if (results.da_rivedere.length > 0) {
+    report += '\n*Da revisionare manualmente:* ' + results.da_rivedere.length + ' file\n';
+    results.da_rivedere.slice(0, 5).forEach(function(n) { report += '• ' + n + '\n'; });
+    if (results.da_rivedere.length > 5) {
+      report += '...e altri ' + (results.da_rivedere.length - 5) + '\n';
+    }
+  }
+
+  if (rateCard) report += '\n_Rate card trovata e salvata_';
+
+  await app.client.chat.postMessage({
+    channel: channelId,
+    text: formatPerSlack(report),
+  });
 }
 
 // ─── Channel Map e Auto-learn canali ──────────────────────────────────────────
