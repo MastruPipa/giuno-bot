@@ -892,6 +892,20 @@ const tools = [
       },
     },
   },
+  // Catalogazione preventivi
+  {
+    name: 'cataloga_preventivi',
+    description: 'Scansiona Google Drive per trovare preventivi, economics e proposte commerciali e li salva nel database Supabase. ' +
+      'Usalo quando qualcuno chiede di catalogare i preventivi, vuole sapere quanti preventivi ci sono, cerca statistiche sui progetti passati, o chiede benchmark sui prezzi storici. ' +
+      'Richiede ruolo admin o finance.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max_files: { type: 'number', description: 'Numero massimo di file da processare (default 50)' },
+        confirm:   { type: 'boolean', description: 'Se true, procede senza chiedere conferma (default false)' },
+      },
+    },
+  },
   // Conferma azione critica
   {
     name: 'confirm_action',
@@ -1513,6 +1527,17 @@ async function eseguiTool(toolName, input, userId, userRole) {
       var card = await db.getRateCard(input.version);
       return card ? { rate_card: card } : { error: 'Nessuna rate card trovata.' };
     } catch(e) { return { error: e.message }; }
+  }
+
+  // Tool cataloga_preventivi
+  if (toolName === 'cataloga_preventivi') {
+    if (!checkPermission(userRole, 'view_financials')) {
+      return { error: getAccessDeniedMessage(userRole) };
+    }
+    var catChannel = userId; // DM all'utente se non c'è channelId
+    catalogaPreventivi(userId, catChannel, input.max_files || 50, input.confirm || false)
+      .catch(function(e) { logger.error('[CATALOGA] Errore:', e.message); });
+    return { success: true, message: 'Scansione preventivi avviata. Ti avviso su Slack quando ho finito.' };
   }
 
   // Tool Gemini (dual-brain)
@@ -3035,7 +3060,9 @@ async function indicizzaDriveTutti() {
 
 // ─── Catalogazione preventivi ─────────────────────────────────────────────────
 
-async function catalogaPreventivi(userId, channelId) {
+async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
+  maxFiles = maxFiles || 50;
+  skipConfirm = skipConfirm || false;
   var drv = getDrivePerUtente(userId);
   var sheets = getSheetPerUtente(userId);
   if (!drv || !sheets) {
@@ -3111,7 +3138,7 @@ async function catalogaPreventivi(userId, channelId) {
     }
   }
 
-  var files = Array.from(foundFiles.values());
+  var files = Array.from(foundFiles.values()).slice(0, maxFiles);
 
   if (files.length === 0) {
     await app.client.chat.postMessage({
@@ -3121,13 +3148,21 @@ async function catalogaPreventivi(userId, channelId) {
     return;
   }
 
+  // Se skipConfirm, procedi direttamente
+  if (skipConfirm) {
+    elaboraPreventivi(userId, channelId, files, rateCard)
+      .catch(function(e) { logger.error('[CATALOGA] Errore:', e.message); });
+    return;
+  }
+
   // Chiedi conferma
   await app.client.chat.postMessage({
     channel: channelId,
     text: formatPerSlack('*Trovati ' + files.length + ' file* da analizzare:\n' +
-      files.slice(0, 10).map(function(f) { return '• ' + f.name; }).join('\n') +
-      (files.length > 10 ? '\n...e altri ' + (files.length - 10) : '') +
-      '\n\nRispondi *si* per procedere con la catalogazione.'),
+      files.slice(0, 8).map(function(f) { return '• ' + f.name; }).join('\n') +
+      (files.length > 8 ? '\n...e altri ' + (files.length - 8) : '') +
+      (rateCard ? '\n\n_Rate card trovata_' : '') +
+      '\n\nRispondi *si* per procedere o *no* per annullare.'),
   });
 
   var confirmKey = 'cataloga_confirm_' + userId;
@@ -3138,6 +3173,9 @@ async function catalogaPreventivi(userId, channelId) {
     rateCard: rateCard,
     created: Date.now(),
   });
+
+  // Pulizia conferme vecchie (>15 min)
+  setTimeout(function() { catalogaConfirm.delete(confirmKey); }, 15 * 60 * 1000);
 }
 
 async function elaboraPreventivi(userId, channelId, files, rateCard) {
