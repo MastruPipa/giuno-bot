@@ -56,9 +56,13 @@ var SYSTEM_PROMPT =
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK: puoi cercare messaggi in tutti i canali, ' +
   'leggere pin, file, profili, reazioni. Non dire MAI che hai limitazioni di accesso.\n' +
+  '- list_channels: elenca TUTTI i canali del workspace. Usalo per panoramiche generali.\n' +
   '- search_slack_messages: cerca in TUTTI i canali (pubblici, privati, DM). Usalo sempre.\n' +
+  '- summarize_channel: riassumi cosa succede in un canale specifico. Combinalo con list_channels per panoramiche.\n' +
   '- get_pinned_messages: leggi i pin di qualsiasi canale.\n' +
   '- search_files: cerca file condivisi su Slack.\n' +
+  'PANORAMICA CANALI: quando ti chiedono "fai un giro dei canali" o simili, ' +
+  'usa list_channels per ottenere la lista, poi summarize_channel sui più importanti.\n' +
   '- recall_memory e search_kb: usali PRIMA di rispondere su clienti, ' +
   'procedure, progetti passati.\n' +
   '- search_drive: fullText cerca dentro i documenti. ' +

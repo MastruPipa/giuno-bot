@@ -317,6 +317,16 @@ var definitions = [
       properties: {},
     },
   },
+  {
+    name: 'list_channels',
+    description: 'Elenca tutti i canali Slack del workspace (pubblici e privati a cui il bot ha accesso). Utile per fare una panoramica, trovare canali per nome, o sapere dove cercare.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        include_archived: { type: 'boolean', description: 'Includi canali archiviati (default false)' },
+      },
+    },
+  },
 ];
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
@@ -719,6 +729,31 @@ async function execute(toolName, input, userId) {
       });
       return { reactions: reactions, total: reactions.length };
     } catch(e) { return { error: 'Errore reazioni: ' + e.message }; }
+  }
+
+  // ─── List Channels ──────────────────────────────────────────────────────────
+  if (toolName === 'list_channels') {
+    try {
+      var allCh = await getAllChannels(app);
+      var filtered = allCh;
+      if (!input.include_archived) {
+        filtered = allCh.filter(function(c) { return !c.is_archived; });
+      }
+      return {
+        channels: filtered.map(function(c) {
+          return {
+            id: c.id,
+            name: c.name,
+            topic: (c.topic && c.topic.value) || '',
+            purpose: (c.purpose && c.purpose.value) || '',
+            num_members: c.num_members || 0,
+            is_private: c.is_private || false,
+            is_archived: c.is_archived || false,
+          };
+        }),
+        total: filtered.length,
+      };
+    } catch(e) { return { error: 'Errore lista canali: ' + e.message }; }
   }
 
   // ─── Emoji ──────────────────────────────────────────────────────────────────
