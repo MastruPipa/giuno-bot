@@ -1,0 +1,63 @@
+// ─── Context Builder ───────────────────────────────────────────────────────────
+// Assembles the context object for a request:
+// userId, role, profile, channelContext, mentionedBy, channelId, threadTs,
+// oauthLink if needed.
+
+'use strict';
+
+var db = require('../../supabase');
+var rbac = require('../../rbac');
+var { generaLinkOAuth } = require('../services/googleAuthService');
+
+var getUserRole = rbac.getUserRole;
+
+/**
+ * buildContext — assembles a rich context object from raw request parameters.
+ *
+ * @param {object} params
+ * @param {string} params.userId
+ * @param {string} params.message
+ * @param {object} [params.options]   — threadTs, channelId, mentionedBy, channelContext
+ * @returns {object}  context
+ */
+async function buildContext(params) {
+  var userId  = params.userId;
+  var message = params.message;
+  var options = params.options || {};
+
+  var userRole = await getUserRole(userId);
+
+  // User profile
+  var profiles = db.getProfileCache();
+  var profile  = profiles[userId] || {};
+
+  // Channel map
+  var channelMapEntry = null;
+  if (options.channelId) {
+    channelMapEntry = db.getChannelMapCache()[options.channelId] || null;
+  }
+
+  // OAuth link if message is about connecting Google
+  var oauthLink = null;
+  var msgLow = (message || '').toLowerCase();
+  if ((msgLow.includes('collega') || msgLow.includes('connetti') || msgLow.includes('autorizza')) &&
+      (msgLow.includes('google') || msgLow.includes('calendar') || msgLow.includes('gmail') ||
+       msgLow.includes('account') || msgLow.includes('email') || msgLow.includes('mail'))) {
+    var oauthUrl = generaLinkOAuth(userId);
+    oauthLink = '<' + oauthUrl + '|Collega il tuo Google>';
+  }
+
+  return {
+    userId:         userId,
+    userRole:       userRole,
+    profile:        profile,
+    threadTs:       options.threadTs   || null,
+    channelId:      options.channelId  || null,
+    channelContext: options.channelContext || null,
+    mentionedBy:    options.mentionedBy || null,
+    channelMapEntry:channelMapEntry,
+    oauthLink:      oauthLink,
+  };
+}
+
+module.exports = { buildContext: buildContext };
