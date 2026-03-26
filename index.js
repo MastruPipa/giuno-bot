@@ -2321,6 +2321,55 @@ const SYSTEM_PROMPT =
 
 // ─── askGiuno ─────────────────────────────────────────────────────────────────
 
+// Comprime i messaggi più vecchi in un riassunto, mantiene gli ultimi 8 scambi freschi
+async function compressConversation(messages) {
+  const KEEP_RECENT = 8; // ultimi N messaggi da tenere intatti
+  if (messages.length <= KEEP_RECENT) return messages;
+
+  const toCompress = messages.slice(0, messages.length - KEEP_RECENT);
+  const recent = messages.slice(messages.length - KEEP_RECENT);
+
+  // Controlla se il primo messaggio è già un riassunto precedente
+  var existingSummary = '';
+  var startIdx = 0;
+  if (toCompress.length > 0 && toCompress[0].role === 'user' &&
+      typeof toCompress[0].content === 'string' &&
+      toCompress[0].content.startsWith('[RIASSUNTO CONVERSAZIONE PRECEDENTE:')) {
+    existingSummary = toCompress[0].content;
+    startIdx = 1;
+  }
+
+  const toSummarize = toCompress.slice(startIdx);
+  if (toSummarize.length === 0) return [toCompress[0]].concat(recent);
+
+  // Costruisci testo da riassumere
+  var transcript = toSummarize.map(function(m) {
+    var role = m.role === 'user' ? 'Utente' : 'Giuno';
+    var content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+    return role + ': ' + content.substring(0, 500);
+  }).join('\n');
+
+  var summaryPrompt = existingSummary
+    ? 'Hai già questo riassunto della conversazione:\n' + existingSummary + '\n\nEstendi il riassunto includendo questi nuovi scambi:\n' + transcript
+    : 'Riassumi questa conversazione in modo conciso, mantenendo: decisioni prese, info importanti su clienti/progetti, task assegnati, preferenze utente emerse.\n\n' + transcript;
+
+  try {
+    var res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      system: 'Sei un assistente che riassume conversazioni. Sii conciso e preciso. Rispondi in italiano.',
+      messages: [{ role: 'user', content: summaryPrompt }],
+    });
+    var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + res.content[0].text.trim() + ']';
+    logger.info('[COMPRESS] Conversazione compressa:', toSummarize.length, 'messaggi → riassunto');
+    return [{ role: 'user', content: summary }, { role: 'assistant', content: 'Ok, ho il contesto della nostra conversazione precedente.' }].concat(recent);
+  } catch(e) {
+    logger.error('[COMPRESS] Errore compressione:', e.message);
+    // Fallback: taglia normalmente
+    return messages.slice(-12);
+  }
+}
+
 function conversationKey(userId, threadTs) {
   return threadTs ? userId + ':' + threadTs : userId;
 }
@@ -2433,7 +2482,9 @@ async function askGiuno(userId, userMessage, options) {
 
   convCache[convKey].push({ role: 'user', content: messageWithContext });
   convCache[convKey].push({ role: 'assistant', content: finalReply });
-  if (convCache[convKey].length > 20) convCache[convKey] = convCache[convKey].slice(-20);
+  if (convCache[convKey].length > 20) {
+    convCache[convKey] = await compressConversation(convCache[convKey]);
+  }
   db.saveConversation(convKey, convCache[convKey]);
 
   // Auto-learn in background: analizza la conversazione e salva info utili
