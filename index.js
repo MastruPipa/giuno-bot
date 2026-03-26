@@ -1934,6 +1934,11 @@ const SYSTEM_PROMPT =
   "Per email e documenti, mostra solo oggetto/titolo e mittente, mai il corpo intero a meno che l'utente non lo chieda esplicitamente.\n\n" +
   "HAI ACCESSO A:\n" +
   "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
+  "CONTESTO CANALE:\n" +
+  "Quando vieni menzionato in un canale, ricevi automaticamente: nome canale, topic, messaggi recenti e membri presenti.\n" +
+  "LEGGI SEMPRE la conversazione recente prima di rispondere. Capisci di cosa si sta parlando, quale progetto/cliente e' in discussione, chi ha detto cosa.\n" +
+  "Rispondi nel contesto della discussione in corso, come un collega che segue la conversazione.\n" +
+  "Non chiedere info che sono gia' visibili nei messaggi recenti del canale.\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
@@ -2020,6 +2025,11 @@ async function askGiuno(userId, userMessage, options) {
 
   if (options.mentionedBy) {
     contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
+  }
+
+  // Contesto canale (nome, topic, messaggi recenti, membri)
+  if (options.channelContext) {
+    contextData += '\n' + options.channelContext + '\n';
   }
 
   // Inietta profilo utente
@@ -2229,7 +2239,48 @@ app.event('app_mention', async function(args) {
   stats.messagesHandled++;
   try {
     const text  = event.text.replace(/<@[^>]+>/g, '').trim();
-    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs });
+
+    // Raccogli contesto del canale: info, messaggi recenti, partecipanti
+    var channelContext = '';
+    try {
+      var chInfo = await app.client.conversations.info({ channel: event.channel });
+      var ch = chInfo.channel || {};
+      channelContext += 'CANALE: #' + (ch.name || 'sconosciuto');
+      if (ch.topic && ch.topic.value) channelContext += '\nTopic: ' + ch.topic.value;
+      if (ch.purpose && ch.purpose.value) channelContext += '\nDescrizione: ' + ch.purpose.value;
+      channelContext += '\n';
+    } catch(e) {}
+
+    // Messaggi recenti nel thread (se in thread) o nel canale
+    try {
+      var recentMsgs;
+      if (event.thread_ts) {
+        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 15 });
+        recentMsgs = (threadRes.messages || []).slice(-15);
+      } else {
+        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 10 });
+        recentMsgs = (histRes.messages || []).reverse();
+      }
+      if (recentMsgs.length > 0) {
+        channelContext += '\nCONVERSAZIONE RECENTE NEL CANALE:\n';
+        for (var rm of recentMsgs) {
+          if (rm.ts === event.ts) continue; // salta il messaggio corrente
+          var who = rm.user ? '<@' + rm.user + '>' : 'bot';
+          channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
+        }
+      }
+    } catch(e) {}
+
+    // Membri del canale
+    try {
+      var membersRes = await app.client.conversations.members({ channel: event.channel, limit: 50 });
+      var memberIds = (membersRes.members || []).filter(function(id) { return id !== event.user; });
+      if (memberIds.length > 0) {
+        channelContext += '\nMEMBRI PRESENTI NEL CANALE: ' + memberIds.map(function(id) { return '<@' + id + '>'; }).join(', ') + '\n';
+      }
+    } catch(e) {}
+
+    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext });
     const formatted = formatPerSlack(reply);
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
@@ -2709,59 +2760,8 @@ async function indicizzaDriveTutti() {
   logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
 }
 
-// ─── Notifiche proattive ──────────────────────────────────────────────────────
-
-const notificheRiunioniInviate = new Set();
-const ultimaVerificaEmail = new Map();
-
-// Ogni 2 minuti: avvisa per riunioni imminenti (15 min prima)
-cron.schedule('*/2 * * * *', async function() {
-  const now = new Date();
-  const fra15 = new Date(now.getTime() + 15 * 60 * 1000);
-  for (const slackUserId of Object.keys(getUserTokens())) {
-    if (!getPrefs(slackUserId).notifiche_enabled) continue;
-    const cal = getCalendarPerUtente(slackUserId);
-    if (!cal) continue;
-    try {
-      const res = await cal.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: fra15.toISOString(), singleEvents: true, maxResults: 5 });
-      for (const evento of (res.data.items || [])) {
-        const key = slackUserId + '_' + evento.id + '_' + (evento.start.dateTime || evento.start.date);
-        if (notificheRiunioniInviate.has(key)) continue;
-        notificheRiunioniInviate.add(key);
-        const oraInizio = new Date(evento.start.dateTime || evento.start.date);
-        const minuti = Math.round((oraInizio - now) / 60000);
-        const testo = 'Tra ' + minuti + ' min: *' + (evento.summary || 'Evento') + '*' + (evento.location ? ' — ' + evento.location : '');
-        await app.client.chat.postMessage({ channel: slackUserId, text: testo });
-      }
-    } catch(e) { await handleTokenScaduto(slackUserId, e); }
-  }
-}, { timezone: 'Europe/Rome' });
-
-// Ogni ora: pulisce le notifiche riunioni vecchie
-cron.schedule('0 * * * *', function() { notificheRiunioniInviate.clear(); });
-
-// Ogni 10 minuti: avvisa per nuove email importanti
-cron.schedule('*/10 * * * *', async function() {
-  for (const slackUserId of Object.keys(getUserTokens())) {
-    if (!getPrefs(slackUserId).notifiche_enabled) continue;
-    const gm = getGmailPerUtente(slackUserId);
-    if (!gm) continue;
-    try {
-      const ultima = ultimaVerificaEmail.get(slackUserId) || Math.floor((Date.now() - 10 * 60 * 1000) / 1000);
-      ultimaVerificaEmail.set(slackUserId, Math.floor(Date.now() / 1000));
-      const res = await gm.users.messages.list({ userId: 'me', maxResults: 3, q: 'is:unread is:important after:' + ultima });
-      if (!res.data.messages || res.data.messages.length === 0) continue;
-      const emails = await Promise.all(res.data.messages.map(async function(m) {
-        const msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject'] });
-        const h = msg.data.payload.headers;
-        return { subject: getHeader(h, 'Subject'), from: getHeader(h, 'From') };
-      }));
-      let testo = 'Mail importante' + (emails.length > 1 ? 'i' : '') + ' ricevut' + (emails.length > 1 ? 'e' : 'a') + ':\n';
-      emails.forEach(function(e) { testo += '"' + e.subject + '" da ' + e.from + '\n'; });
-      await app.client.chat.postMessage({ channel: slackUserId, text: testo });
-    } catch(e) { await handleTokenScaduto(slackUserId, e); }
-  }
-});
+// ─── Notifiche proattive (disabilitate) ───────────────────────────────────────
+// Reminder calendario e push email rimossi per evitare spam.
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
@@ -2785,7 +2785,6 @@ cron.schedule('*/10 * * * *', async function() {
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
-  logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
   // Indicizza Drive subito all'avvio
   indicizzaDriveTutti().catch(function(e) { logger.error('Drive index startup error:', e.message); });
   logger.info('Giuno e online!');
