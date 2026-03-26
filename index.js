@@ -40,7 +40,7 @@ function formatPerSlack(text) {
 
 // ─── Azioni critiche: conferma obbligatoria ──────────────────────────────────
 
-const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file'];
+const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet'];
 const confermeInAttesa = new Map(); // convKey -> { toolName, input, toolUseId }
 const catalogaConfirm = new Map(); // cataloga_confirm_userId -> { files, userId, channelId, rateCard }
 
@@ -102,7 +102,8 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/spreadsheets.readonly',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/presentations.readonly',
 ];
 
 const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
@@ -164,6 +165,11 @@ function getDocsPerUtente(slackUserId) {
 function getSheetPerUtente(slackUserId) {
   const auth = getAuthPerUtente(slackUserId);
   return auth ? google.sheets({ version: 'v4', auth: auth }) : null;
+}
+
+function getSlidesPerUtente(slackUserId) {
+  const auth = getAuthPerUtente(slackUserId);
+  return auth ? google.slides({ version: 'v1', auth: auth }) : null;
 }
 
 // Gestione token scaduto: rimuove il token e avvisa l'utente via DM
@@ -866,6 +872,33 @@ const tools = [
       required: ['sheet_id'],
     },
   },
+  {
+    name: 'write_sheet',
+    description: 'Scrive dati in un Google Sheet. Richiede conferma prima dell\'esecuzione. Usa read_sheet prima per capire la struttura del foglio.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sheet_id:   { type: 'string', description: 'ID del Google Sheet' },
+        range:      { type: 'string', description: 'Range dove scrivere, es. "A1:C3" o "Foglio2!A1:B5"' },
+        values:     { type: 'array', items: { type: 'array' }, description: 'Array di righe, ogni riga e\' un array di valori. Es: [["Nome","Cognome"],["Mario","Rossi"]]' },
+        sheet_name: { type: 'string', description: 'Nome del foglio (opzionale, default primo foglio)' },
+      },
+      required: ['sheet_id', 'range', 'values'],
+    },
+  },
+  // Google Slides
+  {
+    name: 'read_slides',
+    description: 'Legge il contenuto di una presentazione Google Slides. Restituisce titolo, numero slide e testo di ogni slide. Usa search_drive prima per trovare il file ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string', description: 'ID della presentazione Google Slides (dalla URL o da search_drive)' },
+        slide_index:     { type: 'integer', description: 'Indice della slide specifica da leggere (0-based, opzionale). Se omesso legge tutte.' },
+      },
+      required: ['presentation_id'],
+    },
+  },
   // Preventivi (quotes)
   {
     name: 'search_quotes',
@@ -978,6 +1011,10 @@ async function eseguiTool(toolName, input, userId, userRole) {
       preview.preview = 'ELIMINAZIONE EVENTO:\nID: ' + input.event_id;
     } else if (toolName === 'share_file') {
       preview.preview = 'CONDIVISIONE FILE:\nFile: ' + input.file_id + '\nCon: ' + input.email + '\nRuolo: ' + (input.role || 'reader');
+    } else if (toolName === 'write_sheet') {
+      var rowCount = (input.values || []).length;
+      var previewRows = (input.values || []).slice(0, 3).map(function(r) { return (r || []).join(' | '); }).join('\n');
+      preview.preview = 'SCRITTURA GOOGLE SHEET:\nSheet: ' + input.sheet_id + '\nRange: ' + input.range + '\nRighe: ' + rowCount + '\n\nAnteprima:\n' + previewRows;
     }
     return preview;
   }
@@ -1469,6 +1506,92 @@ async function eseguiTool(toolName, input, userId, userRole) {
         rows: rows,
         row_count: rows.length,
         preview: rows.slice(0, 5),
+      };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: e.message };
+    }
+  }
+
+  // Tool write_sheet (la conferma viene gestita da AZIONI_CRITICHE sopra)
+  if (toolName === 'write_sheet') {
+    var sheets = getSheetPerUtente(userId);
+    if (!sheets) return { error: 'Google Sheets non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var writeRange = input.sheet_name
+        ? "'" + input.sheet_name.replace(/'/g, "''") + "'!" + input.range
+        : input.range;
+      var writeRes = await sheets.spreadsheets.values.update({
+        spreadsheetId: input.sheet_id,
+        range: writeRange,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: input.values },
+      });
+      return {
+        success: true,
+        updated_range: writeRes.data.updatedRange,
+        updated_rows: writeRes.data.updatedRows,
+        updated_cols: writeRes.data.updatedColumns,
+        updated_cells: writeRes.data.updatedCells,
+      };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: e.message };
+    }
+  }
+
+  // Tool Google Slides
+  if (toolName === 'read_slides') {
+    var slides = getSlidesPerUtente(userId);
+    if (!slides) return { error: 'Google Slides non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var pres = await slides.presentations.get({ presentationId: input.presentation_id });
+      var presData = pres.data;
+      var slidesList = (presData.slides || []).map(function(slide, idx) {
+        var texts = [];
+        var notes = '';
+        (slide.pageElements || []).forEach(function(el) {
+          if (el.shape && el.shape.text) {
+            var t = el.shape.text.textElements.map(function(te) {
+              return te.textRun ? te.textRun.content : '';
+            }).join('').trim();
+            if (t) texts.push(t);
+          }
+        });
+        // Note speaker
+        if (slide.slideProperties && slide.slideProperties.notesPage) {
+          var notesPage = slide.slideProperties.notesPage;
+          (notesPage.pageElements || []).forEach(function(el) {
+            if (el.shape && el.shape.text) {
+              var n = el.shape.text.textElements.map(function(te) {
+                return te.textRun ? te.textRun.content : '';
+              }).join('').trim();
+              if (n) notes += n + '\n';
+            }
+          });
+        }
+        return {
+          index: idx,
+          texts: texts,
+          notes: notes.trim() || null,
+        };
+      });
+
+      // Se richiesta una slide specifica
+      if (input.slide_index !== undefined && input.slide_index !== null) {
+        var target = slidesList[input.slide_index];
+        if (!target) return { error: 'Slide ' + input.slide_index + ' non trovata. La presentazione ha ' + slidesList.length + ' slide (0-' + (slidesList.length - 1) + ').' };
+        return {
+          title: presData.title,
+          total_slides: slidesList.length,
+          slide: target,
+        };
+      }
+
+      return {
+        title: presData.title,
+        total_slides: slidesList.length,
+        slides: slidesList,
       };
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
@@ -2114,7 +2237,7 @@ const SYSTEM_PROMPT =
   "MAI usare # ## ### per titoli. MAI usare ** o __.\n" +
   "Risposte brevi. Max 4-5 righe salvo richieste complesse.\n\n" +
   "CONFERMA OBBLIGATORIA — REGOLA CRITICA:\n" +
-  "Quando usi send_email, reply_email, forward_email, create_event, delete_event o share_file,\n" +
+  "Quando usi send_email, reply_email, forward_email, create_event, delete_event, share_file o write_sheet,\n" +
   "il sistema restituisce un'anteprima con requires_confirmation: true.\n" +
   "DEVI mostrare l'anteprima all'utente e chiedere conferma ESPLICITA.\n" +
   "Solo quando l'utente dice 'sì', 'ok', 'manda', 'procedi', 'confermo' puoi usare confirm_action.\n" +
@@ -2124,7 +2247,7 @@ const SYSTEM_PROMPT =
   "MAI condividere in output: password, token, chiavi API, numeri di carta, IBAN completi.\n" +
   "Per email e documenti, mostra solo oggetto/titolo e mittente, mai il corpo intero a meno che l'utente non lo chieda esplicitamente.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread), Preventivi (search_quotes), Rate Card (get_rate_card)\n\n" +
+  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Google Sheets (lettura + scrittura con conferma), Google Slides (lettura), Slack (messaggi, ricerca, riassunti canali/thread), Preventivi (search_quotes), Rate Card (get_rate_card)\n\n" +
   "PREVENTIVI E RATE CARD:\n" +
   "- search_quotes: cerca preventivi per cliente, progetto, anno, stato. I dati visibili dipendono dal ruolo utente.\n" +
   "- get_rate_card: recupera il listino prezzi interni (solo admin/finance).\n" +
