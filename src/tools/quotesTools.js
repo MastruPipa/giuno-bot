@@ -246,15 +246,15 @@ async function execute(toolName, input, userId, userRole) {
         var { app } = require('../services/slackService');
         var slkRes = await app.client.search.messages({
           token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN,
-          query: input.query, count: 5, sort: 'timestamp', sort_dir: 'desc',
+          query: input.query, count: 15, sort: 'timestamp', sort_dir: 'desc',
         });
         var matches = (slkRes.messages && slkRes.messages.matches) || [];
         if (matches.length > 0) {
           results.slack = matches.map(function(m) {
-            return { text: (m.text || '').substring(0, 200), channel: m.channel ? m.channel.name : null, permalink: m.permalink };
+            return { text: (m.text || '').substring(0, 600), user: m.user || m.username, channel: m.channel ? m.channel.name : null, timestamp: m.ts, permalink: m.permalink };
           });
         }
-      } catch(e) {}
+      } catch(e) { logger.error('[SEARCH-EVERYWHERE] Slack error:', e.message); }
     }
 
     return results;

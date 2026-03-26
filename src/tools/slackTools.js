@@ -1,6 +1,6 @@
 // ─── Slack Tools ───────────────────────────────────────────────────────────────
 // get_slack_users, send_dm, set_user_prefs, search_slack_messages,
-// summarize_channel, summarize_thread, get_channel_map
+// summarize_channel, summarize_thread, get_channel_map, create_poll
 
 'use strict';
 
@@ -14,6 +14,52 @@ var { SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 function getApp() { return require('../services/slackService').app; }
 function getAnthropic() { return require('../services/anthropicService').client; }
 function getUtenti() { return require('../services/slackService').getUtenti(); }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Paginated conversations.list — fetches ALL channels
+async function getAllChannels(app) {
+  var all = [];
+  var cursor = undefined;
+  do {
+    var res = await app.client.conversations.list({
+      limit: 200,
+      types: 'public_channel,private_channel',
+      cursor: cursor,
+    });
+    all = all.concat(res.channels || []);
+    cursor = res.response_metadata && res.response_metadata.next_cursor;
+  } while (cursor);
+  return all;
+}
+
+// Paginated conversations.history — fetches up to maxMessages
+async function getChannelHistory(app, channelId, oldest, maxMessages) {
+  maxMessages = maxMessages || 300;
+  var all = [];
+  var cursor = undefined;
+  do {
+    var opts = { channel: channelId, limit: 200 };
+    if (oldest) opts.oldest = oldest;
+    if (cursor) opts.cursor = cursor;
+    var res = await app.client.conversations.history(opts);
+    all = all.concat(res.messages || []);
+    cursor = res.response_metadata && res.response_metadata.next_cursor;
+  } while (cursor && all.length < maxMessages);
+  return all.slice(0, maxMessages);
+}
+
+// Resolve user ID to display name (with cache)
+async function resolveUserName(app, userId, cache) {
+  if (cache[userId]) return cache[userId];
+  try {
+    var uRes = await app.client.users.info({ user: userId });
+    cache[userId] = uRes.user.real_name || uRes.user.name;
+  } catch(e) {
+    cache[userId] = userId;
+  }
+  return cache[userId];
+}
 
 // ─── Preferences helpers ───────────────────────────────────────────────────────
 
@@ -76,7 +122,7 @@ var definitions = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Testo da cercare (supporta operatori Slack: in:#canale, from:@utente, before:, after:, has:link)' },
-        max:   { type: 'number', description: 'Numero massimo risultati (default 10)' },
+        max:   { type: 'number', description: 'Numero massimo risultati (default 20)' },
       },
       required: ['query'],
     },
@@ -185,28 +231,47 @@ async function execute(toolName, input, userId) {
 
   if (toolName === 'search_slack_messages') {
     try {
-      var max = input.max || 10;
-      var res = await app.client.search.messages({
-        token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN,
-        query: input.query,
-        count: max,
-        sort: 'timestamp',
-        sort_dir: 'desc',
-      });
-      var matches = (res.messages && res.messages.matches) || [];
+      var max = input.max || 20;
+      var searchToken = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN;
+
+      // Paginated search — fetch up to max results across pages
+      var allMatches = [];
+      var page = 1;
+      var totalFetched = 0;
+      while (totalFetched < max) {
+        var pageCount = Math.min(max - totalFetched, 100);
+        var res = await app.client.search.messages({
+          token: searchToken,
+          query: input.query,
+          count: pageCount,
+          page: page,
+          sort: 'timestamp',
+          sort_dir: 'desc',
+        });
+        var matches = (res.messages && res.messages.matches) || [];
+        if (matches.length === 0) break;
+        allMatches = allMatches.concat(matches);
+        totalFetched += matches.length;
+        page++;
+        // Stop if we got all available results
+        var total = (res.messages && res.messages.total) || 0;
+        if (totalFetched >= total) break;
+      }
+
       return {
-        results: matches.map(function(m) {
+        results: allMatches.slice(0, max).map(function(m) {
           return {
-            text: (m.text || '').substring(0, 300),
+            text: (m.text || '').substring(0, 800),
             user: m.user || m.username,
             channel: m.channel ? m.channel.name : null,
             timestamp: m.ts,
             permalink: m.permalink,
           };
         }),
-        total: (res.messages && res.messages.total) || 0,
+        total: (res && res.messages && res.messages.total) || allMatches.length,
       };
     } catch(e) {
+      logger.error('[SEARCH-SLACK] Errore:', e.message);
       return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' };
     }
   }
@@ -215,26 +280,25 @@ async function execute(toolName, input, userId) {
     try {
       var hours = input.hours || 24;
       var oldest = String(Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000));
-      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
-      var target = (channelsRes.channels || []).find(function(c) { return c.name === input.channel_name; });
+
+      // Paginated channel list
+      var allChannels = await getAllChannels(app);
+      var target = allChannels.find(function(c) { return c.name === input.channel_name; });
       if (!target) return { error: 'Canale #' + input.channel_name + ' non trovato.' };
+
+      // Auto-join channel
       try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
-      var hist = await app.client.conversations.history({ channel: target.id, oldest: oldest, limit: 100 });
-      var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
+
+      // Paginated history
+      var allMsgs = await getChannelHistory(app, target.id, oldest, 300);
+      var msgs = allMsgs.filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
       if (msgs.length === 0) return { summary: 'Nessun messaggio nelle ultime ' + hours + ' ore in #' + input.channel_name + '.' };
 
       var userCache = {};
       var messagesText = '';
       for (var i = msgs.length - 1; i >= 0; i--) {
         var m = msgs[i];
-        var userName = m.user;
-        if (!userCache[m.user]) {
-          try {
-            var uRes = await app.client.users.info({ user: m.user });
-            userCache[m.user] = uRes.user.real_name || uRes.user.name;
-          } catch(e) { userCache[m.user] = m.user; }
-        }
-        userName = userCache[m.user];
+        var userName = await resolveUserName(app, m.user, userCache);
         messagesText += userName + ': ' + m.text + '\n';
       }
 
@@ -242,7 +306,7 @@ async function execute(toolName, input, userId) {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
         system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. ' + SLACK_FORMAT_RULES,
-        messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore):\n\n' + messagesText.substring(0, 6000) }],
+        messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore, ' + msgs.length + ' messaggi):\n\n' + messagesText.substring(0, 12000) }],
       });
       var summary = summaryRes.content[0].text;
       return { channel: input.channel_name, hours: hours, messages_count: msgs.length, summary: summary };
@@ -251,28 +315,33 @@ async function execute(toolName, input, userId) {
 
   if (toolName === 'summarize_thread') {
     try {
-      var threadRes = await app.client.conversations.replies({ channel: input.channel_id, ts: input.thread_ts, limit: 100 });
-      var threadMsgs = (threadRes.messages || []).filter(function(m) { return m.text; });
+      // Paginated thread replies
+      var allReplies = [];
+      var threadCursor = undefined;
+      do {
+        var opts = { channel: input.channel_id, ts: input.thread_ts, limit: 200 };
+        if (threadCursor) opts.cursor = threadCursor;
+        var threadRes = await app.client.conversations.replies(opts);
+        allReplies = allReplies.concat(threadRes.messages || []);
+        threadCursor = threadRes.response_metadata && threadRes.response_metadata.next_cursor;
+      } while (threadCursor && allReplies.length < 500);
+
+      var threadMsgs = allReplies.filter(function(m) { return m.text; });
       if (threadMsgs.length === 0) return { summary: 'Thread vuoto.' };
 
       var threadUserCache = {};
       var threadText = '';
       for (var j = 0; j < threadMsgs.length; j++) {
         var tm = threadMsgs[j];
-        if (!threadUserCache[tm.user]) {
-          try {
-            var tuRes = await app.client.users.info({ user: tm.user });
-            threadUserCache[tm.user] = tuRes.user.real_name || tuRes.user.name;
-          } catch(e) { threadUserCache[tm.user] = tm.user; }
-        }
-        threadText += threadUserCache[tm.user] + ': ' + tm.text + '\n';
+        var tmName = await resolveUserName(app, tm.user, threadUserCache);
+        threadText += tmName + ': ' + tm.text + '\n';
       }
 
       var threadSummaryRes = await getAnthropic().messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 400,
         system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. ' + SLACK_FORMAT_RULES,
-        messages: [{ role: 'user', content: 'Riassumi questo thread Slack:\n\n' + threadText.substring(0, 6000) }],
+        messages: [{ role: 'user', content: 'Riassumi questo thread Slack (' + threadMsgs.length + ' messaggi):\n\n' + threadText.substring(0, 12000) }],
       });
       return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
     } catch(e) { return { error: 'Errore: ' + e.message }; }
@@ -294,8 +363,8 @@ async function execute(toolName, input, userId) {
       if (!input.channel.match(/^[CG]/)) {
         var chanName = input.channel.replace(/^#/, '');
         try {
-          var list = await app.client.conversations.list({ limit: 200 });
-          var found = (list.channels || []).find(function(c) { return c.name === chanName; });
+          var chanList = await getAllChannels(app);
+          var found = chanList.find(function(c) { return c.name === chanName; });
           if (found) channelId = found.id;
         } catch(e) {}
       }
