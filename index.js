@@ -293,7 +293,14 @@ const standupInAttesa = new Set();
 // ─── Stats e feedback ─────────────────────────────────────────────────────────
 
 const stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
-const botMessages = new Map(); // ts -> { userId, text }
+const botMessages = new Map(); // ts -> { userId, text, channel, timestamp }
+var lastBotMessageByChannel = new Map(); // channelId -> { ts, userId, timestamp }
+// Pulizia periodica botMessages (max 500 entries, rimuovi più vecchi di 30 min)
+setInterval(function() {
+  var cutoff = Date.now() - 30 * 60 * 1000;
+  botMessages.forEach(function(v, k) { if (v.timestamp && v.timestamp < cutoff) botMessages.delete(k); });
+  lastBotMessageByChannel.forEach(function(v, k) { if (v.timestamp < cutoff) lastBotMessageByChannel.delete(k); });
+}, 10 * 60 * 1000);
 
 // ─── OAuth + Dashboard server ─────────────────────────────────────────────────
 
@@ -2857,7 +2864,10 @@ app.event('app_mention', async function(args) {
       return;
     }
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
-    if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
+    if (posted && posted.ts) {
+      botMessages.set(posted.ts, { userId: event.user, text: formatted, channel: event.channel, timestamp: Date.now() });
+      lastBotMessageByChannel.set(event.channel, { ts: posted.ts, userId: event.user, timestamp: Date.now() });
+    }
   } catch(err) {
     await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
@@ -2865,7 +2875,51 @@ app.event('app_mention', async function(args) {
 
 app.message(async function(args) {
   const message = args.message;
-  if (message.channel_type !== 'im' || message.bot_id) return;
+  if (message.bot_id) return;
+
+  // ─── Risposta implicita in canale (non DM, non menzione) ──────────────
+  if (message.channel_type !== 'im') {
+    var isImplicitReply = false;
+    var implicitThreadTs = null;
+
+    // Caso 1: thread reply a un messaggio di Giuno
+    if (message.thread_ts && botMessages.has(message.thread_ts)) {
+      isImplicitReply = true;
+      implicitThreadTs = message.thread_ts;
+    }
+
+    // Caso 2: messaggio nel canale subito dopo Giuno (entro 2 min, stesso utente della conversazione)
+    if (!isImplicitReply) {
+      var lastBot = lastBotMessageByChannel.get(message.channel);
+      if (lastBot && (Date.now() - lastBot.timestamp) < 120000 && lastBot.userId === message.user) {
+        isImplicitReply = true;
+        implicitThreadTs = lastBot.ts;
+      }
+    }
+
+    if (!isImplicitReply) return; // Non è per Giuno, ignora
+
+    // Dedup
+    if (processedEvents.has(message.ts)) return;
+    processedEvents.add(message.ts);
+
+    stats.messagesHandled++;
+    try {
+      var reply = await askGiuno(message.user, message.text, { threadTs: implicitThreadTs, channelId: message.channel });
+      var formatted = formatPerSlack(reply);
+      if (!formatted) return;
+      var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: implicitThreadTs });
+      if (posted && posted.ts) {
+        botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
+        lastBotMessageByChannel.set(message.channel, { ts: posted.ts, userId: message.user, timestamp: Date.now() });
+      }
+    } catch(err) {
+      logger.error('[IMPLICIT-REPLY] Errore:', err.message);
+    }
+    return;
+  }
+
+  // ─── DM diretti ──────────────────────────────────────────────────────────
 
   // Intercetta risposte standup
   if (standupInAttesa.has(message.user)) {
@@ -2915,7 +2969,7 @@ app.message(async function(args) {
       text: formatted,
       thread_ts: threadTs || undefined,
     });
-    if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted });
+    if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
   } catch(err) { await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
 });
 
