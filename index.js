@@ -1939,9 +1939,17 @@ const SYSTEM_PROMPT =
   "LEGGI SEMPRE la conversazione recente prima di rispondere. Capisci di cosa si sta parlando, quale progetto/cliente e' in discussione, chi ha detto cosa.\n" +
   "Rispondi nel contesto della discussione in corso, come un collega che segue la conversazione.\n" +
   "Non chiedere info che sono gia' visibili nei messaggi recenti del canale.\n\n" +
-  "TAGGING SLACK:\n" +
-  "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
-  "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
+  "TAGGING SLACK — REGOLE:\n" +
+  "1. Tagga SEMPRE chi ti ha scritto: <@USERID> all'inizio della risposta.\n" +
+  "2. Tagga le persone COINVOLTE nell'azione: se si parla di un task per Paolo, tagga anche Paolo.\n" +
+  "   Se serve coordinamento tra piu' persone, taggale tutte.\n" +
+  "   Usa i MEMBRI PRESENTI NEL CANALE e la CONVERSAZIONE RECENTE per capire chi coinvolgere.\n" +
+  "3. Se ci sono INFO BLOCCANTI, DECISIONI IMPORTANTI o PROBLEMI CRITICI,\n" +
+  "   aggiungi in fondo al messaggio una riga 'cc <@manager1> <@manager2>' per dare visibilita' ai responsabili.\n" +
+  "   Usa il profilo utente e la knowledge base per capire chi sono i manager/responsabili.\n" +
+  "   Il cc NON e' obbligatorio: usalo solo quando serve davvero (blocchi, decisioni, escalation).\n" +
+  "4. Per trovare ID o email di un collega usa get_slack_users.\n" +
+  "5. MAI taggare persone a caso. Tagga solo chi e' rilevante per la conversazione.\n\n" +
   "GEMINI (dual-brain):\n" +
   "Hai un secondo cervello AI (Gemini) a disposizione:\n" +
   "- ask_gemini: per avere un secondo parere, cross-check info, brainstorming\n" +
