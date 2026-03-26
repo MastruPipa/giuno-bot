@@ -1240,7 +1240,7 @@ async function eseguiTool(toolName, input, userId) {
       '1. VALUTAZIONE GENERALE (1 riga)\n' +
       '2. PROBLEMI TROVATI (lista breve)\n' +
       '3. TESTO MIGLIORATO (versione corretta completa)\n' +
-      'Formattazione Slack: grassetto con *testo*, no markdown.'
+      'Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.'
     );
     return reviewResult;
   }
@@ -1260,7 +1260,7 @@ async function eseguiTool(toolName, input, userId) {
       '4. *Chiarezza*: il messaggio e\' chiaro?\n' +
       '5. *Suggerimenti*: cosa migliorare\n\n' +
       'Se la bozza va bene, dillo. Se va migliorata, proponi la versione corretta.\n' +
-      'Formattazione Slack: grassetto con *testo*, no markdown.'
+      'Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.'
     );
     return emailReviewResult;
   }
@@ -1381,7 +1381,7 @@ async function eseguiTool(toolName, input, userId) {
       var summaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. Formattazione Slack (grassetto con *testo*, no markdown).',
+        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare markdown con ** o ##.',
         messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore):\n\n' + messagesText.substring(0, 6000) }],
       });
       var summary = summaryRes.content[0].text;
@@ -1412,7 +1412,7 @@ async function eseguiTool(toolName, input, userId) {
       var threadSummaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 400,
-        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. Formattazione Slack.',
+        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.',
         messages: [{ role: 'user', content: 'Riassumi questo thread Slack:\n\n' + threadText.substring(0, 6000) }],
       });
       return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
@@ -1451,7 +1451,7 @@ async function eseguiTool(toolName, input, userId) {
       var docSummaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. Formattazione Slack.',
+        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.',
         messages: [{ role: 'user', content: 'Riassumi questo documento "' + docTitle + '":\n\n' + docText.substring(0, 8000) }],
       });
       var docSummary = docSummaryRes.content[0].text;
@@ -1753,12 +1753,16 @@ const SYSTEM_PROMPT =
   "Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\n" +
   "Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\n" +
   "Rispondi sempre in italiano. Non inventare mai dati.\n\n" +
-  "FORMATTAZIONE SLACK:\n" +
+  "FORMATTAZIONE SLACK (OBBLIGATORIO):\n" +
   "Risposte brevi e dirette. Mai paragrafi lunghi.\n" +
   "Niente trattini per le liste. Usa numeri o vai a capo.\n" +
   "Massimo 3-4 righe salvo richieste complesse.\n" +
-  "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
-  "Non usare # o ** che Slack non renderizza.\n\n" +
+  "GRASSETTO: usa SOLO *testo* con UN singolo asterisco per lato. MAI usare **testo** con doppio asterisco. Slack non supporta il doppio asterisco.\n" +
+  "CORSIVO: usa _testo_ con underscore.\n" +
+  "BARRATO: usa ~testo~ con tilde.\n" +
+  "CODICE: usa `testo` per inline, ```blocco``` per blocchi.\n" +
+  "NON USARE MAI: **, ##, ###, ####. Slack non li renderizza. Se scrivi ** stai sbagliando.\n" +
+  "Liste: usa numeri (1. 2. 3.) oppure bullet con •, mai trattini.\n\n" +
   "HAI ACCESSO A:\n" +
   "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
   "TAGGING SLACK:\n" +
