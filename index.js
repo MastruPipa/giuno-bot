@@ -1939,9 +1939,17 @@ const SYSTEM_PROMPT =
   "LEGGI SEMPRE la conversazione recente prima di rispondere. Capisci di cosa si sta parlando, quale progetto/cliente e' in discussione, chi ha detto cosa.\n" +
   "Rispondi nel contesto della discussione in corso, come un collega che segue la conversazione.\n" +
   "Non chiedere info che sono gia' visibili nei messaggi recenti del canale.\n\n" +
-  "TAGGING SLACK:\n" +
-  "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
-  "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
+  "TAGGING SLACK — REGOLE:\n" +
+  "1. Tagga SEMPRE chi ti ha scritto: <@USERID> all'inizio della risposta.\n" +
+  "2. Tagga le persone COINVOLTE nell'azione: se si parla di un task per Paolo, tagga anche Paolo.\n" +
+  "   Se serve coordinamento tra piu' persone, taggale tutte.\n" +
+  "   Usa i MEMBRI PRESENTI NEL CANALE e la CONVERSAZIONE RECENTE per capire chi coinvolgere.\n" +
+  "3. Se ci sono INFO BLOCCANTI, DECISIONI IMPORTANTI o PROBLEMI CRITICI,\n" +
+  "   aggiungi in fondo al messaggio una riga 'cc <@manager1> <@manager2>' per dare visibilita' ai responsabili.\n" +
+  "   Usa il profilo utente e la knowledge base per capire chi sono i manager/responsabili.\n" +
+  "   Il cc NON e' obbligatorio: usalo solo quando serve davvero (blocchi, decisioni, escalation).\n" +
+  "4. Per trovare ID o email di un collega usa get_slack_users.\n" +
+  "5. MAI taggare persone a caso. Tagga solo chi e' rilevante per la conversazione.\n\n" +
   "GEMINI (dual-brain):\n" +
   "Hai un secondo cervello AI (Gemini) a disposizione:\n" +
   "- ask_gemini: per avere un secondo parere, cross-check info, brainstorming\n" +
@@ -2030,6 +2038,15 @@ async function askGiuno(userId, userMessage, options) {
   // Contesto canale (nome, topic, messaggi recenti, membri)
   if (options.channelContext) {
     contextData += '\n' + options.channelContext + '\n';
+    // Inietta mapping canale → cliente/progetto se disponibile
+    if (options.channelId) {
+      var chMap = getChannelMap()[options.channelId];
+      if (chMap) {
+        if (chMap.cliente) contextData += 'CLIENTE CANALE: ' + chMap.cliente + '\n';
+        if (chMap.progetto) contextData += 'PROGETTO CANALE: ' + chMap.progetto + '\n';
+        if (chMap.tags && chMap.tags.length > 0) contextData += 'TAG CANALE: ' + chMap.tags.join(', ') + '\n';
+      }
+    }
   }
 
   // Inietta profilo utente
@@ -2141,11 +2158,13 @@ async function autoLearn(userId, userMessage, botReply) {
         'Rispondi SOLO in formato JSON valido. Se non c\'e\' nulla di utile rispondi: {"skip": true}\n' +
         'Altrimenti rispondi con:\n' +
         '{\n' +
-        '  "memories": [{"content": "info da ricordare", "tags": ["tag1"]}],\n' +
+        '  "memories": [{"content": "info da ricordare", "tags": ["tipo:valore"]}],\n' +
         '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
-        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tag1"]}]\n' +
+        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}]\n' +
         '}\n' +
         'Regole:\n' +
+        '- I TAG devono essere SEMPRE nel formato tipo:valore. Tipi validi: cliente, progetto, area, tipo, persona, tool, processo\n' +
+        '  Esempi: "cliente:elfo", "progetto:videoclip", "area:sviluppo", "tipo:procedura", "persona:antonio", "tool:figma"\n' +
         '- memories: info personali dell\'utente (preferenze, abitudini, contesti)\n' +
         '- profile: aggiornamenti al profilo professionale (ruolo, progetti, clienti, competenze)\n' +
         '- kb: SOLO info che valgono per tutta l\'azienda (procedure, info clienti condivise, decisioni team)\n' +
@@ -2280,7 +2299,7 @@ app.event('app_mention', async function(args) {
       }
     } catch(e) {}
 
-    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext });
+    const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs, channelContext: channelContext, channelId: ch ? ch.id : null });
     const formatted = formatPerSlack(reply);
     const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
@@ -2760,6 +2779,153 @@ async function indicizzaDriveTutti() {
   logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
 }
 
+// ─── Channel Map e Auto-learn canali ──────────────────────────────────────────
+
+function getChannelMap() { return db.getChannelMapCache(); }
+function getChannelDigests() { return db.getChannelDigestCache(); }
+
+// Mappa automatica: deduce cliente/progetto dal nome e topic del canale
+async function autoMapChannel(channelId) {
+  try {
+    var info = await app.client.conversations.info({ channel: channelId });
+    var ch = info.channel || {};
+    if (!ch.name) return null;
+
+    var existing = getChannelMap()[channelId];
+    if (existing && existing.cliente) return existing; // già mappato
+
+    // Chiedi a Claude di dedurre cliente/progetto da nome e topic
+    var chContext = 'Nome canale: #' + ch.name;
+    if (ch.topic && ch.topic.value) chContext += '\nTopic: ' + ch.topic.value;
+    if (ch.purpose && ch.purpose.value) chContext += '\nDescrizione: ' + ch.purpose.value;
+
+    var res = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      system: 'Analizzi nomi e descrizioni di canali Slack aziendali.\n' +
+        'Rispondi SOLO in JSON: {"cliente": "nome o null", "progetto": "nome o null", "tags": ["tag1"]}\n' +
+        'Se il canale e\' generico (es. #general, #random, #dev) rispondi: {"cliente": null, "progetto": null, "tags": ["interno"]}\n' +
+        'I tag devono essere nel formato: tipo:valore (es. "cliente:elfo", "area:sviluppo", "tipo:marketing")',
+      messages: [{ role: 'user', content: chContext }],
+    });
+
+    var text = res.content[0].text.trim();
+    var jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    var parsed = JSON.parse(jsonMatch[0]);
+    var mapping = {
+      channel_name: ch.name,
+      cliente: parsed.cliente || null,
+      progetto: parsed.progetto || null,
+      tags: parsed.tags || [],
+      note: ch.topic ? ch.topic.value : null,
+    };
+    db.saveChannelMapping(channelId, mapping);
+    logger.info('[CHANNEL-MAP] #' + ch.name + ' → cliente:', mapping.cliente, '| progetto:', mapping.progetto);
+    return mapping;
+  } catch(e) {
+    logger.error('[CHANNEL-MAP] Errore:', e.message);
+    return null;
+  }
+}
+
+// Ogni 4 ore: osserva i canali attivi e impara dalle conversazioni
+async function digerisciCanali() {
+  logger.info('[CHANNEL-DIGEST] Avvio digestione canali...');
+  try {
+    var channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
+    var channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
+    var digested = 0;
+
+    for (var ch of channels) {
+      try {
+        // Mappa il canale se non già fatto
+        await autoMapChannel(ch.id);
+
+        var digests = getChannelDigests();
+        var lastTs = (digests[ch.id] && digests[ch.id].last_ts) || String(Math.floor((Date.now() - 4 * 60 * 60 * 1000) / 1000));
+
+        // Leggi messaggi recenti (dalle ultime 4 ore o dall'ultimo digest)
+        var hist = await app.client.conversations.history({ channel: ch.id, oldest: lastTs, limit: 50 });
+        var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
+        if (msgs.length < 3) continue; // troppo pochi messaggi, salta
+
+        var newestTs = msgs[0].ts; // messages are newest first
+        var msgText = msgs.reverse().map(function(m) {
+          return (m.user ? '<@' + m.user + '>' : 'unknown') + ': ' + (m.text || '').substring(0, 200);
+        }).join('\n');
+
+        // Chiedi a Claude di estrarre info utili
+        var channelMapping = getChannelMap()[ch.id] || {};
+        var analysisRes = await client.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 500,
+          system: 'Analizzi conversazioni di canali Slack di un\'agenzia digitale.\n' +
+            'Canale: #' + ch.name + (channelMapping.cliente ? ' (cliente: ' + channelMapping.cliente + ')' : '') +
+            (channelMapping.progetto ? ' (progetto: ' + channelMapping.progetto + ')' : '') + '\n' +
+            'Rispondi SOLO in JSON:\n' +
+            '{"skip": true} se non c\'e\' nulla di utile.\n' +
+            'Altrimenti:\n' +
+            '{\n' +
+            '  "digest": "riassunto breve di cosa si e\' discusso (max 3 righe)",\n' +
+            '  "kb": [{"content": "info aziendale importante", "tags": ["tipo:valore"]}],\n' +
+            '  "channel_update": {"cliente": "nome o null", "progetto": "nome o null"}\n' +
+            '}\n' +
+            'Regole:\n' +
+            '- kb: solo decisioni, scadenze, info clienti, procedure — NON chiacchiere\n' +
+            '- Tags strutturati: cliente:nome, progetto:nome, area:dev/design/marketing, tipo:decisione/scadenza/procedura\n' +
+            '- channel_update: aggiorna solo se hai info piu\' precise sul cliente/progetto del canale',
+          messages: [{ role: 'user', content: msgText }],
+        });
+
+        var analysisText = analysisRes.content[0].text.trim();
+        var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) continue;
+
+        var analysis = JSON.parse(jsonMatch[0]);
+        if (analysis.skip) { db.saveChannelDigest(ch.id, 'nessuna novita', newestTs); continue; }
+
+        // Salva digest
+        if (analysis.digest) {
+          db.saveChannelDigest(ch.id, analysis.digest, newestTs);
+        }
+
+        // Salva KB entries con tag strutturati
+        if (analysis.kb && analysis.kb.length > 0) {
+          analysis.kb.forEach(function(entry) {
+            if (entry.content && entry.content.length > 5) {
+              var tags = (entry.tags || []);
+              // Aggiungi tag canale automaticamente
+              if (channelMapping.cliente) tags.push('cliente:' + channelMapping.cliente.toLowerCase());
+              if (channelMapping.progetto) tags.push('progetto:' + channelMapping.progetto.toLowerCase());
+              tags.push('canale:' + ch.name);
+              addKBEntry(entry.content, tags, 'channel-digest');
+              logger.info('[CHANNEL-DIGEST] KB da #' + ch.name + ':', entry.content.substring(0, 60));
+            }
+          });
+        }
+
+        // Aggiorna mapping canale se Claude ha info migliori
+        if (analysis.channel_update) {
+          var cu = analysis.channel_update;
+          if (cu.cliente || cu.progetto) {
+            var current = getChannelMap()[ch.id] || { channel_name: ch.name, tags: [] };
+            if (cu.cliente) current.cliente = cu.cliente;
+            if (cu.progetto) current.progetto = cu.progetto;
+            db.saveChannelMapping(ch.id, current);
+          }
+        }
+
+        digested++;
+      } catch(e) {
+        if (e.status !== 429) logger.error('[CHANNEL-DIGEST] Errore #' + ch.name + ':', e.message);
+      }
+    }
+    logger.info('[CHANNEL-DIGEST] Digeriti', digested, 'canali.');
+  } catch(e) { logger.error('[CHANNEL-DIGEST] Errore generale:', e.message); }
+}
+
 // ─── Notifiche proattive (disabilitate) ───────────────────────────────────────
 // Reminder calendario e push email rimossi per evitare spam.
 
@@ -2781,10 +2947,12 @@ async function indicizzaDriveTutti() {
   cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
+  cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
+  logger.info('Channel digest: ogni 4 ore');
   // Indicizza Drive subito all'avvio
   indicizzaDriveTutti().catch(function(e) { logger.error('Drive index startup error:', e.message); });
   logger.info('Giuno e online!');

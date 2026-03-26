@@ -96,6 +96,25 @@ CREATE TABLE IF NOT EXISTS feedback (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 10. Channel map (canale → progetto/cliente)
+CREATE TABLE IF NOT EXISTS channel_map (
+  channel_id TEXT PRIMARY KEY,
+  channel_name TEXT,
+  cliente TEXT,
+  progetto TEXT,
+  tags TEXT[] DEFAULT '{}',
+  note TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 11. Channel digests (riassunti periodici dei canali)
+CREATE TABLE IF NOT EXISTS channel_digests (
+  channel_id TEXT PRIMARY KEY,
+  last_digest TEXT,
+  last_ts TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Abilita Row Level Security (opzionale, consigliato per produzione)
 -- ALTER TABLE user_tokens ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE user_prefs ENABLE ROW LEVEL SECURITY;
