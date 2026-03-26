@@ -354,6 +354,7 @@ async function askGiuno(userId, userMessage, options) {
 module.exports = {
   client: client,
   askGiuno: askGiuno,
+  autoLearn: autoLearn,
   SYSTEM_PROMPT: SYSTEM_PROMPT,
   conversationKey: conversationKey,
 };
