@@ -50,8 +50,8 @@ logger.info('OAuth redirect URI:', OAUTH_REDIRECT_URI);
 
 function getUserTokens() { return db.getTokenCache(); }
 
-function salvaTokenUtente(slackUserId, refreshToken) {
-  db.saveToken(slackUserId, refreshToken);
+async function salvaTokenUtente(slackUserId, refreshToken) {
+  return db.saveToken(slackUserId, refreshToken);
 }
 
 function rimuoviTokenUtente(slackUserId) {
