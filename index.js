@@ -40,7 +40,7 @@ function formatPerSlack(text) {
 
 // ─── Azioni critiche: conferma obbligatoria ──────────────────────────────────
 
-const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet'];
+const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet', 'send_dm'];
 const confermeInAttesa = new Map(); // convKey -> { toolName, input, toolUseId }
 const catalogaConfirm = new Map(); // cataloga_confirm_userId -> { files, userId, channelId, rateCard }
 
@@ -940,6 +940,22 @@ const tools = [
       },
     },
   },
+  // Slack DM
+  {
+    name: 'send_dm',
+    description: 'Invia un messaggio diretto (DM) a un collega su Slack. Usalo quando l\'utente chiede di scrivere, mandare un messaggio, avvisare o comunicare qualcosa a qualcuno. ' +
+      'RICHIEDE CONFERMA: mostra sempre l\'anteprima del messaggio prima di inviarlo. ' +
+      'Puoi passare lo slack_user_id se lo conosci, oppure il nome della persona (Giuno cercherà l\'ID).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target_user_id:   { type: 'string', description: 'Slack user ID del destinatario (se noto)' },
+        target_user_name: { type: 'string', description: 'Nome del destinatario (usato per cercare l\'ID se target_user_id non fornito)' },
+        message:          { type: 'string', description: 'Testo del messaggio da inviare' },
+      },
+      required: ['message'],
+    },
+  },
   // Conferma azione critica
   {
     name: 'confirm_action',
@@ -1011,6 +1027,29 @@ async function eseguiTool(toolName, input, userId, userRole) {
       preview.preview = 'ELIMINAZIONE EVENTO:\nID: ' + input.event_id;
     } else if (toolName === 'share_file') {
       preview.preview = 'CONDIVISIONE FILE:\nFile: ' + input.file_id + '\nCon: ' + input.email + '\nRuolo: ' + (input.role || 'reader');
+    } else if (toolName === 'send_dm') {
+      // Risolvi il destinatario per mostrare il nome nell'anteprima
+      var dmTargetName = input.target_user_name || input.target_user_id || '?';
+      if (input.target_user_name && !input.target_user_id) {
+        try {
+          var allUsers = await getUtenti();
+          var nameL = input.target_user_name.toLowerCase();
+          var match = allUsers.find(function(u) { return u.name.toLowerCase().includes(nameL); });
+          if (match) {
+            input.target_user_id = match.id;
+            dmTargetName = match.name;
+          }
+        } catch(e) {}
+      } else if (input.target_user_id && !input.target_user_name) {
+        try {
+          var uInfo = await app.client.users.info({ user: input.target_user_id });
+          dmTargetName = uInfo.user.real_name || uInfo.user.name;
+        } catch(e) {}
+      }
+      preview.preview = 'MESSAGGIO DIRETTO SLACK:\nA: ' + dmTargetName + (input.target_user_id ? ' (' + input.target_user_id + ')' : '') + '\n\nMessaggio:\n' + (input.message || '').substring(0, 500);
+      if (!input.target_user_id) {
+        preview.warning = 'Destinatario "' + input.target_user_name + '" non trovato tra gli utenti Slack. Verifica il nome.';
+      }
     } else if (toolName === 'write_sheet') {
       var rowCount = (input.values || []).length;
       var previewRows = (input.values || []).slice(0, 3).map(function(r) { return (r || []).join(' | '); }).join('\n');
@@ -1031,6 +1070,37 @@ async function eseguiTool(toolName, input, userId, userRole) {
       }
     }
     return preview;
+  }
+
+  // Tool Slack DM
+  if (toolName === 'send_dm') {
+    if (!input.target_user_id) {
+      // Prova a risolvere dal nome
+      if (input.target_user_name) {
+        try {
+          var allUsers = await getUtenti();
+          var nameL = input.target_user_name.toLowerCase();
+          var match = allUsers.find(function(u) { return u.name.toLowerCase().includes(nameL); });
+          if (match) input.target_user_id = match.id;
+        } catch(e) {}
+      }
+      if (!input.target_user_id) return { error: 'Destinatario non trovato. Specifica il nome esatto o lo Slack ID.' };
+    }
+    try {
+      // Apri conversazione DM
+      var convOpen = await app.client.conversations.open({ users: input.target_user_id });
+      var dmChannelId = convOpen.channel.id;
+      // Invia messaggio
+      var dmResult = await app.client.chat.postMessage({
+        channel: dmChannelId,
+        text: input.message,
+      });
+      logger.info('[DM] Messaggio inviato a', input.target_user_id, 'da', userId);
+      return { success: true, message: 'Messaggio inviato in DM.', target: input.target_user_id, ts: dmResult.ts };
+    } catch(e) {
+      logger.error('[DM] Errore invio:', e.message);
+      return { error: 'Errore invio DM: ' + e.message };
+    }
   }
 
   // Tool Slack (non richiedono auth Google)
