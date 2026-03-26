@@ -77,6 +77,7 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/spreadsheets.readonly',
 ];
 
 const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
@@ -1701,8 +1702,10 @@ function getHeader(headers, name) {
 
 // ─── Drive / Docs / Slack helpers ─────────────────────────────────────────────
 
-async function cercaSuDrive(query) {
-  const res = await drive.files.list({ q: "name contains '" + query + "' and trashed = false", fields: 'files(id, name, webViewLink, modifiedTime)', pageSize: 5 });
+async function cercaSuDrive(query, slackUserId) {
+  var drv = getDrivePerUtente(slackUserId);
+  if (!drv) throw new Error('NESSUN_TOKEN');
+  var res = await drv.files.list({ q: "name contains '" + query + "' and trashed = false", fields: 'files(id, name, webViewLink, modifiedTime)', pageSize: 5 });
   return res.data.files;
 }
 
@@ -1719,10 +1722,12 @@ async function leggiEmailRecenti(max, slackUserId) {
   }));
 }
 
-async function creaDocumento(titolo, contenuto) {
-  const doc = await docs.documents.create({ requestBody: { title: titolo } });
-  const docId = doc.data.documentId;
-  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] } });
+async function creaDocumento(titolo, contenuto, slackUserId) {
+  var userDocs = getDocsPerUtente(slackUserId);
+  if (!userDocs) throw new Error('NESSUN_TOKEN');
+  var doc = await userDocs.documents.create({ requestBody: { title: titolo } });
+  var docId = doc.data.documentId;
+  await userDocs.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] } });
   return 'https://docs.google.com/document/d/' + docId + '/edit';
 }
 
@@ -1775,7 +1780,7 @@ async function buildContext(userMessage, userId) {
   if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
     try {
       const query = userMessage.replace(/cerca|drive|file|documento/gi, '').trim();
-      const files = await cercaSuDrive(query);
+      const files = await cercaSuDrive(query, userId);
       if (files.length > 0) {
         context += '\nFILE SU DRIVE:\n';
         files.forEach(function(f) { context += f.name + ': ' + f.webViewLink + '\n'; });
@@ -1800,7 +1805,7 @@ async function buildContext(userMessage, userId) {
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
     try {
       const titolo = 'Documento Giuno - ' + new Date().toLocaleDateString('it-IT');
-      const docUrl = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
+      const docUrl = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n', userId);
       context += '\nDOCUMENTO CREATO: ' + docUrl + '\n';
     } catch(e) { context += '\nErrore Docs: ' + e.message + '\n'; }
   }
