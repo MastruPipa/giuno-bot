@@ -40,9 +40,8 @@ async function buildContext(params) {
   // OAuth link if message is about connecting Google
   var oauthLink = null;
   var msgLow = (message || '').toLowerCase();
-  if ((msgLow.includes('collega') || msgLow.includes('connetti') || msgLow.includes('autorizza')) &&
-      (msgLow.includes('google') || msgLow.includes('calendar') || msgLow.includes('gmail') ||
-       msgLow.includes('account') || msgLow.includes('email') || msgLow.includes('mail'))) {
+  if ((/colleg[a-z]|connett[a-z]|autorizz[a-z]/i.test(msgLow)) &&
+      (/google|calendar|gmail|account|email|mail/i.test(msgLow))) {
     var oauthUrl = generaLinkOAuth(userId);
     oauthLink = '<' + oauthUrl + '|Collega il tuo Google>';
   }
