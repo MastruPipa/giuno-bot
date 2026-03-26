@@ -253,8 +253,8 @@ var definitions = [
     },
   },
   {
-    name: 'get_user_profile',
-    description: 'Ottieni il profilo dettagliato di un utente Slack: ruolo, telefono, fuso orario, stato, titolo.',
+    name: 'get_slack_profile',
+    description: 'Ottieni il profilo Slack dettagliato di un utente: ruolo, telefono, fuso orario, stato, titolo.',
     input_schema: {
       type: 'object',
       properties: {
@@ -627,7 +627,7 @@ async function execute(toolName, input, userId) {
   }
 
   // ─── User Profile ──────────────────────────────────────────────────────────
-  if (toolName === 'get_user_profile') {
+  if (toolName === 'get_slack_profile') {
     try {
       var profileUserId = input.user_id;
       if (!profileUserId && input.user_name) {
