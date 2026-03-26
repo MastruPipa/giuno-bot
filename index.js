@@ -3119,6 +3119,23 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
   }
 
   // STEP B: Discovery preventivi
+  // Prima cerca le cartelle PREVENTIVI / DECK COMMERCIALI per restringere la ricerca
+  var targetFolderIds = [];
+  var folderKeywords = ['preventivi', 'deck commerciali', 'economics'];
+  for (var fi = 0; fi < folderKeywords.length; fi++) {
+    try {
+      var folderRes = await drv.files.list({
+        q: "name contains '" + folderKeywords[fi] + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        fields: 'files(id, name)',
+        pageSize: 10,
+      });
+      (folderRes.data.files || []).forEach(function(f) {
+        targetFolderIds.push(f.id);
+      });
+    } catch(e) { logger.error('[CATALOGA] Errore ricerca cartella:', e.message); }
+  }
+  logger.info('[CATALOGA] Cartelle target trovate: ' + targetFolderIds.length);
+
   var searchTerms = ['economics', 'preventivo', 'proposta', 'quotation', 'offerta', 'katania studio'];
   var searchMimes = [
     'application/vnd.google-apps.spreadsheet',
@@ -3126,6 +3143,29 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
   ];
   var foundFiles = new Map();
 
+  // Esclusioni: file che contengono le keyword ma non sono preventivi
+  var excludeNames = ['business plan', 'recruitment', 'piano industriale', 'template', 'copia di template'];
+
+  // Se abbiamo cartelle target, cerca prima lì
+  if (targetFolderIds.length > 0) {
+    for (var fIdx = 0; fIdx < targetFolderIds.length; fIdx++) {
+      for (var mi = 0; mi < searchMimes.length; mi++) {
+        try {
+          var fRes = await drv.files.list({
+            q: "'" + targetFolderIds[fIdx] + "' in parents and mimeType = '" + searchMimes[mi] + "' and trashed = false",
+            fields: 'files(id, name, modifiedTime, mimeType)',
+            pageSize: 50,
+          });
+          (fRes.data.files || []).forEach(function(f) {
+            if (!foundFiles.has(f.id)) foundFiles.set(f.id, f);
+          });
+        } catch(e) { logger.error('[CATALOGA] Errore search cartella:', e.message); }
+      }
+    }
+    logger.info('[CATALOGA] File trovati nelle cartelle target: ' + foundFiles.size);
+  }
+
+  // Cerca anche con keyword full-text (per file sparsi fuori dalle cartelle)
   for (var i = 0; i < searchTerms.length; i++) {
     for (var mi = 0; mi < searchMimes.length; mi++) {
       try {
@@ -3144,7 +3184,16 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
     }
   }
 
-  var files = Array.from(foundFiles.values()).slice(0, maxFiles);
+  // Filtra esclusioni
+  var files = Array.from(foundFiles.values()).filter(function(f) {
+    var nameLow = (f.name || '').toLowerCase();
+    for (var ei = 0; ei < excludeNames.length; ei++) {
+      if (nameLow.includes(excludeNames[ei])) return false;
+    }
+    return true;
+  }).slice(0, maxFiles);
+
+  logger.info('[CATALOGA] File totali dopo filtro: ' + files.length);
 
   if (files.length === 0) {
     await app.client.chat.postMessage({
