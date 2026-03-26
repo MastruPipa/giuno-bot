@@ -21,7 +21,14 @@ var SYSTEM_PROMPT =
   'Presenta tutto quello che trovi, anche se parziale.\n' +
   'Se non trovi nulla in nessuna fonte, dillo chiaramente con le fonti consultate.\n' +
   'MAI chiedere "cosa stai cercando?" se la domanda contiene già un soggetto chiaro.\n' +
-  'Usa *grassetto* per i punti chiave. MAI ** o ##.';
+  'Usa *grassetto* per i punti chiave. MAI ** o ##.\n' +
+  'Hai accesso a Gemini tramite il tool ask_gemini.\n' +
+  'Usalo per cross-check informazioni importanti o quando serve un secondo parere.\n' +
+  '\nFORMATTAZIONE SLACK OBBLIGATORIA:\n' +
+  'Usa *grassetto* con UN solo asterisco. MAI **doppio**.\n' +
+  'Liste con • o numeri. MAI # per titoli. MAI ## o ###.\n' +
+  'Risposte max 15 righe. Frasi corte. Zero fronzoli.\n' +
+  'Non chiedere MAI chiarimenti se la domanda ha già un soggetto chiaro — agisci subito.';
 
 var TOOLS = registry.getToolsForAgent('clientRetrieval');
 

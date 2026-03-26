@@ -112,7 +112,7 @@ app.event('app_mention', async function(args) {
         );
         if (qgReview && qgReview.response && qgReview.response.trim() !== 'OK') {
           logger.warn('[QUALITY-GATE] Gemini nota:', qgReview.response.substring(0, 100));
-          reply = reply + '\n\n_Nota interna: ' + qgReview.response.substring(0, 150) + '_';
+          // Non modificare la reply — la nota è solo per i log
         }
       } catch(e) { logger.error('Gemini quality gate error:', e.message); }
     }

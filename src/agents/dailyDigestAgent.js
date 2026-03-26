@@ -16,7 +16,12 @@ var SYSTEM_PROMPT =
   '• *Task in sospeso* — dalla memoria\n' +
   '• *Info aziendali* — dalla knowledge base se rilevante\n' +
   'Sii conciso. Usa *grassetto* per titoli sezioni. MAI ** o ##.\n' +
-  'Massimo 20 righe totali.';
+  'Massimo 20 righe totali.\n' +
+  '\nFORMATTAZIONE SLACK OBBLIGATORIA:\n' +
+  'Usa *grassetto* con UN solo asterisco. MAI **doppio**.\n' +
+  'Liste con • o numeri. MAI # per titoli. MAI ## o ###.\n' +
+  'Risposte max 15 righe. Frasi corte. Zero fronzoli.\n' +
+  'Non chiedere MAI chiarimenti se la domanda ha già un soggetto chiaro — agisci subito.';
 
 var TOOLS = registry.getToolsForAgent('dailyDigest');
 
