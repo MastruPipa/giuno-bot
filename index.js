@@ -19,6 +19,24 @@ const logger = {
   error: function(...a) { log('ERROR', ...a); },
 };
 
+// ─── Formattazione Slack ──────────────────────────────────────────────────────
+
+const SLACK_FORMAT_RULES =
+  'Formattazione Slack: *grassetto* con singolo asterisco, _corsivo_, ' +
+  '`codice`. MAI ** o ##. Liste con • o numeri. Risposte concise.';
+
+function formatPerSlack(text) {
+  if (!text) return text;
+  return text
+    .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+    .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+    .replace(/^[ \t]*-\s+/gm, '• ')
+    .replace(/^[ \t]*\*\s+(?!\*)/gm, '• ')
+    .replace(/```[a-zA-Z]+\n/g, '```\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // ─── Slack + Anthropic ────────────────────────────────────────────────────────
 
 const app = new App({
@@ -77,6 +95,7 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/spreadsheets.readonly',
 ];
 
 const oAuth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI);
@@ -1328,7 +1347,7 @@ async function eseguiTool(toolName, input, userId) {
       '1. VALUTAZIONE GENERALE (1 riga)\n' +
       '2. PROBLEMI TROVATI (lista breve)\n' +
       '3. TESTO MIGLIORATO (versione corretta completa)\n' +
-      'Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.'
+      SLACK_FORMAT_RULES
     );
     return reviewResult;
   }
@@ -1348,7 +1367,7 @@ async function eseguiTool(toolName, input, userId) {
       '4. *Chiarezza*: il messaggio e\' chiaro?\n' +
       '5. *Suggerimenti*: cosa migliorare\n\n' +
       'Se la bozza va bene, dillo. Se va migliorata, proponi la versione corretta.\n' +
-      'Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.'
+      SLACK_FORMAT_RULES
     );
     return emailReviewResult;
   }
@@ -1469,7 +1488,7 @@ async function eseguiTool(toolName, input, userId) {
       var summaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare markdown con ** o ##.',
+        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore):\n\n' + messagesText.substring(0, 6000) }],
       });
       var summary = summaryRes.content[0].text;
@@ -1500,7 +1519,7 @@ async function eseguiTool(toolName, input, userId) {
       var threadSummaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 400,
-        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.',
+        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questo thread Slack:\n\n' + threadText.substring(0, 6000) }],
       });
       return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
@@ -1539,7 +1558,7 @@ async function eseguiTool(toolName, input, userId) {
       var docSummaryRes = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. Formattazione Slack: grassetto con *singolo asterisco* (MAI **doppio**), corsivo con _underscore_. Mai usare ** o ##.',
+        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questo documento "' + docTitle + '":\n\n' + docText.substring(0, 8000) }],
       });
       var docSummary = docSummaryRes.content[0].text;
@@ -1701,8 +1720,10 @@ function getHeader(headers, name) {
 
 // ─── Drive / Docs / Slack helpers ─────────────────────────────────────────────
 
-async function cercaSuDrive(query) {
-  const res = await drive.files.list({ q: "name contains '" + query + "' and trashed = false", fields: 'files(id, name, webViewLink, modifiedTime)', pageSize: 5 });
+async function cercaSuDrive(query, slackUserId) {
+  var drv = getDrivePerUtente(slackUserId);
+  if (!drv) throw new Error('NESSUN_TOKEN');
+  var res = await drv.files.list({ q: "name contains '" + query + "' and trashed = false", fields: 'files(id, name, webViewLink, modifiedTime)', pageSize: 5 });
   return res.data.files;
 }
 
@@ -1719,10 +1740,12 @@ async function leggiEmailRecenti(max, slackUserId) {
   }));
 }
 
-async function creaDocumento(titolo, contenuto) {
-  const doc = await docs.documents.create({ requestBody: { title: titolo } });
-  const docId = doc.data.documentId;
-  await docs.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] } });
+async function creaDocumento(titolo, contenuto, slackUserId) {
+  var userDocs = getDocsPerUtente(slackUserId);
+  if (!userDocs) throw new Error('NESSUN_TOKEN');
+  var doc = await userDocs.documents.create({ requestBody: { title: titolo } });
+  var docId = doc.data.documentId;
+  await userDocs.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: contenuto } }] } });
   return 'https://docs.google.com/document/d/' + docId + '/edit';
 }
 
@@ -1775,7 +1798,7 @@ async function buildContext(userMessage, userId) {
   if (msg.includes('drive') || msg.includes('file') || msg.includes('documento') || msg.includes('cerca')) {
     try {
       const query = userMessage.replace(/cerca|drive|file|documento/gi, '').trim();
-      const files = await cercaSuDrive(query);
+      const files = await cercaSuDrive(query, userId);
       if (files.length > 0) {
         context += '\nFILE SU DRIVE:\n';
         files.forEach(function(f) { context += f.name + ': ' + f.webViewLink + '\n'; });
@@ -1800,7 +1823,7 @@ async function buildContext(userMessage, userId) {
   if (msg.includes('crea documento') || msg.includes('genera doc') || msg.includes('nuovo doc') || msg.includes('brief')) {
     try {
       const titolo = 'Documento Giuno - ' + new Date().toLocaleDateString('it-IT');
-      const docUrl = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n');
+      const docUrl = await creaDocumento(titolo, 'Documento creato da Giuno\nRichiesta: ' + userMessage + '\n\n', userId);
       context += '\nDOCUMENTO CREATO: ' + docUrl + '\n';
     } catch(e) { context += '\nErrore Docs: ' + e.message + '\n'; }
   }
@@ -1841,16 +1864,12 @@ const SYSTEM_PROMPT =
   "Zero aziendalese. Dai la risposta prima. Poi eventualmente spieghi.\n" +
   "Katania Studio: agenzia digitale a Catania, filosofia WorkInSouth.\n" +
   "Rispondi sempre in italiano. Non inventare mai dati.\n\n" +
-  "FORMATTAZIONE SLACK (OBBLIGATORIO):\n" +
-  "Risposte brevi e dirette. Mai paragrafi lunghi.\n" +
-  "Niente trattini per le liste. Usa numeri o vai a capo.\n" +
-  "Massimo 3-4 righe salvo richieste complesse.\n" +
-  "GRASSETTO: usa SOLO *testo* con UN singolo asterisco per lato. MAI usare **testo** con doppio asterisco. Slack non supporta il doppio asterisco.\n" +
-  "CORSIVO: usa _testo_ con underscore.\n" +
-  "BARRATO: usa ~testo~ con tilde.\n" +
-  "CODICE: usa `testo` per inline, ```blocco``` per blocchi.\n" +
-  "NON USARE MAI: **, ##, ###, ####. Slack non li renderizza. Se scrivi ** stai sbagliando.\n" +
-  "Liste: usa numeri (1. 2. 3.) oppure bullet con •, mai trattini.\n\n" +
+  "SLACK FORMATTING — REGOLE ASSOLUTE:\n" +
+  "Usa *testo* per grassetto (un asterisco). MAI **doppio**.\n" +
+  "Usa _testo_ per corsivo. Usa `testo` per codice inline.\n" +
+  "Per liste usa • oppure numeri (1. 2. 3.). MAI trattini come bullet.\n" +
+  "MAI usare # ## ### per titoli. MAI usare ** o __.\n" +
+  "Risposte brevi. Max 4-5 righe salvo richieste complesse.\n\n" +
   "HAI ACCESSO A:\n" +
   "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
   "TAGGING SLACK:\n" +
@@ -2132,8 +2151,9 @@ app.event('app_mention', async function(args) {
   try {
     const text  = event.text.replace(/<@[^>]+>/g, '').trim();
     const reply = await askGiuno(event.user, text, { mentionedBy: event.user, threadTs: threadTs });
-    const posted = await app.client.chat.postMessage({ channel: event.channel, text: reply, thread_ts: threadTs });
-    if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: reply });
+    const formatted = formatPerSlack(reply);
+    const posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
+    if (posted && posted.ts) botMessages.set(posted.ts, { userId: event.user, text: formatted });
   } catch(err) {
     await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
@@ -2164,12 +2184,13 @@ app.message(async function(args) {
   const threadTs = message.thread_ts || null;
   try {
     const reply = await askGiuno(message.user, message.text, { threadTs: threadTs });
+    const formatted = formatPerSlack(reply);
     const posted = await app.client.chat.postMessage({
       channel: message.channel,
-      text: reply,
+      text: formatted,
       thread_ts: threadTs || undefined,
     });
-    if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: reply });
+    if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted });
   } catch(err) { await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
 });
 
@@ -2188,7 +2209,7 @@ app.command('/giuno', async function(args) {
     try {
       const canaliBriefing = await getSlackBriefingData();
       const parti = await buildBriefingUtente(command.user_id, canaliBriefing);
-      await respond({ text: parti.join('\n\n') || 'Niente di nuovo, mbare.', response_type: 'ephemeral' });
+      await respond({ text: formatPerSlack(parti.join('\n\n')) || 'Niente di nuovo, mbare.', response_type: 'ephemeral' });
     } catch(err) { await respond({ text: 'Errore recap: ' + err.message, response_type: 'ephemeral' }); }
     return;
   }
@@ -2198,7 +2219,7 @@ app.command('/giuno', async function(args) {
       const datePart = text.replace(/^libero\s*/, '').trim();
       const prompt = 'Mostrami gli slot liberi nel mio calendario' + (datePart ? ' per il giorno ' + datePart : ' oggi');
       const reply = await askGiuno(command.user_id, prompt);
-      await respond({ text: reply, response_type: 'ephemeral' });
+      await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
     } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
     return;
   }
@@ -2207,14 +2228,14 @@ app.command('/giuno', async function(args) {
     try {
       const query = text.replace(/^email\s*/, '').trim() || 'is:unread is:important';
       const reply = await askGiuno(command.user_id, 'Mostrami le email: ' + query);
-      await respond({ text: reply, response_type: 'ephemeral' });
+      await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
     } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
     return;
   }
 
   try {
     const reply = await askGiuno(command.user_id, text);
-    await respond({ text: reply, response_type: 'in_channel' });
+    await respond({ text: formatPerSlack(reply), response_type: 'in_channel' });
   } catch(err) { await respond('Errore: ' + err.message); }
 });
 
@@ -2358,7 +2379,7 @@ async function inviaRoutineGiornaliera() {
         if (!getCalendarPerUtente(utente.id)) {
           msg += '\n\n_Collega il tuo Google scrivendo "collega il mio Google" per vedere anche agenda e mail._';
         }
-        await app.client.chat.postMessage({ channel: utente.id, text: msg });
+        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg) });
       } catch(e) { logger.error('[ROUTINE] Errore per', utente.id + ':', e.message); }
     }
     logger.info('[ROUTINE] Briefing inviato a', utenti.length, 'utenti.');
@@ -2432,7 +2453,7 @@ async function pubblicaRecapStandup() {
       return;
     }
     try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
-    await app.client.chat.postMessage({ channel: target.id, text: msg });
+    await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg) });
     logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
   } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
 }
@@ -2565,7 +2586,7 @@ async function inviaRecapSettimanale() {
         if (!getCalendarPerUtente(utente.id)) {
           msg += '\n\n_Collega il tuo Google per avere il recap completo con agenda e mail._';
         }
-        await app.client.chat.postMessage({ channel: utente.id, text: msg });
+        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg) });
       } catch(e) { logger.error('[RECAP] Errore per', utente.id + ':', e.message); }
     }
     logger.info('[RECAP] Recap inviato a', utenti.length, 'utenti.');
