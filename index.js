@@ -37,6 +37,11 @@ function formatPerSlack(text) {
     .trim();
 }
 
+// ─── Azioni critiche: conferma obbligatoria ──────────────────────────────────
+
+const AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file'];
+const confermeInAttesa = new Map(); // convKey -> { toolName, input, toolUseId }
+
 // ─── Slack + Anthropic ────────────────────────────────────────────────────────
 
 const app = new App({
@@ -839,11 +844,58 @@ const tools = [
       required: ['channel', 'question', 'options'],
     },
   },
+  // Conferma azione critica
+  {
+    name: 'confirm_action',
+    description: 'Esegue un\'azione precedentemente in attesa di conferma. Usalo SOLO dopo che l\'utente ha detto esplicitamente "sì", "ok", "manda", "procedi", "confermo". MAI usarlo senza conferma esplicita dell\'utente.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action_id: { type: 'string', description: 'ID dell\'azione da confermare (ricevuto dal risultato precedente)' },
+      },
+      required: ['action_id'],
+    },
+  },
 ];
 
 // ─── Tool execution ───────────────────────────────────────────────────────────
 
 async function eseguiTool(toolName, input, userId) {
+  // ─── Conferma azione critica ─────────────────────────────────────────
+  if (toolName === 'confirm_action') {
+    var actionId = input.action_id;
+    var pending = confermeInAttesa.get(actionId);
+    if (!pending) return { error: 'Nessuna azione in attesa con questo ID. L\'azione potrebbe essere scaduta.' };
+    confermeInAttesa.delete(actionId);
+    logger.info('[CONFIRM]', pending.toolName, 'confermato da', userId);
+    return await eseguiTool(pending.toolName, pending.input, userId);
+  }
+
+  // ─── Intercetta azioni critiche: richiedi conferma ───────────────────
+  if (AZIONI_CRITICHE.includes(toolName)) {
+    var actionId = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+    confermeInAttesa.set(actionId, { toolName: toolName, input: input, userId: userId, created: Date.now() });
+    // Pulisci conferme vecchie (>10 min)
+    var now = Date.now();
+    confermeInAttesa.forEach(function(v, k) { if (now - v.created > 600000) confermeInAttesa.delete(k); });
+
+    var preview = { requires_confirmation: true, action_id: actionId, action: toolName };
+    if (toolName === 'send_email') {
+      preview.preview = 'INVIO EMAIL:\nA: ' + input.to + (input.cc ? '\nCc: ' + input.cc : '') + '\nOggetto: ' + input.subject + '\n\n' + (input.body || '').substring(0, 500);
+    } else if (toolName === 'reply_email') {
+      preview.preview = 'RISPOSTA EMAIL:\nID messaggio: ' + input.message_id + '\n\n' + (input.body || '').substring(0, 500);
+    } else if (toolName === 'forward_email') {
+      preview.preview = 'INOLTRO EMAIL:\nA: ' + input.to + '\nNota: ' + (input.note || 'nessuna');
+    } else if (toolName === 'create_event') {
+      preview.preview = 'CREAZIONE EVENTO:\nTitolo: ' + input.summary + '\nInizio: ' + input.start + '\nFine: ' + input.end + (input.attendees ? '\nPartecipanti: ' + input.attendees : '');
+    } else if (toolName === 'delete_event') {
+      preview.preview = 'ELIMINAZIONE EVENTO:\nID: ' + input.event_id;
+    } else if (toolName === 'share_file') {
+      preview.preview = 'CONDIVISIONE FILE:\nFile: ' + input.file_id + '\nCon: ' + input.email + '\nRuolo: ' + (input.role || 'reader');
+    }
+    return preview;
+  }
+
   // Tool Slack (non richiedono auth Google)
   if (toolName === 'get_slack_users') {
     try {
@@ -1389,7 +1441,7 @@ async function eseguiTool(toolName, input, userId) {
 
     // Drive index locale (veloce, senza API call)
     if (sources.includes('drive') && getDriveIndex()[userId]) {
-      var queryLower = input.query.toLowerCase();
+      var queryLower = (input.query || '').toLowerCase();
       var indexed = Object.values(getDriveIndex()[userId]).filter(function(f) {
         return f.name.toLowerCase().includes(queryLower) || (f.description && f.description.toLowerCase().includes(queryLower));
       }).slice(0, 3);
@@ -1566,7 +1618,7 @@ async function eseguiTool(toolName, input, userId) {
       // Salva in memoria se richiesto
       var saveToMemory = input.save_to_memory !== false;
       if (saveToMemory) {
-        addMemory(userId, 'Riassunto doc "' + docTitle + '": ' + docSummary, ['documento', 'riassunto', docTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')]);
+        addMemory(userId, 'Riassunto doc "' + docTitle + '": ' + docSummary, ['documento', 'riassunto', (docTitle || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')]);
       }
 
       return { title: docTitle, summary: docSummary, saved_to_memory: saveToMemory };
@@ -1788,7 +1840,7 @@ async function resolveSlackMentions(text) {
 
 async function buildContext(userMessage, userId) {
   let context = '';
-  const msg = userMessage.toLowerCase();
+  const msg = (userMessage || '').toLowerCase();
 
   if ((msg.includes('collega') || msg.includes('connetti') || msg.includes('autorizza')) &&
       (msg.includes('calendar') || msg.includes('gmail') || msg.includes('google') || msg.includes('account') || msg.includes('email') || msg.includes('mail'))) {
@@ -1870,6 +1922,16 @@ const SYSTEM_PROMPT =
   "Per liste usa • oppure numeri (1. 2. 3.). MAI trattini come bullet.\n" +
   "MAI usare # ## ### per titoli. MAI usare ** o __.\n" +
   "Risposte brevi. Max 4-5 righe salvo richieste complesse.\n\n" +
+  "CONFERMA OBBLIGATORIA — REGOLA CRITICA:\n" +
+  "Quando usi send_email, reply_email, forward_email, create_event, delete_event o share_file,\n" +
+  "il sistema restituisce un'anteprima con requires_confirmation: true.\n" +
+  "DEVI mostrare l'anteprima all'utente e chiedere conferma ESPLICITA.\n" +
+  "Solo quando l'utente dice 'sì', 'ok', 'manda', 'procedi', 'confermo' puoi usare confirm_action.\n" +
+  "MAI chiamare confirm_action senza conferma esplicita dell'utente. MAI.\n" +
+  "Se l'utente chiede modifiche, prepara di nuovo l'azione con i parametri corretti.\n\n" +
+  "DATI SENSIBILI:\n" +
+  "MAI condividere in output: password, token, chiavi API, numeri di carta, IBAN completi.\n" +
+  "Per email e documenti, mostra solo oggetto/titolo e mittente, mai il corpo intero a meno che l'utente non lo chieda esplicitamente.\n\n" +
   "HAI ACCESSO A:\n" +
   "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
   "TAGGING SLACK:\n" +
@@ -1996,15 +2058,31 @@ async function askGiuno(userId, userMessage, options) {
   const messages = convCache[convKey].concat([{ role: 'user', content: messageWithContext }]);
 
   let finalReply = '';
+  var retryCount = 0;
 
   while (true) {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: messages,
-      tools: tools,
-    });
+    var response;
+    try {
+      response = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: messages,
+        tools: tools,
+      });
+    } catch(apiErr) {
+      if (apiErr.status === 429 && retryCount < 2) {
+        retryCount++;
+        var waitSec = retryCount * 5;
+        logger.warn('[RATE-LIMIT] 429, attendo ' + waitSec + 's (tentativo ' + retryCount + '/2)');
+        await new Promise(function(r) { setTimeout(r, waitSec * 1000); });
+        continue;
+      }
+      if (apiErr.status === 429) {
+        return 'Sto ricevendo troppe richieste in questo momento, mbare. Riprova tra un minuto.';
+      }
+      throw apiErr;
+    }
 
     if (response.stop_reason !== 'tool_use') {
       finalReply = response.content.filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('\n');
@@ -2041,8 +2119,9 @@ async function askGiuno(userId, userMessage, options) {
 
 async function autoLearn(userId, userMessage, botReply) {
   // Evita di analizzare messaggi troppo corti o comandi
-  if (userMessage.length < 20) return;
-  if (userMessage.toLowerCase().startsWith('collega') || userMessage.toLowerCase().startsWith('/')) return;
+  if (!userMessage || userMessage.length < 20) return;
+  var msgLower = userMessage.toLowerCase();
+  if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
 
   try {
     var analysisRes = await client.messages.create({
