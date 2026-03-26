@@ -29,6 +29,36 @@ const app = new App({
 
 const client = new Anthropic();
 
+// ─── Gemini ──────────────────────────────────────────────────────────────────
+
+let GoogleGenerativeAI = null;
+try { GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI; } catch(e) {
+  logger.warn('Modulo @google/generative-ai non installato. Esegui: npm install @google/generative-ai');
+}
+let gemini = null;
+let geminiModel = null;
+if (GoogleGenerativeAI && process.env.GEMINI_API_KEY) {
+  gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  geminiModel = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  logger.info('Gemini configurato (gemini-2.0-flash)');
+} else if (!process.env.GEMINI_API_KEY) {
+  logger.warn('GEMINI_API_KEY non presente. Funzioni Gemini disabilitate.');
+}
+
+async function askGemini(prompt, systemInstruction) {
+  if (!geminiModel) return { error: 'Gemini non configurato. Aggiungi GEMINI_API_KEY al .env.' };
+  try {
+    var model = systemInstruction
+      ? gemini.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: systemInstruction })
+      : geminiModel;
+    var result = await model.generateContent(prompt);
+    return { response: result.response.text() };
+  } catch(e) {
+    logger.error('Errore Gemini:', e.message);
+    return { error: 'Errore Gemini: ' + e.message };
+  }
+}
+
 // ─── Google OAuth config ──────────────────────────────────────────────────────
 
 let webCreds = null;
@@ -135,7 +165,7 @@ function salvaPrefs() {
 }
 
 function getPrefs(userId) {
-  return Object.assign({ routine_enabled: true, notifiche_enabled: true }, userPrefs[userId] || {});
+  return Object.assign({ routine_enabled: true, notifiche_enabled: true, standup_enabled: true }, userPrefs[userId] || {});
 }
 
 function setPrefs(userId, prefs) {
@@ -170,6 +200,57 @@ try { conversations = JSON.parse(fs.readFileSync(CONVERSATIONS_FILE)); } catch(e
 function salvaConversazioni() {
   try { fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations)); } catch(e) {}
 }
+
+// ─── Memoria persistente ─────────────────────────────────────────────────────
+
+const MEMORY_FILE = 'memories.json';
+let memories = {};
+try { memories = JSON.parse(fs.readFileSync(MEMORY_FILE)); } catch(e) {}
+
+function salvaMemorie() {
+  try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(memories, null, 2)); } catch(e) {}
+}
+
+function addMemory(userId, content, tags) {
+  if (!memories[userId]) memories[userId] = [];
+  memories[userId].push({
+    id: Date.now().toString(36),
+    content: content,
+    tags: tags || [],
+    created: new Date().toISOString(),
+  });
+  salvaMemorie();
+}
+
+function searchMemories(userId, query) {
+  if (!memories[userId]) return [];
+  const q = query.toLowerCase();
+  return memories[userId].filter(function(m) {
+    return m.content.toLowerCase().includes(q) ||
+      m.tags.some(function(t) { return t.toLowerCase().includes(q); });
+  });
+}
+
+function deleteMemory(userId, memoryId) {
+  if (!memories[userId]) return false;
+  const before = memories[userId].length;
+  memories[userId] = memories[userId].filter(function(m) { return m.id !== memoryId; });
+  if (memories[userId].length < before) { salvaMemorie(); return true; }
+  return false;
+}
+
+// ─── Standup asincrono ───────────────────────────────────────────────────────
+
+const STANDUP_FILE = 'standup_data.json';
+let standupData = { oggi: null, risposte: {} };
+try { standupData = JSON.parse(fs.readFileSync(STANDUP_FILE)); } catch(e) {}
+
+function salvaStandup() {
+  try { fs.writeFileSync(STANDUP_FILE, JSON.stringify(standupData, null, 2)); } catch(e) {}
+}
+
+const STANDUP_CHANNEL = process.env.STANDUP_CHANNEL || 'daily';
+const standupInAttesa = new Set();
 
 // ─── Server OAuth callback ────────────────────────────────────────────────────
 
@@ -228,12 +309,13 @@ const tools = [
   // Preferenze utente
   {
     name: 'set_user_prefs',
-    description: 'Aggiorna le preferenze dell\'utente per Giuno (routine mattutina, notifiche proattive).',
+    description: 'Aggiorna le preferenze dell\'utente per Giuno (routine mattutina, notifiche proattive, standup).',
     input_schema: {
       type: 'object',
       properties: {
         routine_enabled:    { type: 'boolean', description: 'Abilita/disabilita la routine del mattino' },
         notifiche_enabled:  { type: 'boolean', description: 'Abilita/disabilita le notifiche proattive (riunioni imminenti, mail urgenti)' },
+        standup_enabled:    { type: 'boolean', description: 'Abilita/disabilita la domanda standup giornaliera' },
       },
     },
   },
@@ -351,16 +433,93 @@ const tools = [
       required: ['message_id', 'body'],
     },
   },
-  // Google Drive
   {
-    name: 'search_drive',
-    description: 'Cerca file su Google Drive dell\'utente per nome o contenuto.',
+    name: 'send_email',
+    description: 'Invia una nuova email. Usa get_slack_users per trovare l\'email del destinatario se serve.',
     input_schema: {
       type: 'object',
       properties: {
-        query:     { type: 'string', description: 'Testo da cercare nel nome o contenuto dei file' },
-        mime_type: { type: 'string', description: 'Filtra per tipo MIME (es. "application/vnd.google-apps.document", "application/pdf"). Opzionale.' },
-        max:       { type: 'number', description: 'Numero massimo risultati (default 10)' },
+        to:      { type: 'string', description: 'Email destinatario' },
+        subject: { type: 'string', description: 'Oggetto' },
+        body:    { type: 'string', description: 'Testo dell\'email' },
+        cc:      { type: 'string', description: 'Email CC (opzionale, separate da virgola)' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
+    name: 'forward_email',
+    description: 'Inoltra un\'email a un altro destinatario. Usa read_email prima per leggere il contenuto e get_slack_users per l\'email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'ID del messaggio da inoltrare' },
+        to:         { type: 'string', description: 'Email destinatario a cui inoltrare' },
+        note:       { type: 'string', description: 'Nota aggiuntiva in cima all\'email inoltrata (opzionale)' },
+      },
+      required: ['message_id', 'to'],
+    },
+  },
+  // Memoria
+  {
+    name: 'save_memory',
+    description: 'Salva un\'informazione importante nella memoria permanente dell\'utente. Usalo PROATTIVAMENTE quando l\'utente dice qualcosa che vale la pena ricordare: preferenze clienti, decisioni prese, info di progetto, contatti, procedure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Informazione da ricordare' },
+        tags:    { type: 'array', items: { type: 'string' }, description: 'Tag per categorizzare (es. "cliente", "progetto-x", "procedura", "contatto")' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'recall_memory',
+    description: 'Cerca nella memoria permanente dell\'utente. Usalo SEMPRE prima di rispondere a domande su clienti, progetti, procedure, decisioni passate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo o tag da cercare nella memoria' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'list_memories',
+    description: 'Elenca tutte le memorie dell\'utente, opzionalmente filtrate per tag.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string', description: 'Filtra per tag specifico (opzionale)' },
+      },
+    },
+  },
+  {
+    name: 'delete_memory',
+    description: 'Cancella una memoria specifica per ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'string', description: 'ID della memoria da cancellare' },
+      },
+      required: ['memory_id'],
+    },
+  },
+  // Google Drive
+  {
+    name: 'search_drive',
+    description: 'Cerca file su Google Drive. Supporta ricerca full-text (dentro i documenti), per nome, per tipo, per cartella e per data.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query:       { type: 'string', description: 'Testo da cercare (cerca nel nome E nel contenuto dei file)' },
+        name_only:   { type: 'boolean', description: 'Se true, cerca solo nel nome del file (default: false, cerca anche nel contenuto)' },
+        mime_type:   { type: 'string', description: 'Filtra per tipo: "document" (Google Docs), "spreadsheet" (Sheets), "presentation" (Slides), "pdf", "image", "folder", oppure MIME completo' },
+        folder_name: { type: 'string', description: 'Cerca solo dentro questa cartella (nome cartella)' },
+        modified_after:  { type: 'string', description: 'Solo file modificati dopo questa data ISO 8601 (es. "2025-01-01")' },
+        modified_before: { type: 'string', description: 'Solo file modificati prima di questa data ISO 8601' },
+        shared_with: { type: 'string', description: 'Filtra file condivisi con questa email' },
+        max:         { type: 'number', description: 'Numero massimo risultati (default 10)' },
       },
       required: ['query'],
     },
@@ -390,6 +549,17 @@ const tools = [
       required: ['file_id', 'email'],
     },
   },
+  {
+    name: 'read_doc',
+    description: 'Legge il contenuto testuale di un Google Doc. Usa search_drive prima per trovare l\'ID del documento.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'ID del Google Doc (dalla URL o da search_drive)' },
+      },
+      required: ['doc_id'],
+    },
+  },
   // Slack search
   {
     name: 'search_slack_messages',
@@ -401,6 +571,97 @@ const tools = [
         max:     { type: 'number', description: 'Numero massimo risultati (default 10)' },
       },
       required: ['query'],
+    },
+  },
+  // Gemini (dual-brain)
+  {
+    name: 'ask_gemini',
+    description: 'Chiedi un parere a Gemini (Google AI). Usalo per avere un secondo punto di vista, cross-check informazioni, o quando serve competenza specifica Google.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt:  { type: 'string', description: 'Domanda o richiesta per Gemini' },
+        context: { type: 'string', description: 'Contesto aggiuntivo (opzionale)' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'review_content',
+    description: 'Gemini rivede un testo/copy e da\' feedback su grammatica, tono, chiarezza, SEO e brand voice. Perfetto per contenuti siti, social, presentazioni.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Testo da rivedere' },
+        type:    { type: 'string', description: 'Tipo di contenuto: "web" (sito), "social" (post social), "email" (email professionale), "presentation" (slide), "generic" (default)' },
+        brand_voice: { type: 'string', description: 'Descrizione del tono di voce del brand (opzionale)' },
+        language: { type: 'string', description: 'Lingua del contenuto (default "italiano")' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'review_email_draft',
+    description: 'Gemini rivede una bozza email prima dell\'invio: controlla tono, completezza, errori, suggerisce miglioramenti. Usalo SEMPRE prima di send_email o reply_email quando il contenuto e\' importante.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to:      { type: 'string', description: 'Destinatario' },
+        subject: { type: 'string', description: 'Oggetto' },
+        body:    { type: 'string', description: 'Corpo dell\'email da rivedere' },
+        context: { type: 'string', description: 'Contesto: a chi scrivi, perche\', tono desiderato (opzionale)' },
+      },
+      required: ['body'],
+    },
+  },
+  // Ricerca globale
+  {
+    name: 'search_everywhere',
+    description: 'Cerca contemporaneamente su Drive, Slack, Gmail e nella memoria. Usalo quando l\'utente chiede informazioni generiche su un cliente, progetto o argomento.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare ovunque' },
+        sources: { type: 'array', items: { type: 'string', enum: ['drive', 'slack', 'email', 'memory'] }, description: 'Dove cercare (default: tutte le fonti)' },
+      },
+      required: ['query'],
+    },
+  },
+  // Summarize
+  {
+    name: 'summarize_channel',
+    description: 'Riassume cosa e\' successo in un canale Slack nelle ultime ore/giorni. Perfetto per "cosa mi sono perso in #canale?".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_name: { type: 'string', description: 'Nome del canale (senza #)' },
+        hours:        { type: 'number', description: 'Quante ore indietro guardare (default 24)' },
+      },
+      required: ['channel_name'],
+    },
+  },
+  {
+    name: 'summarize_thread',
+    description: 'Riassume un thread Slack lungo. Serve il channel ID e il timestamp del thread.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string', description: 'ID del canale' },
+        thread_ts:  { type: 'string', description: 'Timestamp del messaggio parent del thread' },
+      },
+      required: ['channel_id', 'thread_ts'],
+    },
+  },
+  {
+    name: 'summarize_doc',
+    description: 'Legge un Google Doc, lo riassume con AI e salva il riassunto in memoria per le prossime volte. Usa search_drive prima per trovare l\'ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_id:     { type: 'string', description: 'ID del Google Doc' },
+        save_to_memory: { type: 'boolean', description: 'Salva il riassunto in memoria per richiamare dopo (default true)' },
+      },
+      required: ['doc_id'],
     },
   },
 ];
@@ -428,7 +689,32 @@ async function eseguiTool(toolName, input, userId) {
       success: true,
       routine_enabled:   prefs.routine_enabled,
       notifiche_enabled: prefs.notifiche_enabled,
+      standup_enabled:   prefs.standup_enabled,
     };
+  }
+
+  // Tool Memoria
+  if (toolName === 'save_memory') {
+    addMemory(userId, input.content, input.tags || []);
+    return { success: true, message: 'Memorizzato.' };
+  }
+
+  if (toolName === 'recall_memory') {
+    const results = searchMemories(userId, input.query);
+    return { memories: results, count: results.length };
+  }
+
+  if (toolName === 'list_memories') {
+    const userMems = memories[userId] || [];
+    const filtered = input.tag
+      ? userMems.filter(function(m) { return m.tags.some(function(t) { return t.toLowerCase().includes(input.tag.toLowerCase()); }); })
+      : userMems;
+    return { memories: filtered, count: filtered.length };
+  }
+
+  if (toolName === 'delete_memory') {
+    const deleted = deleteMemory(userId, input.memory_id);
+    return deleted ? { success: true } : { error: 'Memoria non trovata.' };
   }
 
   // Tool Calendar
@@ -500,7 +786,7 @@ async function eseguiTool(toolName, input, userId) {
   }
 
   // Tool Gmail
-  const GMAIL_TOOLS = ['find_emails', 'read_email', 'reply_email'];
+  const GMAIL_TOOLS = ['find_emails', 'read_email', 'reply_email', 'send_email', 'forward_email'];
   if (GMAIL_TOOLS.includes(toolName)) {
     const gm = getGmailPerUtente(userId);
     if (!gm) return { error: 'Gmail non collegato. Scrivi "collega il mio Google".' };
@@ -547,6 +833,18 @@ async function eseguiTool(toolName, input, userId) {
         const origMessageId = getHeader(h, 'Message-Id');
         const origRefs      = getHeader(h, 'References');
         const replySubject  = origSubject.startsWith('Re:') ? origSubject : 'Re: ' + origSubject;
+
+        // Auto-review Gemini (se disponibile)
+        var replyGeminiReview = null;
+        if (geminiModel) {
+          try {
+            replyGeminiReview = await askGemini(
+              'Risposta a: ' + origFrom + '\nOggetto: ' + replySubject + '\n\nBOZZA RISPOSTA:\n' + input.body,
+              'Rivedi questa bozza di risposta email in italiano. Se ci sono errori gravi (grammatica, tono sbagliato, info mancanti), segnalali brevemente. Se va bene, rispondi solo "OK". Max 3 righe.'
+            );
+          } catch(e) { logger.error('Gemini reply review error:', e.message); }
+        }
+
         const raw = [
           'To: ' + origFrom,
           'Subject: ' + replySubject,
@@ -559,7 +857,74 @@ async function eseguiTool(toolName, input, userId) {
         ].join('\r\n');
         const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded, threadId: orig.data.threadId } });
-        return { success: true };
+        var replyResult = { success: true };
+        if (replyGeminiReview && replyGeminiReview.response && replyGeminiReview.response !== 'OK') {
+          replyResult.gemini_note = replyGeminiReview.response;
+        }
+        return replyResult;
+      }
+
+      if (toolName === 'send_email') {
+        // Auto-review Gemini (se disponibile)
+        var geminiReview = null;
+        if (geminiModel) {
+          try {
+            geminiReview = await askGemini(
+              'Destinatario: ' + input.to + '\nOggetto: ' + input.subject + '\n\nBOZZA:\n' + input.body,
+              'Rivedi questa bozza email in italiano. Se ci sono errori gravi (grammatica, tono sbagliato, info mancanti), segnalali brevemente. Se va bene, rispondi solo "OK". Max 3 righe.'
+            );
+          } catch(e) { logger.error('Gemini auto-review error:', e.message); }
+        }
+
+        const headers = [
+          'To: ' + input.to,
+          'Subject: ' + input.subject,
+          'Content-Type: text/plain; charset=utf-8',
+          'MIME-Version: 1.0',
+        ];
+        if (input.cc) headers.splice(1, 0, 'Cc: ' + input.cc);
+        const raw = headers.concat(['', input.body]).join('\r\n');
+        const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded } });
+        var result = { success: true, to: input.to, subject: input.subject };
+        if (geminiReview && geminiReview.response && geminiReview.response !== 'OK') {
+          result.gemini_note = geminiReview.response;
+        }
+        return result;
+      }
+
+      if (toolName === 'forward_email') {
+        const orig = await gm.users.messages.get({ userId: 'me', id: input.message_id, format: 'full' });
+        const h = orig.data.payload.headers;
+        const origSubject = getHeader(h, 'Subject');
+        const origFrom    = getHeader(h, 'From');
+        const origDate    = getHeader(h, 'Date');
+        let origBody = '';
+        function extractFwdText(part) {
+          if (part.mimeType === 'text/plain' && part.body && part.body.data) {
+            origBody += Buffer.from(part.body.data, 'base64').toString('utf-8');
+          }
+          if (part.parts) part.parts.forEach(extractFwdText);
+        }
+        extractFwdText(orig.data.payload);
+        const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : 'Fwd: ' + origSubject;
+        const body = (input.note ? input.note + '\n\n' : '') +
+          '---------- Forwarded message ----------\n' +
+          'Da: ' + origFrom + '\n' +
+          'Data: ' + origDate + '\n' +
+          'Oggetto: ' + origSubject + '\n\n' +
+          origBody.substring(0, 3000);
+        const raw = [
+          'To: ' + input.to,
+          'Subject: ' + fwdSubject,
+          'Content-Type: text/plain; charset=utf-8',
+          'MIME-Version: 1.0',
+          '',
+          body,
+        ].join('\r\n');
+        const encoded = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        await gm.users.messages.send({ userId: 'me', requestBody: { raw: encoded } });
+        return { success: true, forwarded_to: input.to, subject: fwdSubject };
       }
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
@@ -568,19 +933,88 @@ async function eseguiTool(toolName, input, userId) {
   }
 
   // Tool Google Drive
-  const DRIVE_TOOLS = ['search_drive', 'create_doc', 'share_file'];
+  const DRIVE_TOOLS = ['search_drive', 'create_doc', 'share_file', 'read_doc'];
   if (DRIVE_TOOLS.includes(toolName)) {
     const drv = getDrivePerUtente(userId);
     if (!drv && toolName !== 'create_doc') return { error: 'Google Drive non collegato. Scrivi "collega il mio Google".' };
     try {
       if (toolName === 'search_drive') {
         const max = input.max || 10;
-        let q = "name contains '" + input.query.replace(/'/g, "\\'") + "' and trashed = false";
-        if (input.mime_type) q += " and mimeType = '" + input.mime_type + "'";
-        const res = await drv.files.list({ q: q, fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners)', pageSize: max, orderBy: 'modifiedTime desc' });
+        const escaped = input.query.replace(/'/g, "\\'");
+        var qParts = [];
+
+        // Full-text vs name-only search
+        if (input.name_only) {
+          qParts.push("name contains '" + escaped + "'");
+        } else {
+          qParts.push("fullText contains '" + escaped + "'");
+        }
+        qParts.push("trashed = false");
+
+        // MIME type shortcuts
+        if (input.mime_type) {
+          var mimeMap = {
+            'document': 'application/vnd.google-apps.document',
+            'spreadsheet': 'application/vnd.google-apps.spreadsheet',
+            'presentation': 'application/vnd.google-apps.presentation',
+            'pdf': 'application/pdf',
+            'image': 'application/vnd.google-apps.photo',
+            'folder': 'application/vnd.google-apps.folder',
+          };
+          var resolvedMime = mimeMap[input.mime_type] || input.mime_type;
+          if (input.mime_type === 'image') {
+            qParts.push("(mimeType contains 'image/')");
+          } else {
+            qParts.push("mimeType = '" + resolvedMime + "'");
+          }
+        }
+
+        // Date filters
+        if (input.modified_after) {
+          qParts.push("modifiedTime > '" + new Date(input.modified_after).toISOString() + "'");
+        }
+        if (input.modified_before) {
+          qParts.push("modifiedTime < '" + new Date(input.modified_before).toISOString() + "'");
+        }
+
+        // Shared with filter
+        if (input.shared_with) {
+          qParts.push("'" + input.shared_with + "' in readers or '" + input.shared_with + "' in writers");
+        }
+
+        var q = qParts.join(' and ');
+
+        // Folder search: first find folder ID, then search inside it
+        if (input.folder_name) {
+          try {
+            var folderRes = await drv.files.list({
+              q: "name = '" + input.folder_name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+              fields: 'files(id)',
+              pageSize: 1,
+            });
+            if (folderRes.data.files && folderRes.data.files.length > 0) {
+              q += " and '" + folderRes.data.files[0].id + "' in parents";
+            }
+          } catch(e) { logger.error('Drive folder search error:', e.message); }
+        }
+
+        const res = await drv.files.list({
+          q: q,
+          fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, parents, description)',
+          pageSize: max,
+          orderBy: 'modifiedTime desc',
+        });
         return {
           files: (res.data.files || []).map(function(f) {
-            return { id: f.id, name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime, owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null };
+            return {
+              id: f.id,
+              name: f.name,
+              type: f.mimeType,
+              link: f.webViewLink,
+              modified: f.modifiedTime,
+              owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null,
+              description: f.description || null,
+            };
           }),
         };
       }
@@ -604,6 +1038,34 @@ async function eseguiTool(toolName, input, userId) {
           sendNotificationEmail: true,
         });
         return { success: true, shared_with: input.email, role: role };
+      }
+
+      if (toolName === 'read_doc') {
+        const docsApi = getDocsPerUtente(userId);
+        if (!docsApi) return { error: 'Google Docs non collegato. Scrivi "collega il mio Google".' };
+        const doc = await docsApi.documents.get({ documentId: input.doc_id });
+        let text = '';
+        function extractDocText(elements) {
+          if (!elements) return;
+          elements.forEach(function(el) {
+            if (el.paragraph && el.paragraph.elements) {
+              el.paragraph.elements.forEach(function(pe) {
+                if (pe.textRun && pe.textRun.content) text += pe.textRun.content;
+              });
+            }
+            if (el.table) {
+              (el.table.tableRows || []).forEach(function(row) {
+                (row.tableCells || []).forEach(function(cell) {
+                  extractDocText(cell.content);
+                  text += '\t';
+                });
+                text += '\n';
+              });
+            }
+          });
+        }
+        extractDocText(doc.data.body.content);
+        return { title: doc.data.title, content: text.substring(0, 4000) };
       }
     } catch(e) {
       if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
@@ -630,6 +1092,262 @@ async function eseguiTool(toolName, input, userId) {
         total: (res.messages && res.messages.total) || 0,
       };
     } catch(e) { return { error: 'Errore ricerca Slack: ' + e.message + '. Nota: potrebbe servire un SLACK_USER_TOKEN con scope search:read.' }; }
+  }
+
+  // Tool Gemini (dual-brain)
+  if (toolName === 'ask_gemini') {
+    var prompt = input.prompt;
+    if (input.context) prompt = 'Contesto: ' + input.context + '\n\n' + prompt;
+    var gemResult = await askGemini(prompt, 'Sei un assistente AI che collabora con un altro AI (Claude). Rispondi in italiano, in modo conciso e utile. Se ti viene chiesto un parere, sii onesto e costruttivo.');
+    return gemResult;
+  }
+
+  if (toolName === 'review_content') {
+    var contentType = input.type || 'generic';
+    var lang = input.language || 'italiano';
+    var typeInstructions = {
+      'web': 'Rivedi questo testo per un sito web. Controlla: SEO (keyword, meta description), leggibilità, CTA, struttura H1/H2, lunghezza paragrafi.',
+      'social': 'Rivedi questo post per i social. Controlla: engagement, lunghezza, hashtag, CTA, tono, emoji se appropriate.',
+      'email': 'Rivedi questa email professionale. Controlla: tono, chiarezza, call to action, lunghezza, errori.',
+      'presentation': 'Rivedi questo testo per una presentazione. Controlla: chiarezza, concisione, impatto visivo del testo, punti chiave evidenziati.',
+      'generic': 'Rivedi questo testo. Controlla: grammatica, chiarezza, tono, struttura, errori.',
+    };
+    var instruction = typeInstructions[contentType] || typeInstructions['generic'];
+    if (input.brand_voice) instruction += '\nBrand voice richiesta: ' + input.brand_voice;
+
+    var reviewPrompt = instruction + '\nLingua: ' + lang + '\n\nTESTO DA RIVEDERE:\n' + input.content;
+    var reviewResult = await askGemini(reviewPrompt,
+      'Sei un copywriter e editor professionista. Dai feedback strutturato in italiano:\n' +
+      '1. VALUTAZIONE GENERALE (1 riga)\n' +
+      '2. PROBLEMI TROVATI (lista breve)\n' +
+      '3. TESTO MIGLIORATO (versione corretta completa)\n' +
+      'Formattazione Slack: grassetto con *testo*, no markdown.'
+    );
+    return reviewResult;
+  }
+
+  if (toolName === 'review_email_draft') {
+    var emailContext = '';
+    if (input.to) emailContext += 'Destinatario: ' + input.to + '\n';
+    if (input.subject) emailContext += 'Oggetto: ' + input.subject + '\n';
+    if (input.context) emailContext += 'Contesto: ' + input.context + '\n';
+    emailContext += '\nBOZZA EMAIL:\n' + input.body;
+
+    var emailReviewResult = await askGemini(emailContext,
+      'Sei un assistente che rivede bozze email professionali in italiano. Analizza:\n' +
+      '1. *Tono*: appropriato per il destinatario?\n' +
+      '2. *Completezza*: manca qualcosa di importante?\n' +
+      '3. *Errori*: grammatica, battitura, formattazione\n' +
+      '4. *Chiarezza*: il messaggio e\' chiaro?\n' +
+      '5. *Suggerimenti*: cosa migliorare\n\n' +
+      'Se la bozza va bene, dillo. Se va migliorata, proponi la versione corretta.\n' +
+      'Formattazione Slack: grassetto con *testo*, no markdown.'
+    );
+    return emailReviewResult;
+  }
+
+  // search_everywhere: ricerca cross-source
+  if (toolName === 'search_everywhere') {
+    var sources = input.sources || ['drive', 'slack', 'email', 'memory'];
+    var results = {};
+
+    // Memoria
+    if (sources.includes('memory')) {
+      var mems = searchMemories(userId, input.query);
+      if (mems.length > 0) {
+        results.memory = mems.slice(0, 5).map(function(m) {
+          return { content: m.content, tags: m.tags, created: m.created };
+        });
+      }
+    }
+
+    // Drive index locale (veloce, senza API call)
+    if (sources.includes('drive') && driveIndex[userId]) {
+      var queryLower = input.query.toLowerCase();
+      var indexed = Object.values(driveIndex[userId]).filter(function(f) {
+        return f.name.toLowerCase().includes(queryLower) || (f.description && f.description.toLowerCase().includes(queryLower));
+      }).slice(0, 3);
+      if (indexed.length > 0) {
+        results.drive_index = indexed.map(function(f) {
+          return { name: f.name, type: f.type, link: f.link, modified: f.modified };
+        });
+      }
+    }
+
+    // Drive
+    if (sources.includes('drive')) {
+      var drv = getDrivePerUtente(userId);
+      if (drv) {
+        try {
+          var escaped = input.query.replace(/'/g, "\\'");
+          var drvRes = await drv.files.list({
+            q: "fullText contains '" + escaped + "' and trashed = false",
+            fields: 'files(id, name, mimeType, webViewLink, modifiedTime)',
+            pageSize: 5,
+            orderBy: 'modifiedTime desc',
+          });
+          if (drvRes.data.files && drvRes.data.files.length > 0) {
+            results.drive = drvRes.data.files.map(function(f) {
+              return { name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime };
+            });
+          }
+        } catch(e) { if (await handleTokenScaduto(userId, e)) results.drive_error = 'Token scaduto'; }
+      }
+    }
+
+    // Gmail
+    if (sources.includes('email')) {
+      var gm = getGmailPerUtente(userId);
+      if (gm) {
+        try {
+          var gmRes = await gm.users.messages.list({ userId: 'me', maxResults: 5, q: input.query });
+          if (gmRes.data.messages && gmRes.data.messages.length > 0) {
+            var emails = await Promise.all(gmRes.data.messages.map(async function(m) {
+              var msg = await gm.users.messages.get({ userId: 'me', id: m.id, format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+              var h = msg.data.payload.headers;
+              return { id: m.id, subject: getHeader(h, 'Subject'), from: getHeader(h, 'From'), date: getHeader(h, 'Date') };
+            }));
+            results.email = emails;
+          }
+        } catch(e) { if (await handleTokenScaduto(userId, e)) results.email_error = 'Token scaduto'; }
+      }
+    }
+
+    // Slack
+    if (sources.includes('slack')) {
+      try {
+        var slkRes = await app.client.search.messages({ token: process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN, query: input.query, count: 5, sort: 'timestamp', sort_dir: 'desc' });
+        var matches = (slkRes.messages && slkRes.messages.matches) || [];
+        if (matches.length > 0) {
+          results.slack = matches.map(function(m) {
+            return { text: (m.text || '').substring(0, 200), channel: m.channel ? m.channel.name : null, permalink: m.permalink };
+          });
+        }
+      } catch(e) {}
+    }
+
+    return results;
+  }
+
+  // summarize_channel
+  if (toolName === 'summarize_channel') {
+    try {
+      var hours = input.hours || 24;
+      var oldest = String(Math.floor((Date.now() - hours * 60 * 60 * 1000) / 1000));
+      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
+      var target = (channelsRes.channels || []).find(function(c) { return c.name === input.channel_name; });
+      if (!target) return { error: 'Canale #' + input.channel_name + ' non trovato.' };
+      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+      var hist = await app.client.conversations.history({ channel: target.id, oldest: oldest, limit: 100 });
+      var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
+      if (msgs.length === 0) return { summary: 'Nessun messaggio nelle ultime ' + hours + ' ore in #' + input.channel_name + '.' };
+
+      // Risolvi nomi utenti nei messaggi
+      var userCache = {};
+      var messagesText = '';
+      for (var i = msgs.length - 1; i >= 0; i--) {
+        var m = msgs[i];
+        var userName = m.user;
+        if (!userCache[m.user]) {
+          try {
+            var uRes = await app.client.users.info({ user: m.user });
+            userCache[m.user] = uRes.user.real_name || uRes.user.name;
+          } catch(e) { userCache[m.user] = m.user; }
+        }
+        userName = userCache[m.user];
+        messagesText += userName + ': ' + m.text + '\n';
+      }
+
+      // Usa Claude per riassumere
+      var summaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. Formattazione Slack (grassetto con *testo*, no markdown).',
+        messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore):\n\n' + messagesText.substring(0, 6000) }],
+      });
+      var summary = summaryRes.content[0].text;
+      return { channel: input.channel_name, hours: hours, messages_count: msgs.length, summary: summary };
+    } catch(e) { return { error: 'Errore: ' + e.message }; }
+  }
+
+  // summarize_thread
+  if (toolName === 'summarize_thread') {
+    try {
+      var threadRes = await app.client.conversations.replies({ channel: input.channel_id, ts: input.thread_ts, limit: 100 });
+      var threadMsgs = (threadRes.messages || []).filter(function(m) { return m.text; });
+      if (threadMsgs.length === 0) return { summary: 'Thread vuoto.' };
+
+      var threadUserCache = {};
+      var threadText = '';
+      for (var j = 0; j < threadMsgs.length; j++) {
+        var tm = threadMsgs[j];
+        if (!threadUserCache[tm.user]) {
+          try {
+            var tuRes = await app.client.users.info({ user: tm.user });
+            threadUserCache[tm.user] = tuRes.user.real_name || tuRes.user.name;
+          } catch(e) { threadUserCache[tm.user] = tm.user; }
+        }
+        threadText += threadUserCache[tm.user] + ': ' + tm.text + '\n';
+      }
+
+      var threadSummaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 400,
+        system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. Formattazione Slack.',
+        messages: [{ role: 'user', content: 'Riassumi questo thread Slack:\n\n' + threadText.substring(0, 6000) }],
+      });
+      return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
+    } catch(e) { return { error: 'Errore: ' + e.message }; }
+  }
+
+  // summarize_doc
+  if (toolName === 'summarize_doc') {
+    var docsApi = getDocsPerUtente(userId);
+    if (!docsApi) return { error: 'Google Docs non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var doc = await docsApi.documents.get({ documentId: input.doc_id });
+      var docText = '';
+      function extractSumText(elements) {
+        if (!elements) return;
+        elements.forEach(function(el) {
+          if (el.paragraph && el.paragraph.elements) {
+            el.paragraph.elements.forEach(function(pe) {
+              if (pe.textRun && pe.textRun.content) docText += pe.textRun.content;
+            });
+          }
+          if (el.table) {
+            (el.table.tableRows || []).forEach(function(row) {
+              (row.tableCells || []).forEach(function(cell) {
+                extractSumText(cell.content);
+                docText += '\t';
+              });
+              docText += '\n';
+            });
+          }
+        });
+      }
+      extractSumText(doc.data.body.content);
+
+      var docTitle = doc.data.title;
+      var docSummaryRes = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. Formattazione Slack.',
+        messages: [{ role: 'user', content: 'Riassumi questo documento "' + docTitle + '":\n\n' + docText.substring(0, 8000) }],
+      });
+      var docSummary = docSummaryRes.content[0].text;
+
+      // Salva in memoria se richiesto
+      var saveToMemory = input.save_to_memory !== false;
+      if (saveToMemory) {
+        addMemory(userId, 'Riassunto doc "' + docTitle + '": ' + docSummary, ['documento', 'riassunto', docTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')]);
+      }
+
+      return { title: docTitle, summary: docSummary, saved_to_memory: saveToMemory };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: e.message };
+    }
   }
 
   return { error: 'Tool sconosciuto: ' + toolName };
@@ -792,23 +1510,50 @@ const SYSTEM_PROMPT =
   "Per il grassetto usa *testo* (mai **testo**). Per il corsivo usa _testo_.\n" +
   "Non usare # o ** che Slack non renderizza.\n\n" +
   "HAI ACCESSO A:\n" +
-  "Google Drive (cercare file, condividere), Gmail (leggere, cercare, rispondere), Google Calendar (tutte le operazioni), Google Docs (creare documenti), Slack (cercare messaggi, utenti)\n\n" +
+  "Memoria permanente, Gemini (secondo cervello AI per review e cross-check), Google Drive (ricerca full-text), Gmail (tutte le operazioni + auto-review Gemini), Google Calendar, Google Docs, Slack (messaggi, ricerca, riassunti canali/thread)\n\n" +
   "TAGGING SLACK:\n" +
   "Quando qualcuno ti menziona in canale, rispondi sempre taggandolo con <@USERID>.\n" +
   "Per trovare ID o email di un collega usa get_slack_users.\n\n" +
+  "GEMINI (dual-brain):\n" +
+  "Hai un secondo cervello AI (Gemini) a disposizione:\n" +
+  "- ask_gemini: per avere un secondo parere, cross-check info, brainstorming\n" +
+  "- review_content: per rivedere copy/testi (web, social, email, presentazioni). Gemini controlla grammatica, tono, SEO, brand voice\n" +
+  "- review_email_draft: per rivedere bozze email prima dell'invio\n" +
+  "Le email inviate con send_email e reply_email vengono automaticamente riviste da Gemini.\n" +
+  "Se Gemini trova problemi, li segnali all'utente. Usa Gemini quando serve qualita' extra, non per ogni messaggio.\n\n" +
   "GMAIL (tool use):\n" +
   "Per cercare email usa find_emails con query Gmail. Per leggere il testo usa read_email. Per rispondere usa reply_email.\n" +
-  "Prima di rispondere a un'email, leggila sempre con read_email per avere il contesto.\n\n" +
+  "Per inviare una nuova email usa send_email. Per inoltrare usa forward_email.\n" +
+  "Prima di rispondere o inoltrare, leggila sempre con read_email per avere il contesto.\n" +
+  "Le email vengono auto-riviste da Gemini. Se gemini_note e' presente nel risultato, comunicala all'utente.\n\n" +
   "CALENDAR (tool use):\n" +
   "Per qualsiasi operazione usa i tool. Timezone: Europe/Rome.\n" +
   "Per modificare/eliminare usa prima find_event per l'ID.\n" +
   "Per invitare qualcuno per nome, usa get_slack_users per trovare l'email.\n\n" +
+  "MEMORIA (tool use):\n" +
+  "Hai una memoria permanente per ogni utente. DEVI usarla:\n" +
+  "- save_memory: salva PROATTIVAMENTE info importanti dette dall'utente (preferenze clienti, decisioni, procedure, contatti, info progetti). Non chiedere, salva e basta. Usa tag pertinenti.\n" +
+  "- recall_memory: SEMPRE prima di rispondere su clienti, progetti, procedure, decisioni passate. Cerca prima nella memoria.\n" +
+  "- list_memories: per mostrare cosa ricordi dell'utente.\n" +
+  "- delete_memory: per cancellare una memoria su richiesta.\n" +
+  "Sii proattivo: se l'utente dice 'il cliente Rossi vuole il sito in blu', salva subito senza chiedere.\n\n" +
   "GOOGLE DRIVE (tool use):\n" +
-  "Per cercare file usa search_drive. Per creare documenti usa create_doc. Per condividere file usa share_file (serve l'ID file da search_drive e l'email da get_slack_users).\n\n" +
+  "search_drive ora cerca full-text DENTRO i documenti, non solo nel nome.\n" +
+  "Filtri disponibili: mime_type (document/spreadsheet/pdf/image), folder_name, modified_after, modified_before, shared_with.\n" +
+  "Usa name_only: true solo se cerchi per nome file esatto.\n" +
+  "Per leggere un Google Doc usa read_doc. Per creare documenti usa create_doc. Per condividere file usa share_file.\n\n" +
   "SLACK SEARCH (tool use):\n" +
   "Per cercare messaggi nei canali usa search_slack_messages. Supporta operatori Slack (in:#canale, from:@utente, has:link, before:, after:).\n\n" +
+  "RICERCA GLOBALE:\n" +
+  "search_everywhere cerca in Drive, Slack, Gmail e memoria contemporaneamente. Usalo quando l'utente chiede info generiche su un argomento/cliente/progetto.\n\n" +
+  "RIASSUNTI:\n" +
+  "summarize_channel: riassume cosa e' successo in un canale ('cosa mi sono perso in #canale?').\n" +
+  "summarize_thread: riassume un thread lungo.\n" +
+  "summarize_doc: legge un Google Doc, lo riassume e lo salva in memoria per dopo.\n" +
+  "Usali PROATTIVAMENTE quando l'utente chiede recap, riassunti, o 'cosa mi sono perso'.\n\n" +
   "PREFERENZE:\n" +
-  "Se l'utente chiede di disabilitare/abilitare routine o notifiche, usa set_user_prefs.\n\n" +
+  "Se l'utente chiede di disabilitare/abilitare routine, notifiche o standup, usa set_user_prefs.\n" +
+  "Standup asincrono: ogni mattina alle 9:15 mando una domanda via DM, alle 10:00 pubblico il recap nel canale.\n\n" +
   "AUTH:\n" +
   "Se nei dati vedi LINK_OAUTH, manda il link per autorizzare.\n" +
   "Se vedi GMAIL NON AUTORIZZATO o un tool risponde con errore auth, di' di scrivere 'collega il mio Google'.";
@@ -838,6 +1583,15 @@ async function askGiuno(userId, userMessage, options) {
 
   if (options.mentionedBy) {
     contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
+  }
+
+  // Inietta memorie rilevanti automaticamente
+  var relevantMemories = searchMemories(userId, resolvedMessage);
+  if (relevantMemories.length > 0) {
+    contextData += '\nMEMORIE RILEVANTI:\n';
+    relevantMemories.slice(0, 5).forEach(function(m) {
+      contextData += '[' + m.tags.join(', ') + '] ' + m.content + '\n';
+    });
   }
 
   const messageWithContext = contextData
@@ -933,6 +1687,23 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   const message = args.message, say = args.say;
   if (message.channel_type !== 'im' || message.bot_id) return;
+
+  // Intercetta risposte standup
+  if (standupInAttesa.has(message.user)) {
+    standupInAttesa.delete(message.user);
+    const oggi = new Date().toISOString().slice(0, 10);
+    if (standupData.oggi === oggi) {
+      standupData.risposte[message.user] = {
+        testo: message.text,
+        timestamp: Date.now(),
+      };
+      salvaStandup();
+      await say({ text: 'Registrato, mbare! Il recap uscira\' alle 10:00 nel canale.' });
+      logger.info('[STANDUP] Risposta ricevuta da:', message.user);
+      return;
+    }
+  }
+
   const threadTs = message.thread_ts || null;
   try {
     const reply = await askGiuno(message.user, message.text, { threadTs: threadTs });
@@ -1068,6 +1839,266 @@ async function inviaRoutineGiornaliera() {
   } catch(e) { logger.error('[ROUTINE] Errore generale:', e.message); }
 }
 
+// ─── Standup asincrono ───────────────────────────────────────────────────────
+
+async function inviaStandupDomande() {
+  const oggi = new Date().toISOString().slice(0, 10);
+  logger.info('[STANDUP] Invio domande standup per', oggi);
+
+  // Reset dati se è un nuovo giorno
+  standupData.oggi = oggi;
+  standupData.risposte = {};
+  salvaStandup();
+
+  const utenti = await getUtenti();
+  let inviati = 0;
+  for (const utente of utenti) {
+    if (!getPrefs(utente.id).standup_enabled) continue;
+    try {
+      standupInAttesa.add(utente.id);
+      await app.client.chat.postMessage({
+        channel: utente.id,
+        text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
+          'Rispondi a questo messaggio con:\n' +
+          '1. Su cosa lavori oggi?\n' +
+          '2. Hai blocchi o serve aiuto?\n\n' +
+          '_Scrivi tutto in un unico messaggio, il recap uscira\' alle 10:00._',
+      });
+      inviati++;
+    } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
+  }
+  logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
+}
+
+async function pubblicaRecapStandup() {
+  const oggi = new Date().toISOString().slice(0, 10);
+  if (standupData.oggi !== oggi) {
+    logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.');
+    return;
+  }
+
+  const risposte = standupData.risposte;
+  const userIds = Object.keys(risposte);
+  if (userIds.length === 0) {
+    logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.');
+    return;
+  }
+
+  // Pulisci gli utenti rimasti in attesa
+  standupInAttesa.clear();
+
+  let msg = '*Standup ' + oggi + '*\n\n';
+  for (const userId of userIds) {
+    const r = risposte[userId];
+    msg += '<@' + userId + '>:\n' + r.testo + '\n\n';
+  }
+
+  // Trova il canale
+  try {
+    const channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
+    const target = (channelsRes.channels || []).find(function(c) {
+      return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL;
+    });
+    if (!target) {
+      logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.');
+      return;
+    }
+    try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+    await app.client.chat.postMessage({ channel: target.id, text: msg });
+    logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
+  } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
+}
+
+// ─── Riassunto settimanale ────────────────────────────────────────────────────
+
+async function getSlackWeekData() {
+  const unaSettimanaFa = String(Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000));
+  const channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
+  const channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
+  const risultati = [];
+  for (const ch of channels) {
+    try {
+      const hist = await app.client.conversations.history({ channel: ch.id, oldest: unaSettimanaFa, limit: 200 });
+      const msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message'; });
+      if (msgs.length > 0) risultati.push({ id: ch.id, name: ch.name, count: msgs.length });
+    } catch(e) {}
+  }
+  return risultati;
+}
+
+async function buildRecapSettimanale(slackUserId, canaliSettimana) {
+  const parti = [];
+  const oggi = new Date();
+  const unaSettimanaFa = new Date(oggi.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  // Eventi della settimana
+  const cal = getCalendarPerUtente(slackUserId);
+  if (cal) {
+    try {
+      const res = await cal.events.list({
+        calendarId: 'primary',
+        timeMin: unaSettimanaFa.toISOString(),
+        timeMax: oggi.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 30,
+      });
+      const eventi = (res.data.items || []).filter(function(e) {
+        if (!e.recurringEventId) return true;
+        const t = (e.summary || '').toLowerCase();
+        return !TITOLI_RIPETITIVI.some(function(p) { return t.includes(p); });
+      });
+      if (eventi.length > 0) {
+        let s = '*Riunioni della settimana:* ' + eventi.length + ' eventi\n';
+        eventi.slice(0, 8).forEach(function(e) {
+          const giorno = e.start.dateTime
+            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })
+            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+          s += giorno + ' — ' + (e.summary || 'Senza titolo') + '\n';
+        });
+        if (eventi.length > 8) s += '...e altri ' + (eventi.length - 8) + ' eventi\n';
+        parti.push(s.trim());
+      } else {
+        parti.push('*Riunioni della settimana:* nessuna, settimana tranquilla.');
+      }
+    } catch(e) { logger.error('Recap calendar error:', e.message); }
+  }
+
+  // Email ricevute nella settimana
+  const gm = getGmailPerUtente(slackUserId);
+  if (gm) {
+    try {
+      const afterTs = Math.floor(unaSettimanaFa.getTime() / 1000);
+      const res = await gm.users.messages.list({ userId: 'me', maxResults: 1, q: 'after:' + afterTs });
+      const totale = res.data.resultSizeEstimate || 0;
+      const unreadRes = await gm.users.messages.list({ userId: 'me', maxResults: 1, q: 'is:unread after:' + afterTs });
+      const nonLette = unreadRes.data.resultSizeEstimate || 0;
+      let s = '*Email della settimana:* ~' + totale + ' ricevute';
+      if (nonLette > 0) s += ', ' + nonLette + ' ancora non lette';
+      parti.push(s);
+    } catch(e) { logger.error('Recap gmail error:', e.message); }
+  }
+
+  // Top canali Slack
+  const top = canaliSettimana.slice().sort(function(a, b) { return b.count - a.count; }).slice(0, 5);
+  if (top.length > 0) {
+    let s = '*Canali piu\' attivi della settimana:*\n';
+    top.forEach(function(c) { s += '#' + c.name + ' (' + c.count + ' messaggi)\n'; });
+    parti.push(s.trim());
+  }
+
+  // Eventi settimana prossima
+  if (cal) {
+    try {
+      const lunProssimo = new Date(oggi);
+      lunProssimo.setDate(lunProssimo.getDate() + (8 - lunProssimo.getDay()) % 7);
+      lunProssimo.setHours(0, 0, 0, 0);
+      const venProssimo = new Date(lunProssimo);
+      venProssimo.setDate(venProssimo.getDate() + 5);
+      const res = await cal.events.list({
+        calendarId: 'primary',
+        timeMin: lunProssimo.toISOString(),
+        timeMax: venProssimo.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 15,
+      });
+      const prossimi = (res.data.items || []).filter(function(e) {
+        if (!e.recurringEventId) return true;
+        const t = (e.summary || '').toLowerCase();
+        return !TITOLI_RIPETITIVI.some(function(p) { return t.includes(p); });
+      });
+      if (prossimi.length > 0) {
+        let s = '*Anteprima settimana prossima:* ' + prossimi.length + ' eventi\n';
+        prossimi.slice(0, 5).forEach(function(e) {
+          const giorno = e.start.dateTime
+            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })
+            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+          s += giorno + ' — ' + (e.summary || 'Senza titolo') + '\n';
+        });
+        parti.push(s.trim());
+      }
+    } catch(e) { logger.error('Recap next week error:', e.message); }
+  }
+
+  return parti;
+}
+
+async function inviaRecapSettimanale() {
+  logger.info('[RECAP] Avvio recap settimanale...');
+  try {
+    const canaliSettimana = await getSlackWeekData();
+    const utenti = await getUtenti();
+    for (const utente of utenti) {
+      if (!getPrefs(utente.id).routine_enabled) continue;
+      try {
+        const parti = await buildRecapSettimanale(utente.id, canaliSettimana);
+        let msg = 'Buon fine settimana ' + utente.name.split(' ')[0] + ', mbare! Ecco il recap della settimana:\n\n' + parti.join('\n\n');
+        if (!getCalendarPerUtente(utente.id)) {
+          msg += '\n\n_Collega il tuo Google per avere il recap completo con agenda e mail._';
+        }
+        await app.client.chat.postMessage({ channel: utente.id, text: msg });
+      } catch(e) { logger.error('[RECAP] Errore per', utente.id + ':', e.message); }
+    }
+    logger.info('[RECAP] Recap inviato a', utenti.length, 'utenti.');
+  } catch(e) { logger.error('[RECAP] Errore generale:', e.message); }
+}
+
+// ─── Auto-index Drive ────────────────────────────────────────────────────────
+
+const DRIVE_INDEX_FILE = 'drive_index.json';
+let driveIndex = {};
+try { driveIndex = JSON.parse(fs.readFileSync(DRIVE_INDEX_FILE)); } catch(e) {}
+
+function salvaDriveIndex() {
+  try { fs.writeFileSync(DRIVE_INDEX_FILE, JSON.stringify(driveIndex, null, 2)); } catch(e) {}
+}
+
+async function indicizzaDriveUtente(slackUserId) {
+  var drv = getDrivePerUtente(slackUserId);
+  if (!drv) return 0;
+
+  var dueOreFa = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  try {
+    var res = await drv.files.list({
+      q: "modifiedTime > '" + dueOreFa + "' and trashed = false",
+      fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, description)',
+      pageSize: 20,
+      orderBy: 'modifiedTime desc',
+    });
+    var files = res.data.files || [];
+    if (files.length === 0) return 0;
+
+    if (!driveIndex[slackUserId]) driveIndex[slackUserId] = {};
+    files.forEach(function(f) {
+      driveIndex[slackUserId][f.id] = {
+        name: f.name,
+        type: f.mimeType,
+        link: f.webViewLink,
+        modified: f.modifiedTime,
+        owner: (f.owners && f.owners[0]) ? f.owners[0].emailAddress : null,
+        description: f.description || null,
+        indexed: new Date().toISOString(),
+      };
+    });
+    salvaDriveIndex();
+    return files.length;
+  } catch(e) {
+    await handleTokenScaduto(slackUserId, e);
+    return 0;
+  }
+}
+
+async function indicizzaDriveTutti() {
+  logger.info('[DRIVE-INDEX] Avvio indicizzazione...');
+  var totale = 0;
+  for (var uid of Object.keys(userTokens)) {
+    var n = await indicizzaDriveUtente(uid);
+    totale += n;
+  }
+  logger.info('[DRIVE-INDEX] Indicizzati', totale, 'file.');
+}
+
 // ─── Notifiche proattive ──────────────────────────────────────────────────────
 
 const notificheRiunioniInviate = new Set();
@@ -1130,8 +2161,17 @@ cron.schedule('*/10 * * * *', async function() {
   });
   await app.start();
 
-  cron.schedule('0 9 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
-  logger.info('Routine schedulata: lun-ven alle 9:00 Europe/Rome');
+  cron.schedule('45 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  cron.schedule('5 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
+  cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
+  cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
+  cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
+  logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
+  logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
+  logger.info('Recap settimanale: venerdi\' alle 17:00 Europe/Rome');
+  logger.info('Drive auto-index: ogni 2 ore');
   logger.info('Notifiche riunioni: ogni 2 min | Notifiche email: ogni 10 min');
+  // Indicizza Drive subito all'avvio
+  indicizzaDriveTutti().catch(function(e) { logger.error('Drive index startup error:', e.message); });
   logger.info('Giuno e online!');
 })();
