@@ -37,6 +37,8 @@ async function main() {
   // Start Slack in Socket Mode
   await app.start();
   logger.info('Giuno Bolt app avviata in Socket Mode');
+  logger.info('SLACK_USER_TOKEN presente:', !!process.env.SLACK_USER_TOKEN);
+  logger.info('SLACK_BOT_TOKEN presente:', !!process.env.SLACK_BOT_TOKEN);
 
   // Start OAuth + Dashboard HTTP server
   oauthHandler.startOAuthServer();
