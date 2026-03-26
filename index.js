@@ -3119,22 +3119,28 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
   }
 
   // STEP B: Discovery preventivi
-  var searchTerms = ['economics', 'preventivo', 'proposta', 'quotation', 'offerta'];
+  var searchTerms = ['economics', 'preventivo', 'proposta', 'quotation', 'offerta', 'katania studio'];
+  var searchMimes = [
+    'application/vnd.google-apps.spreadsheet',
+    'application/vnd.google-apps.document',
+  ];
   var foundFiles = new Map();
 
   for (var i = 0; i < searchTerms.length; i++) {
-    try {
-      var sRes = await drv.files.list({
-        q: "fullText contains '" + searchTerms[i] + "' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
-        fields: 'files(id, name, modifiedTime)',
-        pageSize: 20,
-        orderBy: 'modifiedTime desc',
-      });
-      (sRes.data.files || []).forEach(function(f) {
-        if (!foundFiles.has(f.id)) foundFiles.set(f.id, f);
-      });
-    } catch(e) {
-      logger.error('[CATALOGA] Errore search "' + searchTerms[i] + '":', e.message);
+    for (var mi = 0; mi < searchMimes.length; mi++) {
+      try {
+        var sRes = await drv.files.list({
+          q: "fullText contains '" + searchTerms[i] + "' and mimeType = '" + searchMimes[mi] + "' and trashed = false",
+          fields: 'files(id, name, modifiedTime, mimeType)',
+          pageSize: 20,
+          orderBy: 'modifiedTime desc',
+        });
+        (sRes.data.files || []).forEach(function(f) {
+          if (!foundFiles.has(f.id)) foundFiles.set(f.id, f);
+        });
+      } catch(e) {
+        logger.error('[CATALOGA] Errore search "' + searchTerms[i] + '":', e.message);
+      }
     }
   }
 
@@ -3203,15 +3209,45 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
         continue;
       }
 
-      // Leggi contenuto
-      var sheetData = await sheets.spreadsheets.values.get({
-        spreadsheetId: file.id,
-        range: 'A1:Z100',
-      });
-      var rows = sheetData.data.values || [];
-      if (rows.length === 0) {
-        results.saltati++;
-        continue;
+      // Leggi contenuto (Sheet o Doc)
+      var fileContent = '';
+      var isSheet = (file.mimeType || '').includes('spreadsheet');
+      if (isSheet) {
+        var sheetData = await sheets.spreadsheets.values.get({
+          spreadsheetId: file.id,
+          range: 'A1:Z100',
+        });
+        var rows = sheetData.data.values || [];
+        if (rows.length === 0) { results.saltati++; continue; }
+        fileContent = JSON.stringify(rows).substring(0, 4000);
+      } else {
+        // Google Doc
+        var docs = getDocsPerUtente(userId);
+        if (!docs) { results.saltati++; continue; }
+        var doc = await docs.documents.get({ documentId: file.id });
+        var text = '';
+        var extractText = function(elements) {
+          if (!elements) return;
+          elements.forEach(function(el) {
+            if (el.paragraph && el.paragraph.elements) {
+              el.paragraph.elements.forEach(function(pe) {
+                if (pe.textRun) text += pe.textRun.content;
+              });
+            }
+            if (el.table) {
+              (el.table.tableRows || []).forEach(function(row) {
+                (row.tableCells || []).forEach(function(cell) {
+                  extractText(cell.content);
+                  text += '\t';
+                });
+                text += '\n';
+              });
+            }
+          });
+        };
+        extractText(doc.data.body.content);
+        if (text.trim().length < 20) { results.saltati++; continue; }
+        fileContent = text.substring(0, 4000);
       }
 
       // Estrai dati con Claude
@@ -3229,8 +3265,8 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
           '"confidence":"high|medium|low","notes":"string o null"}',
         messages: [{
           role: 'user',
-          content: 'File: "' + file.name + '"\n\nContenuto Sheet:\n' +
-            JSON.stringify(rows).substring(0, 4000) +
+          content: 'File: "' + file.name + '" (' + (isSheet ? 'Sheet' : 'Doc') + ')\n\nContenuto:\n' +
+            fileContent +
             (rateCard ? '\n\nRate card corrente:\n' + JSON.stringify(rateCard.resources).substring(0, 1000) : ''),
         }],
       });
