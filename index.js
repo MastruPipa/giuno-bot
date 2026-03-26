@@ -31,14 +31,17 @@ const client = new Anthropic();
 
 // ─── Gemini ──────────────────────────────────────────────────────────────────
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+let GoogleGenerativeAI = null;
+try { GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI; } catch(e) {
+  logger.warn('Modulo @google/generative-ai non installato. Esegui: npm install @google/generative-ai');
+}
 let gemini = null;
 let geminiModel = null;
-if (process.env.GEMINI_API_KEY) {
+if (GoogleGenerativeAI && process.env.GEMINI_API_KEY) {
   gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   geminiModel = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
   logger.info('Gemini configurato (gemini-2.0-flash)');
-} else {
+} else if (!process.env.GEMINI_API_KEY) {
   logger.warn('GEMINI_API_KEY non presente. Funzioni Gemini disabilitate.');
 }
 
