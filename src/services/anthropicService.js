@@ -232,6 +232,9 @@ async function autoLearn(userId, userMessage, botReply) {
         var entry = analysis.kb[ki];
         if (entry.content && entry.content.length > 5) {
           // Non sovrascrivere info ufficiali (ruoli, rate card, organigramma)
+          // ECCEZIONE: admin (Antonio/Corrado) e finance (Gianna) possono sempre aggiornare
+          var userRole = await getUserRole(userId);
+          var isPrivileged = userRole === 'admin' || userRole === 'finance';
           var contentLow = entry.content.toLowerCase();
           var isAboutRoles = contentLow.includes('ceo') ||
             contentLow.includes('coo') ||
@@ -241,7 +244,7 @@ async function autoLearn(userId, userMessage, botReply) {
             contentLow.includes('rate card') ||
             contentLow.includes('€/h') ||
             contentLow.includes('ruolo');
-          if (isAboutRoles) {
+          if (isAboutRoles && !isPrivileged) {
             logger.info('[AUTO-LEARN] Skip KB entry su ruoli/rate card — info ufficiali protette:', entry.content.substring(0, 60));
             continue;
           }
