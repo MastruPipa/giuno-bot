@@ -2727,9 +2727,10 @@ cron.schedule('*/2 * * * *', async function() {
       for (const evento of (res.data.items || [])) {
         const key = slackUserId + '_' + evento.id + '_' + (evento.start.dateTime || evento.start.date);
         if (notificheRiunioniInviate.has(key)) continue;
-        notificheRiunioniInviate.add(key);
         const oraInizio = new Date(evento.start.dateTime || evento.start.date);
         const minuti = Math.round((oraInizio - now) / 60000);
+        if (minuti < 0) continue; // evento già passato, ignora
+        notificheRiunioniInviate.add(key);
         const testo = 'Tra ' + minuti + ' min: *' + (evento.summary || 'Evento') + '*' + (evento.location ? ' — ' + evento.location : '');
         await app.client.chat.postMessage({ channel: slackUserId, text: testo });
       }
