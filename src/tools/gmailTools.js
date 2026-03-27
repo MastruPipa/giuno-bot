@@ -20,7 +20,10 @@ function getHeader(headers, name) {
 var definitions = [
   {
     name: 'find_emails',
-    description: 'Cerca email nella casella Gmail dell\'utente con una query.',
+    description: 'Cerca email nella Gmail dell\'utente. USARE SEMPRE quando l\'utente chiede di mail, ' +
+      'thread, flusso email, documenti inviati via mail. Antonio è spesso in CC: ' +
+      'cerca con "cc:antonio@kataniastudio.com" per mail dove è coinvolto. ' +
+      'NON dire "non ho accesso alle mail" senza aver chiamato questo tool.',
     input_schema: {
       type: 'object',
       properties: {
