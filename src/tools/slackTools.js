@@ -94,9 +94,10 @@ var definitions = [
   },
   {
     name: 'send_dm',
-    description: 'Invia un messaggio diretto (DM) a un collega su Slack. Usalo quando l\'utente chiede di scrivere, mandare un messaggio, avvisare o comunicare qualcosa a qualcuno. ' +
-      'Esegui SUBITO senza chiedere conferma. ' +
-      'Puoi passare lo slack_user_id se lo conosci, oppure il nome della persona (Giuno cercherà l\'ID).',
+    description: 'Invia un messaggio diretto (DM) a un collega su Slack. ' +
+      'Usa SEMPRE questo tool quando l\'utente dice "mandalo", "invialo", "scrivi a [persona]", "di\' a [persona]". ' +
+      'Se nella conversazione precedente hai già preparato un messaggio, usa quello — non inventarne uno nuovo. ' +
+      'NON usare per postare in canali pubblici. Puoi passare slack_user_id o il nome della persona.',
     input_schema: {
       type: 'object',
       properties: {
@@ -351,6 +352,17 @@ async function execute(toolName, input, userId) {
   }
 
   if (toolName === 'send_dm') {
+    // Check: messaggio lungo con dati sensibili → richiede conferma
+    var sensitivePattern = /€[\d\.]+|pipeline|contratto firmato|preventivo|\d+\.000|CRM completo/i;
+    if (sensitivePattern.test(input.message || '') && (input.message || '').length > 200) {
+      return {
+        requires_confirmation: true,
+        action_id: Date.now().toString(36),
+        preview: 'INVIO DM A ' + (input.target_user_name || input.target_user_id || '?') +
+          ':\n\n' + (input.message || '').substring(0, 300) + '...',
+        message: 'Il messaggio contiene dati sensibili. Confermi l\'invio?',
+      };
+    }
     if (!input.target_user_id) {
       if (input.target_user_name) {
         try {
