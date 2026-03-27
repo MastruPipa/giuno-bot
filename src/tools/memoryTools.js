@@ -25,7 +25,10 @@ var definitions = [
   },
   {
     name: 'recall_memory',
-    description: 'Cerca nella memoria permanente dell\'utente. Usalo SEMPRE prima di rispondere a domande su clienti, progetti, procedure, decisioni passate.',
+    description: 'OBBLIGATORIO: Recupera memories rilevanti PRIMA di rispondere. ' +
+      'Chiamare SEMPRE come primo tool per qualsiasi domanda su clienti, progetti, ' +
+      'persone, decisioni passate, procedure. Contiene info che Giuno ha imparato ' +
+      'nelle conversazioni precedenti. Se non lo chiami, perdi contesto importante.',
     input_schema: {
       type: 'object',
       properties: {

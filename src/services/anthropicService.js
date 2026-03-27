@@ -122,6 +122,14 @@ var SYSTEM_PROMPT =
   '- NON inventare MAI cifre, stati, o date. Se non trovi il lead, dillo.\n\n' +
 
   'MEMORIA:\n' +
+  'USO DELLA MEMORIA — REGOLA OBBLIGATORIA:\n' +
+  'Prima di rispondere a QUALSIASI domanda (tranne saluti):\n' +
+  '1. Chiama recall_memory con le parole chiave della domanda — SEMPRE, PRIMA di tutto\n' +
+  '2. Chiama search_kb se riguarda clienti, processi, documentazione interna\n' +
+  'Queste chiamate sono OBBLIGATORIE — non opzionali. Senza di esse perdi contesto.\n' +
+  'Esempi: "Aggiornamenti su Aitho?" → recall_memory("Aitho") PRIMA di cercare altrove\n' +
+  '"Rate card?" → search_kb("rate card")\n\n' +
+  'SCRITTURA MEMORIA:\n' +
   'save_memory: salva PROATTIVAMENTE info importanti senza chiedere.\n' +
   'NON salvare MAI in memoria: importi €, stati contratto, pipeline, fatturato.\n' +
   'update_user_profile: aggiorna profilo quando scopri ruolo/progetti/clienti.\n' +

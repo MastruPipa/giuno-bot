@@ -350,7 +350,21 @@ function searchMemories(userId, query) {
 
   scored.sort(function(a, b) { return b.score - a.score; });
 
-  return scored.map(function(item) { return item.memory; });
+  var results = scored.map(function(item) { return item.memory; });
+
+  // Track usage on Supabase (fire-and-forget)
+  if (useSupabase && results.length > 0) {
+    var ids = results.slice(0, 10).map(function(m) { return m.id; }).filter(Boolean);
+    if (ids.length > 0) {
+      supabase.from('memories')
+        .update({ last_used_at: new Date().toISOString() })
+        .in('id', ids)
+        .then(function() {})
+        .catch(function(e) { process.stdout.write('[MEM-USAGE] ' + e.message + '\n'); });
+    }
+  }
+
+  return results;
 }
 
 function getMemCache() { return _memCache || {}; }
@@ -630,6 +644,18 @@ function searchKB(query, options) {
   for (var r = 0; r < results.length; r++) {
     results[r].usage_count = (results[r].usage_count || 0) + 1;
     results[r].last_used_at = nowISO;
+  }
+
+  // Track usage on Supabase (fire-and-forget)
+  if (useSupabase && results.length > 0) {
+    var kbIds = results.slice(0, 10).map(function(e) { return e.id; }).filter(Boolean);
+    if (kbIds.length > 0) {
+      supabase.from('knowledge_base')
+        .update({ last_used_at: nowISO })
+        .in('id', kbIds)
+        .then(function() {})
+        .catch(function(e) { process.stdout.write('[KB-USAGE] ' + e.message + '\n'); });
+    }
   }
 
   return results;

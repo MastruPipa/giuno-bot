@@ -24,7 +24,10 @@ var definitions = [
   },
   {
     name: 'search_kb',
-    description: 'Cerca nella knowledge base aziendale condivisa. Usalo SEMPRE prima di rispondere su procedure aziendali, info clienti condivise, decisioni del team.',
+    description: 'OBBLIGATORIO: Cerca nella knowledge base aziendale di Katania Studio. ' +
+      'Chiamare SEMPRE per domande su: procedure interne, rate card, info clienti, ' +
+      'documentazione Drive indicizzata, decisioni aziendali. ' +
+      'Se non lo chiami, rischi di inventare dati o dare info obsolete.',
     input_schema: {
       type: 'object',
       properties: {
