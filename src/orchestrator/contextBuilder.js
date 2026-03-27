@@ -59,8 +59,18 @@ async function buildContext(params) {
   var currentYear = now.getFullYear();
   var currentQuarter = 'Q' + Math.ceil((now.getMonth() + 1) / 3);
 
-  // Channel context
+  // Channel context + type detection
   var channelContext = options.channelContext || null;
+  var channelType = options.channelType || 'dm';
+  if (!options.channelType && options.channelId) {
+    if (options.channelId.startsWith('D')) {
+      channelType = 'dm';
+    } else {
+      var chMapEntry = db.getChannelMapCache()[options.channelId];
+      channelType = (chMapEntry && chMapEntry.is_private) ? 'private' : 'public';
+    }
+  }
+  var isDM = channelType === 'dm';
 
   // Glossary matches
   var glossaryMatches = [];
@@ -76,6 +86,8 @@ async function buildContext(params) {
     mentionedBy:      options.mentionedBy || null,
     channelMapEntry:  channelMapEntry,
     oauthLink:        oauthLink,
+    channelType:      channelType,
+    isDM:             isDM,
 
     // Enriched context
     relevantMemories: relevantMemories.slice(0, 8),

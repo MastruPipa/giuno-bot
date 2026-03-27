@@ -93,11 +93,13 @@ app.event('app_mention', async function(args) {
       }
     } catch(e) {}
 
+    var mentionChannelType = ch.is_private ? 'private' : 'public';
     var reply = await route(event.user, text, {
       mentionedBy: event.user,
       threadTs: threadTs,
       channelContext: channelContext,
       channelId: ch.id || null,
+      channelType: mentionChannelType,
     });
 
     // Gemini quality gate
@@ -165,7 +167,7 @@ app.message(async function(args) {
 
     stats.messagesHandled++;
     try {
-      var reply = await route(message.user, message.text, { threadTs: implicitThreadTs, channelId: message.channel });
+      var reply = await route(message.user, message.text, { threadTs: implicitThreadTs, channelId: message.channel, channelType: 'public' });
       var formatted = formatPerSlack(reply);
       if (!formatted) return;
       var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: implicitThreadTs });
@@ -246,7 +248,7 @@ app.message(async function(args) {
   stats.messagesHandled++;
   var threadTs = message.thread_ts || null;
   try {
-    var reply = await route(message.user, message.text, { threadTs: threadTs });
+    var reply = await route(message.user, message.text, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });

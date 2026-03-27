@@ -251,7 +251,39 @@ async function getLeadsPipeline() {
   return db.getLeadsPipeline();
 }
 
+// ─── Tool definitions for registry ──────────────────────────────────────────
+
+var definitions = [
+  {
+    name: 'query_leads_db',
+    description: 'Interroga direttamente il database CRM (tabella leads su Supabase). Usa SEMPRE questo tool per domande su clienti, lead, pipeline, trattative, follow-up, status commerciale. NON usare search_kb per questi dati.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        company_name: { type: 'string', description: 'Nome azienda (ricerca parziale, case-insensitive)' },
+        contact_name: { type: 'string', description: 'Nome contatto' },
+        status: { type: 'string', description: 'Filtra per status: new|contacted|proposal_sent|negotiating|won|lost|dormant' },
+        owner_slack_id: { type: 'string', description: 'Filtra per owner (slack_user_id)' },
+        limit: { type: 'integer', description: 'Max risultati (default 20)' },
+      },
+    },
+  },
+];
+
+async function execute(toolName, input, userId, userRole) {
+  if (toolName === 'query_leads_db') {
+    try {
+      return await db.queryLeadsDB(input);
+    } catch(e) {
+      return { error: 'Errore query leads: ' + e.message };
+    }
+  }
+  return { error: 'Tool sconosciuto in leadsTools: ' + toolName };
+}
+
 module.exports = {
+  definitions: definitions,
+  execute: execute,
   readCRMSheet: readCRMSheet,
   mapRowToLead: mapRowToLead,
   importLeadsToSupabase: importLeadsToSupabase,

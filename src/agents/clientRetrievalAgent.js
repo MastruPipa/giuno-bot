@@ -143,7 +143,7 @@ async function run(message, ctx) {
   // Auto-learn in background
   var { autoLearn } = require('../services/anthropicService');
   if (finalReply && finalReply.length > 20) {
-    autoLearn(ctx.userId, message, finalReply).catch(function(e) {});
+    autoLearn(ctx.userId, message, finalReply, { channelId: ctx.channelId, channelType: ctx.channelType, isDM: ctx.isDM }).catch(function(e) {});
   }
 
   return finalReply;

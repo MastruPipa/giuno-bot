@@ -519,7 +519,12 @@ async function digerisciCanali() {
               if (channelMapping.cliente) tags.push('cliente:' + channelMapping.cliente.toLowerCase());
               if (channelMapping.progetto) tags.push('progetto:' + channelMapping.progetto.toLowerCase());
               tags.push('canale:' + ch.name);
-              db.addKBEntry(entry.content, tags, 'channel-digest');
+              db.addKBEntry(entry.content, tags, 'channel-digest', {
+                confidenceTier: ch.is_private ? 'slack_private' : 'slack_public',
+                sourceType: 'slack',
+                sourceChannelId: ch.id,
+                sourceChannelType: ch.is_private ? 'private' : 'public',
+              });
               logger.info('[CHANNEL-DIGEST] KB da #' + ch.name + ':', entry.content.substring(0, 60));
             }
           });
@@ -1026,6 +1031,13 @@ function scheduleCrons() {
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
   cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
   cron.schedule('0 3 * * 0', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica alle 3:00
+  cron.schedule('30 3 * * 0', async function() {
+    try {
+      var expired = await db.cleanupExpiredKB();
+      var reviewed = await db.reviewPendingKB();
+      logger.info('[KB-CLEANUP] Scadute rimosse:', expired, '| Promosse:', reviewed.promoted, '| Rifiutate:', reviewed.rejected);
+    } catch(e) { logger.error('[KB-CLEANUP] Errore:', e.message); }
+  }, { timezone: 'Europe/Rome' }); // domenica alle 3:30
   cron.schedule('0 2 * * *', function() {
     var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
     runKnowledgeEngine('system').catch(function(e) { logger.error('[KB-ENGINE] Errore cron:', e.message); });

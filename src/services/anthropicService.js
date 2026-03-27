@@ -189,7 +189,8 @@ var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\
 // Block auto-learn of financial/contract data — CRM Sheet is source of truth
 var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale.*confermati|deal|revenue|ricavi|incasso|pagament|scadenza.*contratt|attivo fino|confermato|archiviato/i;
 
-async function autoLearn(userId, userMessage, botReply) {
+async function autoLearn(userId, userMessage, botReply, context) {
+  context = context || {};
   if (!userMessage || userMessage.length < 20) return;
   var msgLower = userMessage.toLowerCase();
   if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
@@ -243,24 +244,25 @@ async function autoLearn(userId, userMessage, botReply) {
       }
     }
 
-    // KB entries — no separate Gemini review (Haiku already filtered)
-    if (analysis.kb && analysis.kb.length > 0) {
+    // KB entries — context-aware: DM never goes to KB
+    if (analysis.kb && analysis.kb.length > 0 && !context.isDM) {
       var userRole = await getUserRole(userId);
       var isPrivileged = userRole === 'admin' || userRole === 'finance';
+      var kbTier = isPrivileged ? 'official' : (context.channelType === 'public' ? 'slack_public' : (context.channelType === 'private' ? 'slack_private' : 'auto_learn'));
+      var kbOptions = {
+        confidenceTier: kbTier,
+        sourceType: isPrivileged ? 'admin' : 'auto_learn',
+        sourceChannelId: context.channelId || null,
+        sourceChannelType: isPrivileged ? 'admin' : (context.channelType || 'conversation'),
+      };
       for (var ki = 0; ki < analysis.kb.length; ki++) {
         var entry = analysis.kb[ki];
         if (!entry.content || entry.content.length <= 5) continue;
         if (_autoLearnBlacklist.test(entry.content)) continue;
-        if (_rolesKeywords.test(entry.content) && !isPrivileged) {
-          logger.info('[AUTO-LEARN] Skip KB ruoli/rate card protetta:', entry.content.substring(0, 60));
-          continue;
-        }
-        if (_financialKeywords.test(entry.content)) {
-          logger.info('[AUTO-LEARN] Skip KB finanziaria — CRM Sheet è fonte di verità:', entry.content.substring(0, 60));
-          continue;
-        }
-        db.addKBEntry(entry.content, entry.tags || [], userId);
-        logger.info('[AUTO-LEARN] KB:', entry.content.substring(0, 60));
+        if (_rolesKeywords.test(entry.content) && !isPrivileged) continue;
+        if (_financialKeywords.test(entry.content)) continue;
+        db.addKBEntry(entry.content, entry.tags || [], userId, kbOptions);
+        logger.info('[AUTO-LEARN] KB (' + kbTier + '):', entry.content.substring(0, 60));
       }
     }
 
@@ -414,7 +416,14 @@ async function askGiuno(userId, userMessage, options) {
   }
   db.saveConversation(convKey, convCache[convKey]);
 
-  autoLearn(userId, resolvedMessage, finalReply).catch(function(e) {
+  var learnContext = {
+    channelId: options.channelId || null,
+    channelType: options.channelType || 'dm',
+    isDM: !options.channelId || (options.channelId && options.channelId.startsWith('D')),
+  };
+  if (options.channelType) learnContext.channelType = options.channelType;
+  if (options.isDM != null) learnContext.isDM = options.isDM;
+  autoLearn(userId, resolvedMessage, finalReply, learnContext).catch(function(e) {
     logger.error('Auto-learn error:', e.message);
   });
 

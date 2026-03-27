@@ -493,19 +493,46 @@ function isDuplicate(newContent, newTags) {
   return false;
 }
 
-async function addKBEntry(content, tags, addedBy) {
-  // Deduplication check
-  if (isDuplicate(content, tags)) {
-    return null;
-  }
+var TIER_DEFAULTS = {
+  official:       { score: 1.0,  expiryDays: null, validation: 'approved' },
+  drive_indexed:  { score: 0.8,  expiryDays: null, validation: 'approved' },
+  slack_public:   { score: 0.5,  expiryDays: 90,   validation: 'pending' },
+  slack_private:  { score: 0.4,  expiryDays: 60,   validation: 'pending' },
+  auto_learn:     { score: 0.25, expiryDays: 30,   validation: 'pending' },
+};
+
+async function addKBEntry(content, tags, addedBy, options) {
+  options = options || {};
+
+  // DM → NEVER in KB
+  if (options.sourceChannelType === 'dm') return null;
+
+  // Dedup check (skip for official)
+  if (options.confidenceTier !== 'official' && isDuplicate(content, tags)) return null;
+
+  var tier = options.confidenceTier || 'auto_learn';
+  var tierDef = TIER_DEFAULTS[tier] || TIER_DEFAULTS.auto_learn;
+
+  var now = new Date();
+  var expiryDays = options.expiresInDays != null ? options.expiresInDays : tierDef.expiryDays;
+  var expiresAt = expiryDays ? new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000).toISOString() : null;
 
   var entry = {
     id: Date.now().toString(36),
     content: content,
     tags: tags || [],
     added_by: addedBy,
-    created: new Date().toISOString(),
+    created: now.toISOString(),
+    confidence_score: tierDef.score,
+    confidence_tier: tier,
+    source_type: options.sourceType || 'auto_learn',
+    source_channel_id: options.sourceChannelId || null,
+    source_channel_type: options.sourceChannelType || 'conversation',
+    validation_status: tierDef.validation,
+    expires_at: expiresAt,
+    usage_count: 0,
   };
+
   if (!_kbCache) _kbCache = [];
   _kbCache.push(entry);
 
@@ -520,6 +547,14 @@ async function addKBEntry(content, tags, addedBy) {
       tags: tags || [],
       added_by: addedBy,
       created_at: entry.created,
+      confidence_score: entry.confidence_score,
+      confidence_tier: entry.confidence_tier,
+      source_type: entry.source_type,
+      source_channel_id: entry.source_channel_id,
+      source_channel_type: entry.source_channel_type,
+      validation_status: entry.validation_status,
+      expires_at: entry.expires_at,
+      usage_count: 0,
     });
   } catch(e) { logErr('addKBEntry', e); }
   return entry;
@@ -541,20 +576,61 @@ async function deleteKBEntry(entryId) {
   return true;
 }
 
-function searchKB(query) {
+function searchKB(query, options) {
   if (!_kbCache) return [];
-  var tokens = expandQueryTokens(query);
+  options = options || {};
+  var minConfidence = options.minConfidence || 0.0;
+  var includeExpired = options.includeExpired || false;
+  var includePending = options.includePending !== false; // default true for backwards compat
+  var limit = options.limit || 20;
   var now = Date.now();
+  var nowISO = new Date().toISOString();
+  var tokens = expandQueryTokens(query);
 
-  var scored = _kbCache.map(function(entry) {
-    return { entry: entry, score: scoreMemory(entry, tokens, now) };
-  }).filter(function(item) {
-    return item.score > 0 && !isBlacklisted(item.entry.content);
-  });
+  var scored = [];
+  for (var i = 0; i < _kbCache.length; i++) {
+    var entry = _kbCache[i];
+
+    // Filter rejected
+    if (entry.validation_status === 'rejected') continue;
+    // Filter pending if not included
+    if (!includePending && entry.validation_status === 'pending') continue;
+    // Filter expired
+    if (!includeExpired && entry.expires_at && entry.expires_at < nowISO) continue;
+    // Filter below min confidence
+    if (entry.confidence_score && entry.confidence_score < minConfidence) continue;
+    // Blacklist
+    if (isBlacklisted(entry.content)) continue;
+
+    var keywordScore = scoreMemory(entry, tokens, now);
+    if (keywordScore <= 0) continue;
+
+    // Quality-weighted final score
+    var confidenceScore = entry.confidence_score || 0.25;
+    var recencyScore = 1.0;
+    if (entry.created) {
+      var ageDays = (now - new Date(entry.created).getTime()) / (1000 * 60 * 60 * 24);
+      recencyScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
+    }
+
+    // Normalize keywordScore to 0-1 range (cap at 20)
+    var normalizedKeyword = Math.min(keywordScore / 20, 1.0);
+
+    var finalScore = (normalizedKeyword * 0.5) + (confidenceScore * 0.35) + (recencyScore * 0.15);
+
+    scored.push({ entry: entry, score: finalScore });
+  }
 
   scored.sort(function(a, b) { return b.score - a.score; });
 
-  return scored.map(function(item) { return item.entry; });
+  // Track usage on returned results
+  var results = scored.slice(0, limit).map(function(item) { return item.entry; });
+  for (var r = 0; r < results.length; r++) {
+    results[r].usage_count = (results[r].usage_count || 0) + 1;
+    results[r].last_used_at = nowISO;
+  }
+
+  return results;
 }
 
 function getKBCache() { return _kbCache || []; }
@@ -994,6 +1070,67 @@ async function getLeadsPipeline() {
 }
 
 // ============================================================================
+// KB CLEANUP (cron)
+// ============================================================================
+
+async function cleanupExpiredKB() {
+  if (!useSupabase) return 0;
+  try {
+    var res = await supabase.from('knowledge_base').delete()
+      .lt('expires_at', new Date().toISOString())
+      .neq('confidence_tier', 'official')
+      .neq('confidence_tier', 'drive_indexed')
+      .select('id');
+    var removed = (res.data || []).length;
+    // Also remove from cache
+    if (_kbCache && removed > 0) {
+      var nowISO = new Date().toISOString();
+      _kbCache = _kbCache.filter(function(e) {
+        return !e.expires_at || e.expires_at >= nowISO || e.confidence_tier === 'official' || e.confidence_tier === 'drive_indexed';
+      });
+    }
+    return removed;
+  } catch(e) { logErr('cleanupExpiredKB', e); return 0; }
+}
+
+async function reviewPendingKB() {
+  if (!useSupabase) return { rejected: 0, promoted: 0 };
+  try {
+    var sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    var unused = await supabase.from('knowledge_base')
+      .update({ validation_status: 'rejected' })
+      .eq('validation_status', 'pending')
+      .eq('usage_count', 0)
+      .lt('created_at', sevenDaysAgo)
+      .select('id');
+    var promoted = await supabase.from('knowledge_base')
+      .update({ validation_status: 'approved', validated_at: new Date().toISOString() })
+      .eq('validation_status', 'pending')
+      .gte('usage_count', 2)
+      .select('id');
+    return { rejected: (unused.data || []).length, promoted: (promoted.data || []).length };
+  } catch(e) { logErr('reviewPendingKB', e); return { rejected: 0, promoted: 0 }; }
+}
+
+// ============================================================================
+// LEADS DIRECT QUERY
+// ============================================================================
+
+async function queryLeadsDB(input) {
+  if (!useSupabase) return { leads: [], count: 0 };
+  try {
+    var q = supabase.from('leads').select('*');
+    if (input.company_name) q = q.ilike('company_name', '%' + input.company_name + '%');
+    if (input.contact_name) q = q.ilike('contact_name', '%' + input.contact_name + '%');
+    if (input.status) q = q.eq('status', input.status);
+    if (input.owner_slack_id) q = q.eq('owner_slack_id', input.owner_slack_id);
+    q = q.order('updated_at', { ascending: false }).limit(input.limit || 10);
+    var res = await q;
+    return { leads: res.data || [], count: (res.data || []).length };
+  } catch(e) { logErr('queryLeadsDB', e); return { leads: [], count: 0 }; }
+}
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 
@@ -1054,4 +1191,9 @@ module.exports = {
   addGlossaryTerm: addGlossaryTerm,
   searchGlossary: searchGlossary,
   getGlossaryCache: getGlossaryCache,
+  // KB Cleanup
+  cleanupExpiredKB: cleanupExpiredKB,
+  reviewPendingKB: reviewPendingKB,
+  // Leads Direct Query
+  queryLeadsDB: queryLeadsDB,
 };

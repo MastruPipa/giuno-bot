@@ -110,7 +110,7 @@ async function indexDrive(userId, report) {
       if (classification.client) tags.push('cliente:' + classification.client.toLowerCase());
       if (classification.project) tags.push('progetto:' + classification.project.toLowerCase());
 
-      db.addKBEntry(kbContent, tags, 'kb-engine-drive');
+      db.addKBEntry(kbContent, tags, 'kb-engine-drive', { confidenceTier: 'drive_indexed', sourceType: 'drive', sourceChannelType: 'drive' });
       report.filesIndexed++;
 
       if (classification.client && report.clientsFound.indexOf(classification.client) === -1) {
@@ -234,7 +234,12 @@ async function indexSlack(report) {
             kbContent = 'Da #' + ch.name + ' (' + item.type + '): ' + item.content;
           }
 
-          db.addKBEntry(kbContent, tags, 'kb-engine-slack');
+          db.addKBEntry(kbContent, tags, 'kb-engine-slack', {
+            confidenceTier: ch.is_private ? 'slack_private' : 'slack_public',
+            sourceType: 'slack',
+            sourceChannelId: ch.id,
+            sourceChannelType: ch.is_private ? 'private' : 'public',
+          });
           report.threadsIndexed++;
 
           if (item.client && report.clientsFound.indexOf(item.client) === -1) {
