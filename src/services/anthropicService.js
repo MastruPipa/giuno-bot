@@ -129,6 +129,8 @@ var SYSTEM_PROMPT =
   'Queste chiamate sono OBBLIGATORIE — non opzionali. Senza di esse perdi contesto.\n' +
   'Esempi: "Aggiornamenti su Aitho?" → recall_memory("Aitho") PRIMA di cercare altrove\n' +
   '"Rate card?" → search_kb("rate card")\n\n' +
+  'STATO CONNESSIONI GOOGLE:\n' +
+  'Per domande su chi ha collegato Google, usa SEMPRE get_connected_users. Mai dalla memoria.\n\n' +
   'SCRITTURA MEMORIA:\n' +
   'save_memory: salva PROATTIVAMENTE info importanti senza chiedere.\n' +
   'NON salvare MAI in memoria: importi €, stati contratto, pipeline, fatturato.\n' +
