@@ -32,10 +32,10 @@ if (!OAUTH_REDIRECT_URI) {
 var GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/presentations.readonly',
+  'https://www.googleapis.com/auth/presentations',
 ];
 
 // Default shared OAuth2 client (for service-level Drive/Docs)

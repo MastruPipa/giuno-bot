@@ -13,12 +13,18 @@ var {
 } = require('../services/googleAuthService');
 var { askGemini } = require('../services/geminiService');
 
+// Parametri per Shared Drives — DEVONO essere in TUTTE le chiamate Drive API
+var SHARED_DRIVE_PARAMS = { supportsAllDrives: true, includeItemsFromAllDrives: true };
+
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
 var definitions = [
   {
     name: 'search_drive',
-    description: 'Cerca file su Google Drive. Supporta ricerca full-text, per nome, per tipo, per cartella e per data.',
+    description: 'Cerca file su Google Drive inclusi i Drive condivisi. ' +
+      'Supporta ricerca full-text, per nome, per tipo, per cartella e per data. ' +
+      'Cerca in "Il mio Drive" E in tutti i Drive condivisi. ' +
+      'Per cercare in un Drive condiviso specifico usa search_in_shared_drive.',
     input_schema: {
       type: 'object',
       properties: {
@@ -36,12 +42,13 @@ var definitions = [
   },
   {
     name: 'create_doc',
-    description: 'Crea un nuovo Google Doc con titolo e contenuto.',
+    description: 'Crea un nuovo Google Doc con titolo e contenuto. Usa drive_id per creare dentro un Drive condiviso.',
     input_schema: {
       type: 'object',
       properties: {
-        title:   { type: 'string', description: 'Titolo del documento' },
-        content: { type: 'string', description: 'Contenuto testuale del documento' },
+        title:    { type: 'string', description: 'Titolo del documento' },
+        content:  { type: 'string', description: 'Contenuto testuale del documento' },
+        drive_id: { type: 'string', description: 'ID Drive condiviso (da list_shared_drives) - opzionale' },
       },
       required: ['title'],
     },
@@ -103,6 +110,30 @@ var definitions = [
         max_files: { type: 'number', description: 'Numero massimo di file da processare (default 50)' },
         confirm:   { type: 'boolean', description: 'Se true, procede senza chiedere conferma (default false)' },
       },
+    },
+  },
+  {
+    name: 'list_shared_drives',
+    description: 'Elenca tutti i Drive condivisi (Shared Drives) a cui l\'utente ha accesso. Usa questo tool PRIMA di search_in_shared_drive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name_filter: { type: 'string', description: 'Filtra per nome del Drive (opzionale)' },
+      },
+    },
+  },
+  {
+    name: 'search_in_shared_drive',
+    description: 'Cerca file in uno specifico Drive condiviso. Usa list_shared_drives prima per ottenere il drive_id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        drive_id:  { type: 'string', description: 'ID del Drive condiviso (da list_shared_drives)' },
+        query:     { type: 'string', description: 'Testo da cercare nei file' },
+        mime_type: { type: 'string', description: 'Filtra per tipo: document, spreadsheet, presentation, pdf, folder' },
+        max:       { type: 'number', description: 'Numero massimo risultati (default 20)' },
+      },
+      required: ['drive_id', 'query'],
     },
   },
 ];
@@ -184,6 +215,8 @@ async function execute(toolName, input, userId) {
             q: "name = '" + input.folder_name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
             fields: 'files(id)',
             pageSize: 1,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
           }), 8000, 'search_drive_folder');
           if (folderRes.data.files && folderRes.data.files.length > 0) {
             q += " and '" + folderRes.data.files[0].id + "' in parents";
@@ -193,9 +226,12 @@ async function execute(toolName, input, userId) {
 
       var res = await withTimeout(drv.files.list({
         q: q,
-        fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, parents, description)',
+        fields: 'files(id, name, mimeType, webViewLink, modifiedTime, owners, parents, description, driveId)',
         pageSize: max,
         orderBy: 'modifiedTime desc',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: 'allDrives',
       }), 8000, 'search_drive');
       return {
         files: (res.data.files || []).map(function(f) {
@@ -231,6 +267,7 @@ async function execute(toolName, input, userId) {
         fileId: input.file_id,
         requestBody: { type: 'user', role: role, emailAddress: input.email },
         sendNotificationEmail: true,
+        supportsAllDrives: true,
       });
       return { success: true, shared_with: input.email, role: role };
     }
