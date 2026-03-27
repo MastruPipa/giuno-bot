@@ -129,9 +129,14 @@ var SYSTEM_PROMPT =
   'Queste chiamate sono OBBLIGATORIE — non opzionali. Senza di esse perdi contesto.\n' +
   'Esempi: "Aggiornamenti su Aitho?" → recall_memory("Aitho") PRIMA di cercare altrove\n' +
   '"Rate card?" → search_kb("rate card")\n' +
-  'RECALL TEMPORALE: per "di cosa abbiamo parlato stamattina/oggi/ieri?" usa:\n' +
-  'recall_memory("stamattina") o recall_memory("oggi") — il sistema filtra per data automaticamente.\n' +
-  'NON serve specificare keyword — il riferimento temporale è sufficiente.\n\n' +
+  'RECALL TEMPORALE: recall_memory("stamattina"), recall_memory("oggi"), recall_memory("ieri") — filtra per data automaticamente.\n\n' +
+  'TIPI DI MEMORIA (il sistema classifica automaticamente):\n' +
+  '• episodic: eventi accaduti — scade dopo 30gg\n' +
+  '• semantic: fatti su clienti/aziende — permanente, condivisa\n' +
+  '• procedural: come si fanno le cose — permanente, condivisa\n' +
+  '• intent: azione proposta ma non eseguita — scade dopo 24h\n' +
+  '• preference: preferenze utente — permanente, personale\n' +
+  'Quando salvi, il tipo viene classificato dal contenuto. Per azioni proposte, il sistema le traccia automaticamente.\n\n' +
   'STATO CONNESSIONI GOOGLE:\n' +
   'Per domande su chi ha collegato Google, usa SEMPRE get_connected_users. Mai dalla memoria.\n\n' +
   'SCRITTURA MEMORIA:\n' +
@@ -217,7 +222,7 @@ function conversationKey(userId, threadTs) {
 function getConversations() { return db.getConvCache(); }
 
 // Compresses older messages, keeping the last 8 exchanges fresh
-async function compressConversation(messages) {
+async function compressConversation(messages, convKey) {
   var KEEP_RECENT = 8;
   if (messages.length <= KEEP_RECENT) return messages;
 
@@ -253,8 +258,33 @@ async function compressConversation(messages) {
       system: 'Sei un assistente che riassume conversazioni. Sii conciso e preciso. Rispondi in italiano.',
       messages: [{ role: 'user', content: summaryPrompt }],
     });
-    var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + res.content[0].text.trim() + ']';
+    var summaryText = res.content[0].text.trim();
+    var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + summaryText + ']';
     logger.info('[COMPRESS] Conversazione compressa:', toSummarize.length, 'messaggi → riassunto');
+
+    // Save to conversation_summaries (fire-and-forget)
+    if (convKey) {
+      var proposedActions = [];
+      for (var pa = messages.length - 1; pa >= 0; pa--) {
+        if (messages[pa].role === 'assistant') {
+          var botText = typeof messages[pa].content === 'string' ? messages[pa].content : '';
+          var AP = [
+            { pattern: /mand[oa] (un messaggio|un dm|il messaggio) a (\w+)/i, type: 'send_dm' },
+            { pattern: /aggiorn[oa] (il crm|il lead)/i, type: 'crm_update' },
+            { pattern: /cre[oa] (un evento|una call)/i, type: 'create_event' },
+          ];
+          AP.forEach(function(ap) {
+            var m = botText.match(ap.pattern);
+            if (m) proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
+          });
+          break;
+        }
+      }
+      var topics = (summaryText || '').toLowerCase().split(/\W+/).filter(function(w) { return w.length > 4; }).slice(0, 10);
+      db.saveConversationSummary(convKey, summaryText, messages.length, topics, proposedActions)
+        .catch(function(e) { logger.warn('[COMPRESS] Summary save failed:', e.message); });
+    }
+
     return [
       { role: 'user', content: summary },
       { role: 'assistant', content: 'Ok, ho il contesto della nostra conversazione precedente.' },
@@ -530,7 +560,7 @@ async function askGiuno(userId, userMessage, options) {
   convCache[convKey].push({ role: 'user', content: messageWithContext });
   convCache[convKey].push({ role: 'assistant', content: finalReply });
   if (convCache[convKey].length > 20) {
-    convCache[convKey] = await compressConversation(convCache[convKey]);
+    convCache[convKey] = await compressConversation(convCache[convKey], convKey);
   }
   db.saveConversation(convKey, convCache[convKey]);
 

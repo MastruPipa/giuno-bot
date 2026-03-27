@@ -195,12 +195,43 @@ async function loadMemories() {
   } catch(e) { logErr('loadMemories', e); _memCache = {}; return {}; }
 }
 
-async function addMemory(userId, content, tags) {
+// ─── Memory type classification ──────────────────────────────────────────────
+
+function classifyMemoryType(content) {
+  var c = (content || '').toLowerCase();
+  if (/ho proposto|avevo detto di|da inviare a|da mandare a|reminder per|da aggiornare|todo:|action:|da fare/.test(c)) {
+    return { type: 'intent', expiresIn: 24 * 60 * 60 * 1000 };
+  }
+  if (/per i preventivi|il processo è|il workflow|il template|la procedura|si usa|bisogna sempre|regola:/.test(c)) {
+    return { type: 'procedural', expiresIn: null };
+  }
+  if (/preferisce|gli piace|non gli piace|vuole sempre|stile di|tono preferito|preferenza/.test(c)) {
+    return { type: 'preference', expiresIn: null };
+  }
+  if (/è un[ao]?\s|si occupa di|ha sede|contatto:|email:|telefono:|è il cliente|è il fornitore|ruolo:|fondat/.test(c)) {
+    return { type: 'semantic', expiresIn: null };
+  }
+  return { type: 'episodic', expiresIn: 30 * 24 * 60 * 60 * 1000 };
+}
+
+async function addMemory(userId, content, tags, options) {
+  options = options || {};
+  var classification = options.memory_type
+    ? { type: options.memory_type, expiresIn: options.expiresIn || null }
+    : classifyMemoryType(content);
+
+  var expiresAt = null;
+  if (classification.expiresIn) {
+    expiresAt = new Date(Date.now() + classification.expiresIn).toISOString();
+  }
+
   var entry = {
-    id: Date.now().toString(36),
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
     content: content,
     tags: tags || [],
     created: new Date().toISOString(),
+    memory_type: classification.type,
+    expires_at: expiresAt,
   };
   if (!_memCache) _memCache = {};
   if (!_memCache[userId]) _memCache[userId] = [];
@@ -217,6 +248,12 @@ async function addMemory(userId, content, tags) {
       content: content,
       tags: tags || [],
       created_at: entry.created,
+      memory_type: classification.type,
+      confidence_score: options.confidence_score || 0.5,
+      source_channel_type: options.channelType || 'conversation',
+      source_channel_id: options.channelId || null,
+      entity_refs: options.entity_refs || [],
+      expires_at: expiresAt,
     });
   } catch(e) { logErr('addMemory', e); }
   return entry;
@@ -309,15 +346,23 @@ function scoreMemory(memory, tokens, now) {
   // fonte:ufficiale — always top priority
   if (isOfficial) return baseScore + 100;
 
+  // Memory type weight
+  var TYPE_WEIGHT = { 'semantic': 1.0, 'procedural': 1.0, 'preference': 0.95, 'intent': 0.9, 'episodic': 0.7, 'observation': 0.6 };
+  var typeWeight = TYPE_WEIGHT[memory.memory_type] || 0.7;
+
   // Temporal score: 1.0 for brand new, decays to 0.3 over 180 days
+  // Semantic/procedural/preference don't decay
   var temporalScore = 1.0;
-  if (memory.created && now) {
+  if (memory.created && now && (memory.memory_type === 'episodic' || memory.memory_type === 'observation' || memory.memory_type === 'intent')) {
     var ageDays = (now - new Date(memory.created).getTime()) / (1000 * 60 * 60 * 24);
     temporalScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
   }
 
-  // Weighted final score: 75% relevance + 25% recency
-  return baseScore * 0.75 + (baseScore * temporalScore) * 0.25;
+  // Skip expired memories
+  if (memory.expires_at && new Date(memory.expires_at).getTime() < now) return 0;
+
+  // Weighted final score: 50% relevance + 25% type + 25% recency
+  return (baseScore * 0.5) + (baseScore * typeWeight * 0.25) + (baseScore * temporalScore * 0.25);
 }
 
 // Filter out stale/wrong info
@@ -391,22 +436,48 @@ function getTimeRange(config) {
 }
 
 function searchMemories(userId, query) {
-  if (!_memCache || !_memCache[userId]) return [];
-
   var temporal = detectTemporalRef(query);
+
+  // TEMPORAL SEARCH — filter from Supabase directly
+  if (temporal && useSupabase) {
+    var range = getTimeRange(temporal.config);
+    var oldest = new Date(range.oldest).toISOString();
+    var newest = new Date(range.newest).toISOString();
+    // Async but we need sync return for backwards compat — use cache
+  }
+
+  // Try Supabase RPC if available (async via Promise, return cache as sync fallback)
+  if (useSupabase && !temporal) {
+    // Fire async RPC for weighted recall (results come async, but we return cache sync for now)
+    supabase.rpc('recall_memories_weighted', {
+      p_query: query || '',
+      p_user_id: userId || null,
+      p_limit: 10,
+      p_include_expired: false,
+    }).then(function(res) {
+      if (res.data && res.data.length > 0) {
+        var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
+        supabase.rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
+      }
+    }).catch(function(e) {
+      process.stdout.write('[MEM-RPC] recall_memories_weighted failed: ' + e.message + '\n');
+    });
+  }
+
+  // SYNC FALLBACK: use in-memory cache (always works)
+  if (!_memCache || !_memCache[userId]) return [];
   var now = Date.now();
 
   if (temporal) {
-    // TEMPORAL SEARCH: filter by created_at range, return all non-blacklisted
     var range = getTimeRange(temporal.config);
     var temporalResults = _memCache[userId].filter(function(m) {
-      if (isBlacklisted(m.content)) return false;
+      if (isBlacklisted(m.content || '')) return false;
       if (!m.created) return false;
+      if (m.expires_at && new Date(m.expires_at).getTime() < now) return false;
       var ts = new Date(m.created).getTime();
       return ts >= range.oldest && ts <= range.newest;
     });
 
-    // If query has keywords beyond the temporal ref, also filter by content
     var extraKeywords = (query || '').toLowerCase()
       .replace(/stamattina|stamani|questa mattina|oggi|ieri|questa settimana|settimana scorsa|poco fa|recentemente|ultimo ora|ultime ore/g, '')
       .trim();
@@ -421,53 +492,48 @@ function searchMemories(userId, query) {
       }
     }
 
-    // Sort newest first
     temporalResults.sort(function(a, b) {
       return new Date(b.created).getTime() - new Date(a.created).getTime();
     });
 
-    var tResults = temporalResults.slice(0, 20);
-
-    // Track usage
-    if (useSupabase && tResults.length > 0) {
-      var tIds = tResults.map(function(m) { return m.id; }).filter(Boolean);
-      if (tIds.length > 0) {
-        supabase.rpc('increment_memory_usage', { memory_ids: tIds })
-          .then(function() {})
-          .catch(function(e) { process.stdout.write('[MEM-USAGE] rpc failed: ' + e.message + '\n'); });
-      }
-    }
-
-    return tResults;
+    return temporalResults.slice(0, 20);
   }
 
-  // KEYWORD SEARCH: existing behavior
+  // KEYWORD SEARCH with type-based ranking
   var tokens = expandQueryTokens(query);
-
   var scored = _memCache[userId].map(function(m) {
     return { memory: m, score: scoreMemory(m, tokens, now) };
   }).filter(function(item) {
-    return item.score > 0 && !isBlacklisted(item.memory.content);
+    return item.score > 0 && !isBlacklisted(item.memory.content || '');
   });
 
   scored.sort(function(a, b) { return b.score - a.score; });
-
-  var results = scored.map(function(item) { return item.memory; });
-
-  // Track usage on Supabase (fire-and-forget)
-  if (useSupabase && results.length > 0) {
-    var ids = results.slice(0, 10).map(function(m) { return m.id; }).filter(Boolean);
-    if (ids.length > 0) {
-      supabase.rpc('increment_memory_usage', { memory_ids: ids })
-        .then(function() {})
-        .catch(function(e) { process.stdout.write('[MEM-USAGE] rpc failed: ' + e.message + '\n'); });
-    }
-  }
-
-  return results;
+  return scored.map(function(item) { return item.memory; });
 }
 
 function getMemCache() { return _memCache || {}; }
+
+async function saveConversationSummary(convKey, summary, messagesCount, topics, proposedActions) {
+  if (!useSupabase) return;
+  try {
+    await supabase.from('conversation_summaries').upsert({
+      conv_key: convKey,
+      summary: summary,
+      messages_count: messagesCount || 0,
+      topics: topics || [],
+      proposed_actions: proposedActions || [],
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'conv_key' });
+  } catch(e) { logErr('saveConversationSummary', e); }
+}
+
+async function getConversationSummary(convKey) {
+  if (!useSupabase) return null;
+  try {
+    var res = await supabase.from('conversation_summaries').select('*').eq('conv_key', convKey).single();
+    return res.data || null;
+  } catch(e) { return null; }
+}
 
 // ============================================================================
 // USER PROFILES
@@ -1385,6 +1451,9 @@ module.exports = {
   addGlossaryTerm: addGlossaryTerm,
   searchGlossary: searchGlossary,
   getGlossaryCache: getGlossaryCache,
+  // Conversation Summaries
+  saveConversationSummary: saveConversationSummary,
+  getConversationSummary: getConversationSummary,
   // Cron Locks
   acquireCronLock: acquireCronLock,
   releaseCronLock: releaseCronLock,
