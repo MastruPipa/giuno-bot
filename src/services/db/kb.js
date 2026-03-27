@@ -66,8 +66,24 @@ var TIER_DEFAULTS = {
   drive_indexed:  { score: 0.8,  expiryDays: null, validation: 'approved' },
   slack_public:   { score: 0.5,  expiryDays: 90,   validation: 'pending' },
   slack_private:  { score: 0.4,  expiryDays: 60,   validation: 'pending' },
-  auto_learn:     { score: 0.25, expiryDays: 30,   validation: 'pending' },
+  auto_learn:     { score: 0.3,  expiryDays: 30,   validation: 'pending' },
 };
+
+// Smart KB entry classification — boosts auto_learn confidence based on content
+function classifyKBContent(content, baseTier) {
+  if (baseTier === 'official' || baseTier === 'drive_indexed') return null; // already high
+  var c2 = (content || '').toLowerCase();
+  if (/template|procedura|processo|rate card|workflow|per i preventivi|come si fa|bisogna sempre/i.test(c2)) {
+    return { tier: 'auto_learn', score: 0.75, expiryDays: null }; // procedural: permanent, high conf
+  }
+  if (/è un[ao]?\s+(cliente|fornitore|partner|collaboratore)|si occupa di|specializzat|ha sede|è (il|la) (ceo|coo|cfo|pm|responsabile)/i.test(c2)) {
+    return { tier: 'auto_learn', score: 0.65, expiryDays: null }; // semantic: permanent, medium-high conf
+  }
+  if (/preferisce|vuole (sempre|di solito)|abitudine|tono preferito/i.test(c2)) {
+    return { tier: 'auto_learn', score: 0.6, expiryDays: null }; // preference: permanent
+  }
+  return null; // keep default
+}
 
 async function loadKB() {
   if (!c.useSupabase) {
@@ -90,8 +106,11 @@ async function addKBEntry(content, tags, addedBy, options) {
 
   var tier = options.confidenceTier || 'auto_learn';
   var tierDef = TIER_DEFAULTS[tier] || TIER_DEFAULTS.auto_learn;
-  var now = new Date();
-  var expiryDays = options.expiresInDays != null ? options.expiresInDays : tierDef.expiryDays;
+
+  // Smart classification: boost auto_learn confidence based on content type
+  var smartClass = classifyKBContent(content, tier);
+  var score = smartClass ? smartClass.score : tierDef.score;
+  var expiryDays = smartClass ? smartClass.expiryDays : (options.expiresInDays != null ? options.expiresInDays : tierDef.expiryDays);
   var expiresAt = expiryDays ? new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000).toISOString() : null;
 
   var entry = {
@@ -100,7 +119,7 @@ async function addKBEntry(content, tags, addedBy, options) {
     tags: tags || [],
     added_by: addedBy,
     created: now.toISOString(),
-    confidence_score: tierDef.score,
+    confidence_score: score,
     confidence_tier: tier,
     source_type: options.sourceType || 'auto_learn',
     source_channel_id: options.sourceChannelId || null,
