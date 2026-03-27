@@ -197,36 +197,45 @@ async function loadMemories() {
 
 // ─── Memory type classification ──────────────────────────────────────────────
 
+var MEMORY_CLASSIFIERS = [
+  { type: 'preference', confidence: 0.8, expiresIn: null, shared: false,
+    patterns: [/preferisce/i, /vuole (che|un|una|il|la)\s/i, /tono.*(umoristico|formale|diretto|conversazionale)/i,
+      /stile.*(editoriale|grafico|comunicativo)/i, /monitora regolarmente/i, /abitudine di/i,
+      /gli piace|non gli piace|vuole sempre/i] },
+  { type: 'semantic', confidence: 0.85, expiresIn: null, shared: true,
+    patterns: [/è un[ao]?\s+(fornitore|cliente|partner|collaboratore|designer|sviluppatore|grafico|copywriter)/i,
+      /si occupa di/i, /lavora (come|in qualità di)/i, /specializzat[ao] in/i, /ha sede (a|in)/i,
+      /è (il|la|un|una) (responsabile|direttore|manager|ceo|coo|cco|gm)/i, /fondat/i] },
+  { type: 'procedural', confidence: 0.9, expiresIn: null, shared: true,
+    patterns: [/template/i, /procedura/i, /processo/i, /per i preventivi/i, /rate card/i,
+      /struttura (del|della|dei)/i, /come si fa/i, /bisogna (prima|sempre)/i, /workflow/i] },
+  { type: 'intent', confidence: 0.7, expiresIn: 24 * 3600000, shared: false,
+    patterns: [/ho proposto di/i, /suggerito di/i, /da fare:/i, /pending:/i, /in attesa di conferma/i,
+      /da inviare a|da mandare a|reminder per|da aggiornare/i] },
+];
+
 function classifyMemoryType(content) {
   var c = (content || '').toLowerCase();
-  if (/ho proposto|avevo detto di|da inviare a|da mandare a|reminder per|da aggiornare|todo:|action:|da fare/.test(c)) {
-    return { type: 'intent', expiresIn: 24 * 60 * 60 * 1000 };
+  for (var i = 0; i < MEMORY_CLASSIFIERS.length; i++) {
+    var cls = MEMORY_CLASSIFIERS[i];
+    if (cls.patterns.some(function(p) { return p.test(c); })) {
+      return { type: cls.type, confidence: cls.confidence, expiresIn: cls.expiresIn, shared: cls.shared };
+    }
   }
-  if (/per i preventivi|il processo è|il workflow|il template|la procedura|si usa|bisogna sempre|regola:/.test(c)) {
-    return { type: 'procedural', expiresIn: null };
-  }
-  if (/preferisce|gli piace|non gli piace|vuole sempre|stile di|tono preferito|preferenza/.test(c)) {
-    return { type: 'preference', expiresIn: null };
-  }
-  if (/è un[ao]?\s|si occupa di|ha sede|contatto:|email:|telefono:|è il cliente|è il fornitore|ruolo:|fondat/.test(c)) {
-    return { type: 'semantic', expiresIn: null };
-  }
-  return { type: 'episodic', expiresIn: 30 * 24 * 60 * 60 * 1000 };
+  return { type: 'episodic', confidence: 0.5, expiresIn: 30 * 86400000, shared: false };
 }
 
 async function addMemory(userId, content, tags, options) {
   options = options || {};
   var classification = options.memory_type
-    ? { type: options.memory_type, expiresIn: options.expiresIn || null }
+    ? { type: options.memory_type, confidence: options.confidence_score || 0.5, expiresIn: options.expiresIn || null, shared: options.shared || false }
     : classifyMemoryType(content);
 
-  var expiresAt = null;
-  if (classification.expiresIn) {
-    expiresAt = new Date(Date.now() + classification.expiresIn).toISOString();
-  }
+  var expiresAt = classification.expiresIn ? new Date(Date.now() + classification.expiresIn).toISOString() : null;
+  var slackUserId = classification.shared ? null : userId;
 
   var entry = {
-    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+    id: 'mn' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
     content: content,
     tags: tags || [],
     created: new Date().toISOString(),
@@ -241,20 +250,43 @@ async function addMemory(userId, content, tags, options) {
     writeJSON('memories.json', _memCache);
     return entry;
   }
+
+  // Auto-collega entità menzionate
+  var entityRefs = [];
+  try {
+    var entRes = await supabase.from('kb_entities').select('canonical_name').limit(100);
+    if (entRes.data) {
+      var contentLow = content.toLowerCase();
+      entityRefs = entRes.data.filter(function(e) {
+        return e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase());
+      }).map(function(e) { return e.canonical_name; });
+    }
+  } catch(e) {}
+
   try {
     await supabase.from('memories').insert({
       id: entry.id,
-      slack_user_id: userId,
+      slack_user_id: slackUserId,
       content: content,
       tags: tags || [],
       created_at: entry.created,
       memory_type: classification.type,
-      confidence_score: options.confidence_score || 0.5,
+      confidence_score: classification.confidence,
       source_channel_type: options.channelType || 'conversation',
       source_channel_id: options.channelId || null,
-      entity_refs: options.entity_refs || [],
+      entity_refs: entityRefs.length > 0 ? entityRefs : null,
       expires_at: expiresAt,
     });
+
+    // Auto-update memory_graph
+    if (entityRefs.length > 0) {
+      var graphRows = entityRefs.map(function(name) {
+        return { from_type: 'memory', from_id: entry.id, relationship: 'mentions', to_type: 'entity', to_id: name, weight: 0.8, created_by: 'auto' };
+      });
+      supabase.from('memory_graph').insert(graphRows).catch(function() {});
+    }
+
+    process.stdout.write('[storeMemory] ' + classification.type + ' | shared:' + classification.shared + ' | entities:' + (entityRefs.join(',') || 'none') + '\n');
   } catch(e) { logErr('addMemory', e); }
   return entry;
 }
@@ -437,36 +469,30 @@ function getTimeRange(config) {
 
 function searchMemories(userId, query) {
   var temporal = detectTemporalRef(query);
-
-  // TEMPORAL SEARCH — filter from Supabase directly
-  if (temporal && useSupabase) {
-    var range = getTimeRange(temporal.config);
-    var oldest = new Date(range.oldest).toISOString();
-    var newest = new Date(range.newest).toISOString();
-    // Async but we need sync return for backwards compat — use cache
-  }
-
-  // Try Supabase RPC if available (async via Promise, return cache as sync fallback)
-  if (useSupabase && !temporal) {
-    // Fire async RPC for weighted recall (results come async, but we return cache sync for now)
-    supabase.rpc('recall_memories_weighted', {
-      p_query: query || '',
-      p_user_id: userId || null,
-      p_limit: 10,
-      p_include_expired: false,
-    }).then(function(res) {
-      if (res.data && res.data.length > 0) {
-        var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
-        supabase.rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
-      }
-    }).catch(function(e) {
-      process.stdout.write('[MEM-RPC] recall_memories_weighted failed: ' + e.message + '\n');
-    });
-  }
-
-  // SYNC FALLBACK: use in-memory cache (always works)
-  if (!_memCache || !_memCache[userId]) return [];
   var now = Date.now();
+
+  // Fire async entity-aware + weighted recall on Supabase (non-blocking)
+  if (useSupabase && !temporal) {
+    // Entity recall
+    supabase.rpc('recall_by_entity', { p_entity_name: query || '', p_limit: 5 })
+      .then(function(res) {
+        if (res.data && res.data.length > 0) {
+          var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
+          supabase.rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
+        }
+      }).catch(function() {});
+    // Weighted recall
+    supabase.rpc('recall_memories_weighted', { p_query: query || '', p_user_id: userId || null, p_limit: 10, p_include_expired: false })
+      .then(function(res) {
+        if (res.data && res.data.length > 0) {
+          var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
+          supabase.rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
+        }
+      }).catch(function(e) { process.stdout.write('[MEM-RPC] ' + e.message + '\n'); });
+  }
+
+  // SYNC: use in-memory cache
+  if (!_memCache || !_memCache[userId]) return [];
 
   if (temporal) {
     var range = getTimeRange(temporal.config);
@@ -481,21 +507,15 @@ function searchMemories(userId, query) {
     var extraKeywords = (query || '').toLowerCase()
       .replace(/stamattina|stamani|questa mattina|oggi|ieri|questa settimana|settimana scorsa|poco fa|recentemente|ultimo ora|ultime ore/g, '')
       .trim();
-
     if (extraKeywords.length > 3) {
       var extraTokens = expandQueryTokens(extraKeywords);
       if (extraTokens.length > 0) {
         temporalResults = temporalResults.filter(function(m) {
-          var contentLow = (m.content || '').toLowerCase();
-          return extraTokens.some(function(t) { return contentLow.includes(t); });
+          return extraTokens.some(function(t) { return (m.content || '').toLowerCase().includes(t); });
         });
       }
     }
-
-    temporalResults.sort(function(a, b) {
-      return new Date(b.created).getTime() - new Date(a.created).getTime();
-    });
-
+    temporalResults.sort(function(a, b) { return new Date(b.created).getTime() - new Date(a.created).getTime(); });
     return temporalResults.slice(0, 20);
   }
 
@@ -506,7 +526,6 @@ function searchMemories(userId, query) {
   }).filter(function(item) {
     return item.score > 0 && !isBlacklisted(item.memory.content || '');
   });
-
   scored.sort(function(a, b) { return b.score - a.score; });
   return scored.map(function(item) { return item.memory; });
 }

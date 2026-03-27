@@ -151,7 +151,14 @@ var SYSTEM_PROMPT =
   'Confronta SEMPRE le date nelle memories con la data attuale.\n' +
   'Se una deadline è passata, segnalalo. Non presentare date scadute come future.\n\n' +
 
-  'MEMORIA:\n' +
+  'MEMORIA — CLASSIFICAZIONE OBBLIGATORIA:\n' +
+  'Quando salvi con store_memory, il tipo viene classificato automaticamente:\n' +
+  '• preference (0.8): preferenze utente, stile, abitudini → personale, permanente\n' +
+  '• semantic (0.85): fatti su entità (clienti, fornitori, ruoli) → condivisa, permanente\n' +
+  '• procedural (0.9): processi, template, workflow → condivisa, permanente\n' +
+  '• intent (0.7): azioni proposte non eseguite → scade 24h\n' +
+  '• episodic (0.5): eventi, conversazioni → scade 30gg\n' +
+  'MAI salvare tutto come episodic. Il classificatore automatico gestisce i tipi.\n\n' +
   'USO DELLA MEMORIA — REGOLA OBBLIGATORIA:\n' +
   'Prima di rispondere a QUALSIASI domanda (tranne saluti):\n' +
   '1. Chiama recall_memory con le parole chiave della domanda — SEMPRE, PRIMA di tutto\n' +
