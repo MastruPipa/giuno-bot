@@ -32,6 +32,7 @@ var definitions = [
         name_only:       { type: 'boolean', description: 'Se true, cerca solo nel nome del file (default: false)' },
         mime_type:       { type: 'string', description: 'Filtra per tipo: "document", "spreadsheet", "presentation", "pdf", "image", "folder", oppure MIME completo' },
         folder_name:     { type: 'string', description: 'Cerca solo dentro questa cartella (nome cartella)' },
+        folder_id:       { type: 'string', description: 'ID diretto di una cartella Drive (da URL: drive.google.com/drive/folders/ID)' },
         modified_after:  { type: 'string', description: 'Solo file modificati dopo questa data ISO 8601' },
         modified_before: { type: 'string', description: 'Solo file modificati prima di questa data ISO 8601' },
         shared_with:     { type: 'string', description: 'Filtra file condivisi con questa email' },
@@ -136,6 +137,21 @@ var definitions = [
       required: ['drive_id', 'query'],
     },
   },
+  {
+    name: 'browse_folder',
+    description: 'Elenca il contenuto di una cartella Google Drive dato il suo ID o URL. ' +
+      'Usa questo quando l\'utente incolla un link Drive come drive.google.com/drive/folders/XXXXX. ' +
+      'Funziona sia per "Il mio Drive" che per Drive condivisi.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        folder_id: { type: 'string', description: 'ID della cartella o URL completo Drive' },
+        max:       { type: 'number', description: 'Numero massimo file (default 30)' },
+        mime_type: { type: 'string', description: 'Filtra per tipo: document, spreadsheet, presentation, pdf, folder' },
+      },
+      required: ['folder_id'],
+    },
+  },
 ];
 
 // ─── Document text extraction helper ──────────────────────────────────────────
@@ -209,7 +225,12 @@ async function execute(toolName, input, userId) {
 
       var q = qParts.join(' and ');
 
-      if (input.folder_name) {
+      if (input.folder_id) {
+        var folderIdClean = (input.folder_id || '').trim();
+        var folderIdMatch = folderIdClean.match(/folders\/([a-zA-Z0-9_-]+)/);
+        if (folderIdMatch) folderIdClean = folderIdMatch[1];
+        q += " and '" + folderIdClean + "' in parents";
+      } else if (input.folder_name) {
         try {
           var folderRes = await withTimeout(drv.files.list({
             q: "name = '" + input.folder_name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
@@ -384,6 +405,44 @@ async function execute(toolName, input, userId) {
   } catch(e) {
     if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Utente notificato per riautenticarsi.' };
     return { error: e.message };
+  }
+
+  if (toolName === 'browse_folder') {
+    var drv = getDrivePerUtente(userId);
+    if (!drv) return { error: 'Google Drive non collegato. Scrivi "collega il mio Google".' };
+    var rawId = (input.folder_id || '').trim();
+    var idMatch = rawId.match(/folders\/([a-zA-Z0-9_-]+)/);
+    var folderId = idMatch ? idMatch[1] : rawId;
+    if (!folderId) return { error: 'ID cartella non valido.' };
+    try {
+      var folderInfo = null;
+      try {
+        var fi = await withTimeout(drv.files.get({ fileId: folderId, fields: 'id, name, mimeType, driveId', supportsAllDrives: true }), 8000, 'browse_folder_info');
+        folderInfo = fi.data;
+      } catch(e) {}
+      var bMax = input.max || 30;
+      var bq = "'" + folderId + "' in parents and trashed = false";
+      if (input.mime_type) {
+        var bMimeMap = { 'document': 'application/vnd.google-apps.document', 'spreadsheet': 'application/vnd.google-apps.spreadsheet', 'presentation': 'application/vnd.google-apps.presentation', 'pdf': 'application/pdf', 'folder': 'application/vnd.google-apps.folder' };
+        bq += " and mimeType = '" + (bMimeMap[input.mime_type] || input.mime_type) + "'";
+      }
+      var bRes = await withTimeout(drv.files.list({
+        q: bq, fields: 'files(id, name, mimeType, webViewLink, modifiedTime, size)',
+        pageSize: bMax, orderBy: 'folder,name', supportsAllDrives: true, includeItemsFromAllDrives: true,
+      }), 10000, 'browse_folder');
+      var bFiles = bRes.data.files || [];
+      return {
+        folder_id: folderId, folder_name: folderInfo ? folderInfo.name : '(cartella)',
+        files: bFiles.map(function(f) {
+          return { id: f.id, name: f.name, type: f.mimeType === 'application/vnd.google-apps.folder' ? 'folder' : f.mimeType, link: f.webViewLink, modified: f.modifiedTime, is_folder: f.mimeType === 'application/vnd.google-apps.folder' };
+        }),
+        count: bFiles.length,
+      };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      if (e.message && e.message.includes('404')) return { error: 'Cartella non trovata o accesso non autorizzato.', folder_id: folderId };
+      return { error: 'Errore lettura cartella: ' + e.message };
+    }
   }
 
   return { error: 'Tool sconosciuto nel modulo driveTools: ' + toolName };

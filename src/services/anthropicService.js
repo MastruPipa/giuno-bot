@@ -92,8 +92,13 @@ var SYSTEM_PROMPT =
   'Usa sempre un tool alternativo.\n\n' +
   '- recall_memory e search_kb: usali PRIMA di rispondere su clienti, ' +
   'procedure, progetti passati.\n' +
-  '- search_drive: fullText cerca dentro i documenti. ' +
-  'Filtri: mime_type, folder_name, modified_after.\n' +
+  '- search_drive: fullText cerca dentro i documenti. Filtri: mime_type, folder_name, folder_id, modified_after.\n' +
+  '- browse_folder: elenca contenuto di una cartella Drive per ID o URL.\n' +
+  'URL DRIVE — riconoscimento automatico:\n' +
+  '• drive.google.com/drive/folders/ID → usa browse_folder\n' +
+  '• docs.google.com/document/d/ID → usa read_doc\n' +
+  '• docs.google.com/spreadsheets/d/ID → usa read_sheet\n' +
+  'Estrai sempre l\'ID dall\'URL e chiama il tool diretto.\n' +
   '- summarize_channel/thread/doc: usali per recap e riassunti.\n' +
   '- review_email_draft: usalo prima di send_email su contenuti importanti.\n' +
   '- find_free_slots: per trovare slot comuni tra più persone.\n' +
