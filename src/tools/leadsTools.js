@@ -14,47 +14,55 @@ var CORRADO_SLACK_ID = 'U053D9B7WNL';
 // ─── Column mapping: Sheet header → leads table field ────────────────────────
 
 var COLUMN_MAP = {
-  // Company (col B)
+  // Col A — NOME → contact_name
+  'nome': 'contact_name', 'referente': 'contact_name', 'persona': 'contact_name',
+  'nome referente': 'contact_name', 'nome contatto': 'contact_name',
+  // Col B — AZIENDA → company_name
   'azienda': 'company_name', 'company': 'company_name', 'cliente': 'company_name',
   'nome azienda': 'company_name', 'company name': 'company_name', 'società': 'company_name',
   'brand': 'company_name', 'nome cliente': 'company_name',
-  // Contact name (col A)
-  'nome': 'contact_name', 'referente': 'contact_name', 'persona': 'contact_name',
-  'nome referente': 'contact_name', 'nome contatto': 'contact_name',
-  // Contact info (col I — "Contatto" può essere email o telefono)
-  'contatto': 'contact_email', 'contact': 'contact_email',
-  'email': 'contact_email', 'mail': 'contact_email', 'e-mail': 'contact_email',
-  'email contatto': 'contact_email', 'telefono': 'contact_email',
-  // Contact role
-  'ruolo': 'contact_role', 'role': 'contact_role', 'posizione': 'contact_role',
-  'qualifica': 'contact_role',
-  // Project → notes (col C)
+  // Col C — PROGETTO → notes (project info)
   'progetto': 'notes', 'project': 'notes',
-  // Proposta → service_interest (col D)
+  // Col D — PROPOSTA → service_interest
   'proposta': 'service_interest', 'servizio': 'service_interest', 'servizi': 'service_interest',
   'interesse': 'service_interest', 'service': 'service_interest', 'categoria': 'service_interest',
   'tipo servizio': 'service_interest',
-  // Source
-  'fonte': 'source', 'source': 'source', 'provenienza': 'source', 'canale': 'source',
-  // Estimated value (col E)
+  // Col E — VALUE → estimated_value
   'valore': 'estimated_value', 'budget': 'estimated_value', 'importo': 'estimated_value',
   'valore stimato': 'estimated_value', 'value': 'estimated_value',
-  // Status (col F)
-  'stato': 'status', 'status': 'status', 'stage': 'status',
-  // Fase (col H) — second status column, use as status if main status empty
-  'fase': 'status',
-  // Owner
+  // Col F — STATUS → status
+  'stato': 'status', 'status': 'status', 'stage': 'status', 'fase': 'status',
+  // Col G — LAST CONTACT → last_contact
+  'ultimo contatto': 'last_contact', 'last contact': 'last_contact',
+  'data ultimo contatto': 'last_contact',
+  // Col H — Contatto → contact_role (generic contact info)
+  'contatto': 'contact_role', 'contact': 'contact_role',
+  // Col I — EMAIL → contact_email
+  'email': 'contact_email', 'mail': 'contact_email', 'e-mail': 'contact_email',
+  'email contatto': 'contact_email',
+  // Col J — PHONE → phone (stored in notes as extra)
+  'phone': '_phone', 'telefono': '_phone', 'tel': '_phone', 'cellulare': '_phone',
+  // Col K — LEAD SOURCE → source
+  'lead source': 'source', 'fonte': 'source', 'source': 'source',
+  'provenienza': 'source', 'canale': 'source',
+  // Col L — DATE → first_contact
+  'date': 'first_contact', 'data': 'first_contact', 'primo contatto': 'first_contact',
+  'first contact': 'first_contact', 'data contatto': 'first_contact',
+  'initial contact': 'first_contact',
+  // Col M — Owner → owner_slack_id
   'owner': 'owner_slack_id', 'responsabile': 'owner_slack_id', 'assegnato': 'owner_slack_id',
   'account': 'owner_slack_id',
-  // Dates
-  'primo contatto': 'first_contact', 'first contact': 'first_contact', 'data contatto': 'first_contact',
-  'data primo contatto': 'first_contact', 'initial contact': 'first_contact',
-  'ultimo contatto': 'last_contact', 'last contact': 'last_contact', 'data ultimo contatto': 'last_contact',
-  'prossimo followup': 'next_followup', 'followup': 'next_followup', 'follow up': 'next_followup',
-  'next followup': 'next_followup', 'data followup': 'next_followup', 'follow-up': 'next_followup',
-  // Notes
+  // Col N — sito web → stored in notes
+  'sito web': '_website', 'website': '_website', 'sito': '_website', 'url': '_website',
+  // Col O — Note → notes
   'note': 'notes', 'notes': 'notes', 'commenti': 'notes', 'descrizione': 'notes',
   'dettagli': 'notes',
+  // Other date fields
+  'prossimo followup': 'next_followup', 'followup': 'next_followup', 'follow up': 'next_followup',
+  'next followup': 'next_followup', 'follow-up': 'next_followup',
+  // Roles
+  'ruolo': 'contact_role', 'role': 'contact_role', 'posizione': 'contact_role',
+  'qualifica': 'contact_role',
 };
 
 // ─── Read CRM Sheet ──────────────────────────────────────────────────────────
@@ -163,7 +171,6 @@ function mapRowToLead(row, headerMapping) {
     if (field === 'estimated_value') {
       lead[field] = parseValue(val);
     } else if (field === 'status') {
-      // Don't overwrite a better status with a worse one
       if (!lead[field] || lead[field] === 'new') {
         lead[field] = normalizeStatus(val);
       }
@@ -172,8 +179,11 @@ function mapRowToLead(row, headerMapping) {
     } else if (field === 'service_interest') {
       lead[field] = val.split(/[,;\/]+/).map(function(s) { return s.trim(); }).filter(Boolean);
     } else if (field === 'notes') {
-      // Append instead of overwrite (multiple columns can map to notes)
       lead[field] = lead[field] ? lead[field] + ' | ' + val : val;
+    } else if (field === '_phone') {
+      lead.notes = lead.notes ? lead.notes + ' | Tel: ' + val : 'Tel: ' + val;
+    } else if (field === '_website') {
+      lead.notes = lead.notes ? lead.notes + ' | Web: ' + val : 'Web: ' + val;
     } else {
       lead[field] = val;
     }
