@@ -46,12 +46,16 @@ var definitions = [
   },
   {
     name: 'ask_gemini',
-    description: 'Chiedi un parere a Gemini (Google AI). Usalo per avere un secondo punto di vista, cross-check informazioni, o quando serve competenza specifica Google.',
+    description: 'Chiedi a Gemini (Google AI) con accesso a Google Search in tempo reale. ' +
+      'Usalo per: (1) notizie recenti su aziende/persone, (2) info aggiornate dal web, ' +
+      '(3) verifica dati esterni (siti, contatti, prezzi), (4) cross-check informazioni. ' +
+      'Per dati interni (CRM, Slack, Drive) usa i tool dedicati.',
     input_schema: {
       type: 'object',
       properties: {
-        prompt:  { type: 'string', description: 'Domanda o richiesta per Gemini' },
-        context: { type: 'string', description: 'Contesto aggiuntivo (opzionale)' },
+        prompt:      { type: 'string', description: 'Domanda per Gemini. Per ricerche web, scrivi la query direttamente.' },
+        context:     { type: 'string', description: 'Contesto aggiuntivo (opzionale)' },
+        search_mode: { type: 'boolean', description: 'Se true (default), attiva Google Search grounding. False per elaborazioni pure.' },
       },
       required: ['prompt'],
     },
@@ -131,7 +135,30 @@ async function execute(toolName, input, userId, userRole) {
   if (toolName === 'ask_gemini') {
     var prompt = input.prompt;
     if (input.context) prompt = 'Contesto: ' + input.context + '\n\n' + prompt;
-    return await askGemini(prompt, 'Sei un assistente AI che collabora con un altro AI (Claude). Rispondi in italiano, in modo conciso e utile. Se ti viene chiesto un parere, sii onesto e costruttivo.');
+
+    // Auto-detect if search is needed
+    var EXTERNAL_PATTERNS = [
+      /notizie|news|recenti|aggiornamenti|ultimo[ai]?|oggi/i,
+      /sito|website|email|contatto|telefono|indirizzo/i,
+      /chi è|cos'è|che azienda|che cosa fa/i,
+      /prezzo|costo|tariff[ae]|mercato/i,
+      /instagram|linkedin|facebook|social/i,
+    ];
+    var needsSearch = input.search_mode !== false &&
+      (input.search_mode === true || EXTERNAL_PATTERNS.some(function(p) { return p.test(prompt); }));
+
+    if (needsSearch) {
+      var { callGeminiWithSearch } = require('../services/geminiService');
+      var searchResult = await callGeminiWithSearch(prompt);
+      if (searchResult.error) return { error: searchResult.error };
+      var response = searchResult.text;
+      if (searchResult.sources && searchResult.sources.length > 0) {
+        response += '\n\n_Ricerca Google: ' + searchResult.sources.join(', ') + '_';
+      }
+      return { response: response, searched: true };
+    }
+
+    return await askGemini(prompt, 'Sei un assistente AI che collabora con un altro AI (Claude). Rispondi in italiano, in modo conciso e utile.');
   }
 
   if (toolName === 'review_content') {

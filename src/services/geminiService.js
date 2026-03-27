@@ -73,9 +73,42 @@ async function fetchNewsMarketing() {
   return null;
 }
 
+// ─── callGeminiWithSearch ─────────────────────────────────────────────────────
+
+async function callGeminiWithSearch(prompt, options) {
+  if (!gemini) return { text: '', sources: [], error: 'Gemini non configurato.' };
+  options = options || {};
+  try {
+    var searchModel = gemini.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      tools: [{ googleSearch: {} }],
+    });
+    var result = await searchModel.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        maxOutputTokens: options.maxTokens || 1024,
+        temperature: options.temperature || 0.3,
+      },
+    });
+    var text = result.response.text();
+    var sources = [];
+    try {
+      var cand = result.response.candidates && result.response.candidates[0];
+      if (cand && cand.groundingMetadata && cand.groundingMetadata.webSearchQueries) {
+        sources = cand.groundingMetadata.webSearchQueries;
+      }
+    } catch(e) {}
+    return { text: text, sources: sources };
+  } catch(e) {
+    logger.error('[GEMINI-SEARCH] Errore:', e.message);
+    return { text: '', sources: [], error: e.message };
+  }
+}
+
 module.exports = {
   gemini: gemini,
   geminiModel: geminiModel,
   askGemini: askGemini,
+  callGeminiWithSearch: callGeminiWithSearch,
   fetchNewsMarketing: fetchNewsMarketing,
 };

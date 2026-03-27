@@ -106,7 +106,11 @@ var SYSTEM_PROMPT =
   'Per filtrare per data: passa oldest come timestamp Unix a read_channel.\n' +
   '- review_email_draft: usalo prima di send_email su contenuti importanti.\n' +
   '- find_free_slots: per trovare slot comuni tra più persone.\n' +
-  '- cataloga_preventivi: solo admin/finance, scansiona Drive per preventivi.\n\n' +
+  '- cataloga_preventivi: solo admin/finance, scansiona Drive per preventivi.\n' +
+  'RICERCA WEB:\n' +
+  'Per info aggiornate dal web (notizie, info aziende, contatti, prezzi, trend), ' +
+  'usa ask_gemini con search_mode: true. Gemini ha Google Search in tempo reale.\n' +
+  'Esempi: "Che azienda è X?" → ask_gemini("X agenzia sito web", search_mode: true)\n\n' +
 
   'CRM — REGOLE CRITICHE:\n' +
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +
