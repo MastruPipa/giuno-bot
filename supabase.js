@@ -269,15 +269,18 @@ var SINONIMI = {
 
 function expandQueryTokens(query) {
   var tokens = query.toLowerCase().split(/\s+/).filter(function(t) { return t.length > 2; });
-  var expanded = tokens.slice();
+  var seen = {};
+  var expanded = [];
+  tokens.forEach(function(t) { if (!seen[t]) { seen[t] = true; expanded.push(t); } });
   tokens.forEach(function(token) {
     if (SINONIMI[token]) {
       SINONIMI[token].forEach(function(syn) {
-        if (expanded.indexOf(syn) === -1) expanded.push(syn);
+        if (!seen[syn]) { seen[syn] = true; expanded.push(syn); }
       });
     }
   });
-  return expanded;
+  // Limit expansion to avoid slow scoring
+  return expanded.slice(0, 15);
 }
 
 function scoreMemory(memory, tokens, now) {
@@ -423,9 +426,19 @@ async function loadKB() {
 
 var STOPWORDS_IT = ['che', 'per', 'con', 'del', 'della', 'delle', 'dei', 'degli', 'nel', 'nella', 'nelle', 'nei', 'negli', 'una', 'uno', 'sono', 'alla', 'alle', 'allo', 'agli', 'dal', 'dalla', 'dai', 'dagli', 'sul', 'sulla', 'sui', 'sugli', 'tra', 'fra', 'non', 'come', 'anche', 'questo', 'questa', 'questi', 'queste', 'quello', 'quella', 'quelli', 'quelle', 'stato', 'stata', 'stati', 'state', 'essere', 'avere', 'fare', 'dire', 'dove', 'quando', 'cosa', 'ogni', 'tutto', 'tutti', 'dopo', 'prima', 'solo', 'ancora', 'molto', 'più'];
 
+var _stopwordsSet = null;
+function getStopwordsSet() {
+  if (!_stopwordsSet) {
+    _stopwordsSet = {};
+    STOPWORDS_IT.forEach(function(w) { _stopwordsSet[w] = true; });
+  }
+  return _stopwordsSet;
+}
+
 function extractKeywords(text) {
+  var sw = getStopwordsSet();
   return text.toLowerCase().split(/\W+/).filter(function(w) {
-    return w.length > 5 && STOPWORDS_IT.indexOf(w) === -1;
+    return w.length > 5 && !sw[w];
   });
 }
 
@@ -436,42 +449,41 @@ function getTagValue(tags, prefix) {
   return null;
 }
 
+// Fast dedup: check only last 200 KB entries (most recent) instead of full scan
 function isDuplicate(newContent, newTags) {
   if (!_kbCache || _kbCache.length === 0) return false;
-
-  // Never deduplicate official entries
   if ((newTags || []).some(function(t) { return t === 'fonte:ufficiale'; })) return false;
 
   var newKeywords = extractKeywords(newContent);
   if (newKeywords.length < 3) return false;
 
+  var newKeywordSet = {};
+  newKeywords.forEach(function(kw) { newKeywordSet[kw] = true; });
+
   var newClient = getTagValue(newTags || [], 'cliente:');
   var newProject = getTagValue(newTags || [], 'progetto:');
   var newTipo = getTagValue(newTags || [], 'tipo:');
 
-  for (var i = 0; i < _kbCache.length; i++) {
+  // Only scan last 200 entries (most recent = most likely duplicates)
+  var startIdx = Math.max(0, _kbCache.length - 200);
+  for (var i = startIdx; i < _kbCache.length; i++) {
     var existing = _kbCache[i];
-
-    // Never replace official entries
     if ((existing.tags || []).some(function(t) { return t === 'fonte:ufficiale'; })) continue;
 
     var existingKeywords = extractKeywords(existing.content);
     var matchCount = 0;
-    for (var k = 0; k < newKeywords.length; k++) {
-      if (existingKeywords.indexOf(newKeywords[k]) !== -1) matchCount++;
+    for (var k = 0; k < existingKeywords.length && matchCount < 3; k++) {
+      if (newKeywordSet[existingKeywords[k]]) matchCount++;
     }
 
     if (matchCount >= 3) {
-      // Check if at least one tag dimension matches
       var existingClient = getTagValue(existing.tags || [], 'cliente:');
       var existingProject = getTagValue(existing.tags || [], 'progetto:');
       var existingTipo = getTagValue(existing.tags || [], 'tipo:');
 
-      var tagMatch = (newClient && newClient === existingClient) ||
+      if ((newClient && newClient === existingClient) ||
         (newProject && newProject === existingProject) ||
-        (newTipo && newTipo === existingTipo);
-
-      if (tagMatch) return true;
+        (newTipo && newTipo === existingTipo)) return true;
     }
   }
   return false;

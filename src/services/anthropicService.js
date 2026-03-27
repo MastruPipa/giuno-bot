@@ -175,33 +175,33 @@ async function compressConversation(messages) {
 
 var { askGemini } = require('./geminiService');
 
+var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi/i;
+var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\/h/i;
+
 async function autoLearn(userId, userMessage, botReply) {
   if (!userMessage || userMessage.length < 20) return;
   var msgLower = userMessage.toLowerCase();
   if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
 
   try {
+    // Single LLM call for all auto-learn tasks
     var analysisRes = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 600,
       system: 'Analizzi conversazioni per estrarre informazioni utili da ricordare.\n' +
         'Rispondi SOLO in formato JSON valido. Se non c\'e\' nulla di utile rispondi: {"skip": true}\n' +
-        'Altrimenti rispondi con:\n' +
         '{\n' +
         '  "memories": [{"content": "info da ricordare", "tags": ["tipo:valore"]}],\n' +
         '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
-        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}]\n' +
+        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
+        '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}]\n' +
         '}\n' +
         'Regole:\n' +
-        '- I TAG devono essere SEMPRE nel formato tipo:valore. Tipi validi: cliente, progetto, area, tipo, persona, tool, processo\n' +
-        '  Esempi: "cliente:elfo", "progetto:videoclip", "area:sviluppo", "tipo:procedura", "persona:antonio", "tool:figma"\n' +
-        '- memories: info personali dell\'utente (preferenze, abitudini, contesti)\n' +
-        '- profile: aggiornamenti al profilo professionale (ruolo, progetti, clienti, competenze)\n' +
-        '- kb: SOLO info che valgono per tutta l\'azienda (procedure, info clienti condivise, decisioni team)\n' +
-        '- NON salvare conversazioni banali, saluti, domande generiche\n' +
-        '- NON duplicare info gia\' ovvie dal contesto\n' +
-        '- Sii selettivo: salva SOLO cose che vale la pena ricordare tra settimane',
-      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage + '\n\nBOT: ' + botReply }],
+        '- TAG formato tipo:valore (cliente:elfo, progetto:videoclip, area:sviluppo, tipo:procedura)\n' +
+        '- memories: info personali utente. kb: info aziendali condivise.\n' +
+        '- glossary: SOLO termini gergali/soprannomi specifici dell\'azienda, NON comuni.\n' +
+        '- NON salvare conversazioni banali o info ovvie. Sii MOLTO selettivo.',
+      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 400) + '\n\nBOT: ' + botReply.substring(0, 400) }],
     });
 
     var analysisText = analysisRes.content[0].text.trim();
@@ -211,104 +211,56 @@ async function autoLearn(userId, userMessage, botReply) {
     var analysis = JSON.parse(jsonMatch[0]);
     if (analysis.skip) return;
 
+    // Memories
     if (analysis.memories && analysis.memories.length > 0) {
-      var blacklistRe = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi/i;
-      analysis.memories.forEach(function(m) {
-        if (m.content && m.content.length > 5) {
-          if (blacklistRe.test(m.content)) {
-            logger.info('[AUTO-LEARN] Skip memoria con info tecnica obsoleta:', m.content.substring(0, 60));
-            return;
-          }
+      for (var mi = 0; mi < analysis.memories.length; mi++) {
+        var m = analysis.memories[mi];
+        if (m.content && m.content.length > 5 && !_autoLearnBlacklist.test(m.content)) {
           db.addMemory(userId, m.content, m.tags || []);
-          logger.info('[AUTO-LEARN] Memoria salvata per', userId + ':', m.content.substring(0, 60));
+          logger.info('[AUTO-LEARN] Memoria:', m.content.substring(0, 60));
         }
-      });
+      }
     }
 
+    // Profile
     if (analysis.profile) {
       var p = analysis.profile;
-      var hasUpdate = p.ruolo || p.progetto || p.cliente || p.competenza || p.nota;
-      if (hasUpdate) {
-        // update profile via registry's profile tool
+      if (p.ruolo || p.progetto || p.cliente || p.competenza || p.nota) {
         var profileTool = require('../tools/profileTools');
         profileTool.updateProfileDirect(userId, p);
         logger.info('[AUTO-LEARN] Profilo aggiornato per', userId);
       }
     }
 
+    // KB entries — no separate Gemini review (Haiku already filtered)
     if (analysis.kb && analysis.kb.length > 0) {
+      var userRole = await getUserRole(userId);
+      var isPrivileged = userRole === 'admin' || userRole === 'finance';
       for (var ki = 0; ki < analysis.kb.length; ki++) {
         var entry = analysis.kb[ki];
-        if (entry.content && entry.content.length > 5) {
-          // Non sovrascrivere info ufficiali (ruoli, rate card, organigramma)
-          // ECCEZIONE: admin (Antonio/Corrado) e finance (Gianna) possono sempre aggiornare
-          var userRole = await getUserRole(userId);
-          var isPrivileged = userRole === 'admin' || userRole === 'finance';
-          var contentLow = entry.content.toLowerCase();
-          var isAboutRoles = contentLow.includes('ceo') ||
-            contentLow.includes('coo') ||
-            contentLow.includes('gm') ||
-            contentLow.includes('cco') ||
-            contentLow.includes('organigramma') ||
-            contentLow.includes('rate card') ||
-            contentLow.includes('€/h') ||
-            contentLow.includes('ruolo');
-          if (isAboutRoles && !isPrivileged) {
-            logger.info('[AUTO-LEARN] Skip KB entry su ruoli/rate card — info ufficiali protette:', entry.content.substring(0, 60));
-            continue;
-          }
-          var shouldSave = true;
-          try {
-            var autoKbReview = await askGemini(
-              'Auto-learn vuole salvare in KB aziendale:\n"' + entry.content + '"\nTags: ' + JSON.stringify(entry.tags || []) +
-              '\n\nE\' un\'informazione aziendale utile da ricordare? Rispondi "OK" se si\', "SKIP" se e\' troppo generica, personale o irrilevante.',
-              'Filtro qualita\' knowledge base. Rispondi SOLO "OK" o "SKIP".'
-            );
-            if (autoKbReview && autoKbReview.response && autoKbReview.response.trim().toUpperCase().startsWith('SKIP')) {
-              logger.info('[AUTO-LEARN] KB entry skippata da Gemini:', entry.content.substring(0, 60));
-              shouldSave = false;
-            }
-          } catch(e) { /* Gemini non disponibile, salva comunque */ }
-          if (shouldSave) {
-            db.addKBEntry(entry.content, entry.tags || [], userId);
-            logger.info('[AUTO-LEARN] KB aggiornata:', entry.content.substring(0, 60));
+        if (!entry.content || entry.content.length <= 5) continue;
+        if (_autoLearnBlacklist.test(entry.content)) continue;
+        if (_rolesKeywords.test(entry.content) && !isPrivileged) {
+          logger.info('[AUTO-LEARN] Skip KB ruoli/rate card protetta:', entry.content.substring(0, 60));
+          continue;
+        }
+        db.addKBEntry(entry.content, entry.tags || [], userId);
+        logger.info('[AUTO-LEARN] KB:', entry.content.substring(0, 60));
+      }
+    }
+
+    // Glossary terms
+    if (analysis.glossary && analysis.glossary.length > 0) {
+      for (var gi = 0; gi < analysis.glossary.length; gi++) {
+        var gt = analysis.glossary[gi];
+        if (gt.term && gt.definition) {
+          var existing = db.searchGlossary(gt.term);
+          if (existing.length === 0) {
+            db.addGlossaryTerm(gt.term, gt.definition, gt.synonyms || [], gt.category || 'gergo_interno', userId);
+            logger.info('[AUTO-LEARN] Glossario:', gt.term);
           }
         }
       }
-    }
-    // Auto-learn glossary terms
-    var hasInternalTerms =
-      userMessage.includes('cioè') || userMessage.includes('nel senso') ||
-      userMessage.includes('si chiama') || userMessage.includes('lo chiamiamo') ||
-      userMessage.includes('termine') || userMessage.includes('significa');
-    if (hasInternalTerms) {
-      try {
-        var glossaryCheck = await client.messages.create({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 200,
-          system: 'Analizza questa conversazione aziendale.\n' +
-            'Identifica SOLO nuovi termini gergali, soprannomi o abbreviazioni specifiche dell\'azienda NON comuni.\n' +
-            'Rispondi in JSON: {"terms":[{"term":"string","definition":"string","synonyms":["array"],"category":"string"}]}\n' +
-            'Se non ci sono nuovi termini: {"terms":[]}\n' +
-            'NON includere termini già comuni in italiano.',
-          messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 300) + '\n\nBOT: ' + botReply.substring(0, 300) }],
-        });
-        var gtText = glossaryCheck.content[0].text.trim();
-        var gtJson = gtText.match(/\{[\s\S]*\}/);
-        if (gtJson) {
-          var gtData = JSON.parse(gtJson[0]);
-          if (gtData.terms && gtData.terms.length > 0) {
-            for (var gti = 0; gti < gtData.terms.length; gti++) {
-              var gt = gtData.terms[gti];
-              var existing = db.searchGlossary(gt.term);
-              if (existing.length === 0 && gt.term && gt.definition) {
-                db.addGlossaryTerm(gt.term, gt.definition, gt.synonyms || [], gt.category || 'gergo_interno', userId);
-                logger.info('[AUTO-LEARN] Nuovo termine glossario:', gt.term);
-              }
-            }
-          }
-        }
-      } catch(e) { /* silenzioso */ }
     }
   } catch(e) {
     if (e.name !== 'SyntaxError') logger.error('[AUTO-LEARN] Errore:', e.message);
