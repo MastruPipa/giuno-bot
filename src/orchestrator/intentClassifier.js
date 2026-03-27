@@ -74,7 +74,11 @@ var RULES = [
 // ─── Classifier ───────────────────────────────────────────────────────────────
 
 async function classifyIntent(message) {
-  var msgLow = (message || '').toLowerCase();
+  if (!message || typeof message !== 'string') {
+    logger.warn('[INTENT] Input non-string:', typeof message);
+    return INTENTS.GENERAL;
+  }
+  var msgLow = message.toLowerCase();
 
   // Keyword matching pass
   for (var i = 0; i < RULES.length; i++) {

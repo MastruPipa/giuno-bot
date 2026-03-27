@@ -11,6 +11,7 @@ var logger = require('../utils/logger');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { withTimeout } = require('../utils/timeout');
 var db = require('../../supabase');
+var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var rbac = require('../../rbac');
 var {
   getCalendarPerUtente, getGmailPerUtente, getDrivePerUtente,
@@ -184,6 +185,8 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
 }
 
 async function inviaRoutineGiornaliera() {
+  var locked = await acquireCronLock('briefing_giornaliero', 15);
+  if (!locked) return;
   logger.info('[ROUTINE] Avvio briefing giornaliero...');
   try {
     var canaliBriefing, newsMarketing;
@@ -201,66 +204,75 @@ async function inviaRoutineGiornaliera() {
           var oauthUrl = generaLinkOAuth(utente.id);
           msg += '\n\n_<' + oauthUrl + '|Collega il tuo Google> per vedere agenda e mail._';
         }
-        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg) });
+        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
       } catch(e) { logger.error('[ROUTINE] Errore per', utente.id + ':', e.message); }
     }
     logger.info('[ROUTINE] Briefing inviato a', utenti.length, 'utenti.');
   } catch(e) { logger.error('[ROUTINE] Errore generale:', e.message); }
+  finally { await releaseCronLock('briefing_giornaliero'); }
 }
 
 // ─── Standup ───────────────────────────────────────────────────────────────────
 
 async function inviaStandupDomande() {
-  var oggi = new Date().toISOString().slice(0, 10);
-  logger.info('[STANDUP] Invio domande standup per', oggi);
-  var sd = db.getStandupCache();
-  sd.oggi = oggi;
-  sd.risposte = {};
-  db.saveStandup(sd);
+  var locked = await acquireCronLock('standup_domande', 10);
+  if (!locked) return;
+  try {
+    var oggi = new Date().toISOString().slice(0, 10);
+    logger.info('[STANDUP] Invio domande standup per', oggi);
+    var sd = db.getStandupCache();
+    sd.oggi = oggi;
+    sd.risposte = {};
+    db.saveStandup(sd);
 
-  var utenti = await getUtenti();
-  var inviati = 0;
-  var standupInAttesa = getStandupInAttesa();
-  for (var utente of utenti) {
-    if (!getPrefs(utente.id).standup_enabled) continue;
-    try {
-      standupInAttesa.add(utente.id);
-      await app.client.chat.postMessage({
-        channel: utente.id,
-        text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
-          'Rispondi a questo messaggio con:\n' +
-          '1. Su cosa lavori oggi?\n' +
-          '2. Hai blocchi o serve aiuto?\n\n' +
-          '_Scrivi tutto in un unico messaggio, il recap uscirà alle 10:00._',
-      });
-      inviati++;
-    } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
-  }
-  logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
+    var utenti = await getUtenti();
+    var inviati = 0;
+    var standupInAttesa = getStandupInAttesa();
+    for (var utente of utenti) {
+      if (!getPrefs(utente.id).standup_enabled) continue;
+      try {
+        standupInAttesa.add(utente.id);
+        await app.client.chat.postMessage({
+          channel: utente.id,
+          text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
+            'Rispondi a questo messaggio con:\n' +
+            '1. Su cosa lavori oggi?\n' +
+            '2. Hai blocchi o serve aiuto?\n\n' +
+            '_Scrivi tutto in un unico messaggio, il recap uscirà alle 10:00._',
+        });
+        inviati++;
+      } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
+    }
+    logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
+  } finally { await releaseCronLock('standup_domande'); }
 }
 
 async function pubblicaRecapStandup() {
-  var oggi = new Date().toISOString().slice(0, 10);
-  var sd = db.getStandupCache();
-  if (sd.oggi !== oggi) { logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.'); return; }
-  var risposte = sd.risposte;
-  var userIds = Object.keys(risposte);
-  if (userIds.length === 0) { logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.'); return; }
-  getStandupInAttesa().clear();
-
-  var msg = '*Standup ' + oggi + '*\n\n';
-  for (var userId of userIds) {
-    var r = risposte[userId];
-    msg += '<@' + userId + '>:\n' + r.testo + '\n\n';
-  }
+  var locked = await acquireCronLock('standup_recap', 10);
+  if (!locked) return;
   try {
-    var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
-    var target = (channelsRes.channels || []).find(function(c) { return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL; });
-    if (!target) { logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.'); return; }
-    try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
-    await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg) });
-    logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
-  } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
+    var oggi = new Date().toISOString().slice(0, 10);
+    var sd = db.getStandupCache();
+    if (sd.oggi !== oggi) { logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.'); return; }
+    var risposte = sd.risposte;
+    var userIds = Object.keys(risposte);
+    if (userIds.length === 0) { logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.'); return; }
+    getStandupInAttesa().clear();
+
+    var msg = '*Standup ' + oggi + '*\n\n';
+    for (var userId of userIds) {
+      var r = risposte[userId];
+      msg += '<@' + userId + '>:\n' + (r.testo || '') + '\n\n';
+    }
+    try {
+      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
+      var target = (channelsRes.channels || []).find(function(c) { return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL; });
+      if (!target) { logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.'); return; }
+      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+      await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
+      logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
+    } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
+  } finally { await releaseCronLock('standup_recap'); }
 }
 
 // ─── Recap settimanale ─────────────────────────────────────────────────────────
@@ -361,6 +373,8 @@ async function buildRecapSettimanale(slackUserId, canaliSettimana) {
 }
 
 async function inviaRecapSettimanale() {
+  var locked = await acquireCronLock('recap_settimanale', 15);
+  if (!locked) return;
   logger.info('[RECAP] Avvio recap settimanale...');
   try {
     var canaliSettimana = await getSlackWeekData();
@@ -373,11 +387,12 @@ async function inviaRecapSettimanale() {
         if (!getCalendarPerUtente(utente.id)) {
           msg += '\n\n_Collega il tuo Google per avere il recap completo con agenda e mail._';
         }
-        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg) });
+        await app.client.chat.postMessage({ channel: utente.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
       } catch(e) { logger.error('[RECAP] Errore per', utente.id + ':', e.message); }
     }
     logger.info('[RECAP] Recap inviato a', utenti.length, 'utenti.');
   } catch(e) { logger.error('[RECAP] Errore generale:', e.message); }
+  finally { await releaseCronLock('recap_settimanale'); }
 }
 
 // ─── Drive indexing ────────────────────────────────────────────────────────────
@@ -450,6 +465,8 @@ async function autoMapChannel(channelId) {
 }
 
 async function digerisciCanali() {
+  var locked = await acquireCronLock('channel_digest', 30);
+  if (!locked) return;
   logger.info('[CHANNEL-DIGEST] Avvio digestione canali...');
   try {
     var Anthropic = require('@anthropic-ai/sdk');
@@ -505,7 +522,7 @@ async function digerisciCanali() {
         if (analysis.kb && analysis.kb.length > 0) {
           analysis.kb.forEach(function(entry) {
             if (entry.content && entry.content.length > 5) {
-              var cLow = entry.content.toLowerCase();
+              var cLow = (entry.content || '').toLowerCase();
               var isAboutRoles = cLow.includes('ceo') ||
                 cLow.includes('coo') || cLow.includes('gm') ||
                 cLow.includes('cco') || cLow.includes('organigramma') ||
@@ -546,6 +563,7 @@ async function digerisciCanali() {
     }
     logger.info('[CHANNEL-DIGEST] Digeriti', digested, 'canali.');
   } catch(e) { logger.error('[CHANNEL-DIGEST] Errore generale:', e.message); }
+  finally { await releaseCronLock('channel_digest'); }
 }
 
 // ─── Onboarding ────────────────────────────────────────────────────────────────

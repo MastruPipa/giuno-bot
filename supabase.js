@@ -268,6 +268,7 @@ var SINONIMI = {
 };
 
 function expandQueryTokens(query) {
+  if (!query || typeof query !== 'string') return [];
   var tokens = query.toLowerCase().split(/\s+/).filter(function(t) { return t.length > 2; });
   var seen = {};
   var expanded = [];
@@ -284,7 +285,7 @@ function expandQueryTokens(query) {
 }
 
 function scoreMemory(memory, tokens, now) {
-  var contentLow = memory.content.toLowerCase();
+  var contentLow = (memory.content || '').toLowerCase();
   var tagsLow = (memory.tags || []).map(function(t) { return t.toLowerCase(); });
 
   // fonte:ufficiale always gets max score
@@ -441,14 +442,14 @@ function getStopwordsSet() {
 
 function extractKeywords(text) {
   var sw = getStopwordsSet();
-  return text.toLowerCase().split(/\W+/).filter(function(w) {
+  return (text || '').toLowerCase().split(/\W+/).filter(function(w) {
     return w.length > 5 && !sw[w];
   });
 }
 
 function getTagValue(tags, prefix) {
   for (var i = 0; i < tags.length; i++) {
-    if (tags[i].toLowerCase().startsWith(prefix)) return tags[i].toLowerCase();
+    if (tags[i] && tags[i].toLowerCase().startsWith(prefix)) return tags[i].toLowerCase();
   }
   return null;
 }
@@ -456,6 +457,7 @@ function getTagValue(tags, prefix) {
 // Fast dedup: check only last 200 KB entries (most recent) instead of full scan
 function isDuplicate(newContent, newTags) {
   if (!_kbCache || _kbCache.length === 0) return false;
+  if (!newContent || typeof newContent !== 'string') return false;
   if ((newTags || []).some(function(t) { return t === 'fonte:ufficiale'; })) return false;
 
   var newKeywords = extractKeywords(newContent);
@@ -897,12 +899,12 @@ async function addGlossaryTerm(term, definition, synonyms, category, addedBy) {
 }
 
 function searchGlossary(query) {
-  if (!_glossaryCache) return [];
+  if (!_glossaryCache || !query || typeof query !== 'string') return [];
   var q = query.toLowerCase();
   return _glossaryCache.filter(function(g) {
-    return g.term.toLowerCase().includes(q) ||
-      (g.synonyms || []).some(function(s) { return s.toLowerCase().includes(q); }) ||
-      g.definition.toLowerCase().includes(q);
+    return (g.term || '').toLowerCase().includes(q) ||
+      (g.synonyms || []).some(function(s) { return (s || '').toLowerCase().includes(q); }) ||
+      (g.definition || '').toLowerCase().includes(q);
   });
 }
 
@@ -1142,6 +1144,43 @@ async function reviewPendingKB() {
 }
 
 // ============================================================================
+// CRON LOCKS — mutex distribuito per Railway multi-istanza
+// ============================================================================
+
+var INSTANCE_ID = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+
+async function acquireCronLock(jobName, ttlMinutes) {
+  if (!useSupabase) return true;
+  ttlMinutes = ttlMinutes || 10;
+  try {
+    var expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+    await supabase.from('cron_locks').delete().eq('job_name', jobName).lt('expires_at', new Date().toISOString());
+    var res = await supabase.from('cron_locks').insert({
+      job_name: jobName,
+      locked_at: new Date().toISOString(),
+      locked_by: INSTANCE_ID,
+      expires_at: expiresAt,
+    });
+    if (res.error) {
+      process.stdout.write('[CRON-LOCK] ' + jobName + ' già in esecuzione, skip.\n');
+      return false;
+    }
+    process.stdout.write('[CRON-LOCK] Lock acquisito: ' + jobName + '\n');
+    return true;
+  } catch(e) {
+    process.stdout.write('[CRON-LOCK] Errore (procedo): ' + e.message + '\n');
+    return true;
+  }
+}
+
+async function releaseCronLock(jobName) {
+  if (!useSupabase) return;
+  try {
+    await supabase.from('cron_locks').delete().eq('job_name', jobName).eq('locked_by', INSTANCE_ID);
+  } catch(e) {}
+}
+
+// ============================================================================
 // LEADS DIRECT QUERY
 // ============================================================================
 
@@ -1222,6 +1261,10 @@ module.exports = {
   addGlossaryTerm: addGlossaryTerm,
   searchGlossary: searchGlossary,
   getGlossaryCache: getGlossaryCache,
+  // Cron Locks
+  acquireCronLock: acquireCronLock,
+  releaseCronLock: releaseCronLock,
+  INSTANCE_ID: INSTANCE_ID,
   // KB Cleanup
   cleanupExpiredKB: cleanupExpiredKB,
   reviewPendingKB: reviewPendingKB,

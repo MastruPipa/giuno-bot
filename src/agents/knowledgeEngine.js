@@ -9,6 +9,7 @@ var db = require('../../supabase');
 var { getDrivePerUtente, getDocsPerUtente, getSheetPerUtente } = require('../services/googleAuthService');
 var { extractDocText } = require('../tools/driveTools');
 var { withTimeout } = require('../utils/timeout');
+var { acquireCronLock, releaseCronLock } = require('../../supabase');
 
 // ─── Document Classification (Haiku) ─────────────────────────────────────────
 
@@ -263,6 +264,11 @@ async function indexSlack(report) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function runKnowledgeEngine(userId) {
+  var locked = await acquireCronLock('knowledge_engine', 120);
+  if (!locked) {
+    logger.info('[KB-ENGINE] Già in esecuzione su altra istanza, skip.');
+    return { skipped: true };
+  }
   var startAt = new Date();
   var report = {
     startAt: startAt.toISOString(),
@@ -352,6 +358,7 @@ async function runKnowledgeEngine(userId) {
     logger.error('[KB-ENGINE] Errore invio report DM:', e.message);
   }
 
+  await releaseCronLock('knowledge_engine');
   return report;
 }
 
