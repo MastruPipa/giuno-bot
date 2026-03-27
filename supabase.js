@@ -319,8 +319,9 @@ function scoreMemory(memory, tokens, now) {
   return baseScore * 0.75 + (baseScore * temporalScore) * 0.25;
 }
 
-// Filter out stale/wrong info about technical limitations
+// Filter out stale/wrong info
 var BLACKLIST_PATTERNS = [
+  // Tech limitations (stale)
   'slack_user_token', 'search:read', 'limitazioni tecniche',
   'problema tecnico con slack', 'token non ha', 'permessi.*slack',
   'non riesco ad accedere ai canali', 'configurare.*permessi',
@@ -328,8 +329,11 @@ var BLACKLIST_PATTERNS = [
 ];
 var _blacklistRegex = new RegExp(BLACKLIST_PATTERNS.join('|'), 'i');
 
+// Financial data blacklist — these should come from CRM Sheet, not memory
+var _financialBlacklist = /€\s*\d{1,3}([.,]\d{3})*|contratt[oi]\s+attiv|pipeline\s+totale|subtotale|totale\s+confermati|fatturato\s+\d{4}|revenue|ricavi\s+\d/i;
+
 function isBlacklisted(content) {
-  return _blacklistRegex.test(content);
+  return _blacklistRegex.test(content) || _financialBlacklist.test(content);
 }
 
 function searchMemories(userId, query) {

@@ -76,8 +76,17 @@ var SYSTEM_PROMPT =
   '- find_free_slots: per trovare slot comuni tra più persone.\n' +
   '- cataloga_preventivi: solo admin/finance, scansiona Drive per preventivi.\n\n' +
 
+  'CRM E DATI FINANZIARI — REGOLA CRITICA:\n' +
+  'Quando ti chiedono di CRM, clienti, contratti, pipeline, fatturato, deal:\n' +
+  '- Leggi SEMPRE il Google Sheet CRM (ID: 1xx2GC5AHJLNCUgZZAaMEFDK8mdalEcgFzJFXpdY9db0) con read_sheet.\n' +
+  '- NON usare MAI la memoria o la KB per importi, stati contratto, o pipeline.\n' +
+  '- La memoria può avere dati VECCHI o SBAGLIATI su contratti. Il CRM Sheet è la UNICA fonte di verità.\n' +
+  '- NON inventare MAI cifre, stati, o date che non trovi nel CRM Sheet.\n' +
+  '- Se un dato non è nel CRM Sheet, dì "non presente nel CRM" — non tirarlo dalla memoria.\n\n' +
+
   'MEMORIA:\n' +
   'save_memory: salva PROATTIVAMENTE info importanti senza chiedere.\n' +
+  'NON salvare MAI in memoria: importi €, stati contratto, pipeline, fatturato.\n' +
   'update_user_profile: aggiorna profilo quando scopri ruolo/progetti/clienti.\n' +
   'add_to_kb: per info che valgono per TUTTI (procedure, decisioni aziendali).\n\n' +
 
@@ -177,6 +186,8 @@ var { askGemini } = require('./geminiService');
 
 var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi/i;
 var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\/h/i;
+// Block auto-learn of financial/contract data — CRM Sheet is source of truth
+var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale.*confermati|deal|revenue|ricavi|incasso|pagament|scadenza.*contratt|attivo fino|confermato|archiviato/i;
 
 async function autoLearn(userId, userMessage, botReply) {
   if (!userMessage || userMessage.length < 20) return;
@@ -215,7 +226,7 @@ async function autoLearn(userId, userMessage, botReply) {
     if (analysis.memories && analysis.memories.length > 0) {
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
-        if (m.content && m.content.length > 5 && !_autoLearnBlacklist.test(m.content)) {
+        if (m.content && m.content.length > 5 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
           db.addMemory(userId, m.content, m.tags || []);
           logger.info('[AUTO-LEARN] Memoria:', m.content.substring(0, 60));
         }
@@ -242,6 +253,10 @@ async function autoLearn(userId, userMessage, botReply) {
         if (_autoLearnBlacklist.test(entry.content)) continue;
         if (_rolesKeywords.test(entry.content) && !isPrivileged) {
           logger.info('[AUTO-LEARN] Skip KB ruoli/rate card protetta:', entry.content.substring(0, 60));
+          continue;
+        }
+        if (_financialKeywords.test(entry.content)) {
+          logger.info('[AUTO-LEARN] Skip KB finanziaria — CRM Sheet è fonte di verità:', entry.content.substring(0, 60));
           continue;
         }
         db.addKBEntry(entry.content, entry.tags || [], userId);
