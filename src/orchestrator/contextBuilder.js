@@ -1,7 +1,6 @@
 // ─── Context Builder ───────────────────────────────────────────────────────────
-// Assembles the context object for a request:
-// userId, role, profile, channelContext, mentionedBy, channelId, threadTs,
-// oauthLink if needed, plus enriched context (memories, KB, temporal awareness).
+// Assembles the context object for a request.
+// Lazy loading: only fetches memories/KB/glossary when the intent actually needs them.
 
 'use strict';
 
@@ -11,6 +10,18 @@ var { generaLinkOAuth } = require('../services/googleAuthService');
 
 var getUserRole = rbac.getUserRole;
 
+// ─── Context needs per intent ─────────────────────────────────────────────────
+// Avoids loading heavy caches when the agent won't use them.
+
+var CONTEXT_NEEDS = {
+  THREAD_SUMMARY:   { memories: true,  kb: false, glossary: false },
+  DAILY_DIGEST:     { memories: true,  kb: true,  glossary: false },
+  CLIENT_RETRIEVAL: { memories: true,  kb: true,  glossary: true  },
+  QUOTE_SUPPORT:    { memories: false, kb: true,  glossary: false },
+  CRM_UPDATE:       { memories: false, kb: false, glossary: false },
+  GENERAL:          { memories: true,  kb: true,  glossary: true  },
+};
+
 /**
  * buildContext — assembles a rich context object from raw request parameters.
  *
@@ -18,12 +29,16 @@ var getUserRole = rbac.getUserRole;
  * @param {string} params.userId
  * @param {string} params.message
  * @param {object} [params.options]   — threadTs, channelId, mentionedBy, channelContext
+ * @param {string} [params.intent]    — pre-classified intent for lazy loading
  * @returns {object}  context
  */
 async function buildContext(params) {
   var userId  = params.userId;
   var message = params.message;
   var options = params.options || {};
+  var intent  = params.intent || 'GENERAL';
+
+  var needs = CONTEXT_NEEDS[intent] || CONTEXT_NEEDS.GENERAL;
 
   var userRole = await getUserRole(userId);
 
@@ -37,7 +52,7 @@ async function buildContext(params) {
     channelMapEntry = db.getChannelMapCache()[options.channelId] || null;
   }
 
-  // OAuth link if message is about connecting Google
+  // OAuth link — only if message is about connecting Google
   var oauthLink = null;
   var msgLow = (message || '').toLowerCase();
   if ((/colleg[a-z]|connett[a-z]|autorizz[a-z]/i.test(msgLow)) &&
@@ -46,20 +61,30 @@ async function buildContext(params) {
     oauthLink = '<' + oauthUrl + '|Collega il tuo Google>';
   }
 
-  // Enriched context: relevant memories
+  // Lazy: relevant memories
   var relevantMemories = [];
-  try { relevantMemories = db.searchMemories(userId, message) || []; } catch(e) {}
+  if (needs.memories) {
+    try { relevantMemories = db.searchMemories(userId, message) || []; } catch(e) {}
+  }
 
-  // Enriched context: KB results
+  // Lazy: KB results
   var kbResults = [];
-  try { kbResults = db.searchKB(message) || []; } catch(e) {}
+  if (needs.kb) {
+    try { kbResults = db.searchKB(message) || []; } catch(e) {}
+  }
+
+  // Lazy: glossary matches
+  var glossaryMatches = [];
+  if (needs.glossary) {
+    try { glossaryMatches = db.searchGlossary(message) || []; } catch(e) {}
+  }
 
   // Temporal awareness
   var now = new Date();
   var currentYear = now.getFullYear();
   var currentQuarter = 'Q' + Math.ceil((now.getMonth() + 1) / 3);
 
-  // Channel context + type detection
+  // Channel type detection
   var channelContext = options.channelContext || null;
   var channelType = options.channelType || 'dm';
   if (!options.channelType && options.channelId) {
@@ -71,10 +96,6 @@ async function buildContext(params) {
     }
   }
   var isDM = channelType === 'dm';
-
-  // Glossary matches
-  var glossaryMatches = [];
-  try { glossaryMatches = db.searchGlossary(message) || []; } catch(e) {}
 
   return {
     userId:           userId,
@@ -89,7 +110,7 @@ async function buildContext(params) {
     channelType:      channelType,
     isDM:             isDM,
 
-    // Enriched context
+    // Enriched context (lazy-loaded)
     relevantMemories: relevantMemories.slice(0, 8),
     kbResults:        kbResults.slice(0, 5),
     currentDate:      now.toISOString().slice(0, 10),

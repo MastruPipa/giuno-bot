@@ -1,6 +1,8 @@
 // ─── Orchestrator Router ───────────────────────────────────────────────────────
-// Main orchestration function: route(userId, message, options) →
-//   classifies intent → selects agent → calls agent → returns reply string
+// route(userId, message, options) →
+//   1. classify intent (fast, keyword-first)
+//   2. build context lazily based on intent
+//   3. call specialised agent with timeout + fallback to general
 
 'use strict';
 
@@ -8,14 +10,30 @@ var logger = require('../utils/logger');
 var { INTENTS, classifyIntent } = require('./intentClassifier');
 var { buildContext } = require('./contextBuilder');
 var { preflight } = require('./preflight');
+var { withTimeout } = require('../utils/timeout');
+
+var AGENT_TIMEOUT_MS = 55000; // 55s — below Railway/Slack 60s hard limit
 
 // Agents (lazy-loaded to avoid circular deps)
-function getThreadSummaryAgent()   { return require('../agents/threadSummaryAgent'); }
-function getDailyDigestAgent()     { return require('../agents/dailyDigestAgent'); }
-function getClientRetrievalAgent() { return require('../agents/clientRetrievalAgent'); }
-function getGeneralAssistantAgent(){ return require('../agents/generalAssistantAgent'); }
-function getQuoteSupportAgent()   { return require('../agents/quoteSupportAgent'); }
-function getCRMUpdateAgent()      { return require('../agents/crmUpdateAgent'); }
+function getThreadSummaryAgent()    { return require('../agents/threadSummaryAgent'); }
+function getDailyDigestAgent()      { return require('../agents/dailyDigestAgent'); }
+function getClientRetrievalAgent()  { return require('../agents/clientRetrievalAgent'); }
+function getGeneralAssistantAgent() { return require('../agents/generalAssistantAgent'); }
+function getQuoteSupportAgent()     { return require('../agents/quoteSupportAgent'); }
+function getCRMUpdateAgent()        { return require('../agents/crmUpdateAgent'); }
+
+/**
+ * runAgent — calls an agent with timeout and falls back to general on error.
+ */
+async function runAgent(agentFn, message, ctx, agentName) {
+  try {
+    return await withTimeout(agentFn().run(message, ctx), AGENT_TIMEOUT_MS, agentName);
+  } catch(e) {
+    if (e.message === 'API_UNAVAILABLE') throw e;
+    logger.warn('[ROUTER] ' + agentName + ' fallback → general. Motivo: ' + e.message);
+    return await getGeneralAssistantAgent().run(message, ctx);
+  }
+}
 
 /**
  * route — main entry point for all user messages.
@@ -29,35 +47,35 @@ async function route(userId, message, options) {
   options = options || {};
 
   try {
-    // 1. Build context + preflight enrichment
-    var ctx = await buildContext({ userId: userId, message: message, options: options });
-    ctx = preflight(message, ctx);
-
-    // 2. Classify intent
+    // 1. Classify intent first (fast, keyword-based) so contextBuilder can be lazy
     var intent = await classifyIntent(message);
     logger.info('[ROUTER] User:', userId, '| Intent:', intent);
+
+    // 2. Build context with intent hint for lazy loading
+    var ctx = await buildContext({ userId: userId, message: message, options: options, intent: intent });
+    ctx = preflight(message, ctx);
 
     // 3. Select and call agent
     var reply;
     switch (intent) {
       case INTENTS.THREAD_SUMMARY:
-        reply = await getThreadSummaryAgent().run(message, ctx);
+        reply = await runAgent(getThreadSummaryAgent, message, ctx, 'threadSummary');
         break;
       case INTENTS.DAILY_DIGEST:
-        reply = await getDailyDigestAgent().run(message, ctx);
+        reply = await runAgent(getDailyDigestAgent, message, ctx, 'dailyDigest');
         break;
       case INTENTS.CLIENT_RETRIEVAL:
-        reply = await getClientRetrievalAgent().run(message, ctx);
+        reply = await runAgent(getClientRetrievalAgent, message, ctx, 'clientRetrieval');
         break;
       case INTENTS.QUOTE_SUPPORT:
-        reply = await getQuoteSupportAgent().run(message, ctx);
+        reply = await runAgent(getQuoteSupportAgent, message, ctx, 'quoteSupport');
         break;
       case INTENTS.CRM_UPDATE:
-        reply = await getCRMUpdateAgent().run(message, ctx);
+        reply = await runAgent(getCRMUpdateAgent, message, ctx, 'crmUpdate');
         break;
       case INTENTS.GENERAL:
       default:
-        reply = await getGeneralAssistantAgent().run(message, ctx);
+        reply = await withTimeout(getGeneralAssistantAgent().run(message, ctx), AGENT_TIMEOUT_MS, 'general');
         break;
     }
 
@@ -65,6 +83,9 @@ async function route(userId, message, options) {
   } catch(e) {
     if (e.message === 'API_UNAVAILABLE') {
       return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
+    }
+    if (e.message && e.message.includes('timeout')) {
+      return 'Ci sto mettendo troppo. Riprova con una richiesta più specifica.';
     }
     logger.error('[ROUTER] Errore:', e.message);
     throw e;

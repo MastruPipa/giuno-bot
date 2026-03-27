@@ -2,13 +2,8 @@
 // admin > finance > manager > member > restricted
 // ────────────────────────────────────────────────────────────────────────────
 
-var createClient = null;
-try { createClient = require('@supabase/supabase-js').createClient; } catch(e) {}
-
-var supabase = null;
-if (createClient && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
-  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-}
+// Reuse the shared Supabase client — no duplicate connection.
+function getSupabase() { return require('./supabase').getClient(); }
 
 // ─── Cache in-memory con TTL 5 minuti ───────────────────────────────────────
 
@@ -23,6 +18,7 @@ async function getUserRole(slackUserId) {
   }
 
   // Query Supabase
+  var supabase = getSupabase();
   if (supabase) {
     try {
       var res = await supabase.from('user_roles').select('role').eq('slack_user_id', slackUserId).single();
@@ -158,6 +154,7 @@ function getAccessDeniedMessage(role) {
 // ─── Gestione ruoli via Supabase ────────────────────────────────────────────
 
 async function setUserRole(slackUserId, role, displayName, assignedBy) {
+  var supabase = getSupabase();
   if (!supabase) return false;
   try {
     await supabase.from('user_roles').upsert({
@@ -175,6 +172,7 @@ async function setUserRole(slackUserId, role, displayName, assignedBy) {
 }
 
 async function getAllRoles() {
+  var supabase = getSupabase();
   if (!supabase) return [];
   try {
     var res = await supabase.from('user_roles').select('*').order('display_name');
