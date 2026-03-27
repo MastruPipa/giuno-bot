@@ -40,8 +40,8 @@ var COLUMN_MAP = {
   // Col I — EMAIL → contact_email
   'email': 'contact_email', 'mail': 'contact_email', 'e-mail': 'contact_email',
   'email contatto': 'contact_email',
-  // Col J — PHONE → phone (stored in notes as extra)
-  'phone': '_phone', 'telefono': '_phone', 'tel': '_phone', 'cellulare': '_phone',
+  // Col J — PHONE → phone
+  'phone': 'phone', 'telefono': 'phone', 'tel': 'phone', 'cellulare': 'phone',
   // Col K — LEAD SOURCE → source
   'lead source': 'source', 'fonte': 'source', 'source': 'source',
   'provenienza': 'source', 'canale': 'source',
@@ -52,8 +52,8 @@ var COLUMN_MAP = {
   // Col M — Owner → owner_slack_id
   'owner': 'owner_slack_id', 'responsabile': 'owner_slack_id', 'assegnato': 'owner_slack_id',
   'account': 'owner_slack_id',
-  // Col N — sito web → stored in notes
-  'sito web': '_website', 'website': '_website', 'sito': '_website', 'url': '_website',
+  // Col N — sito web → website
+  'sito web': 'website', 'website': 'website', 'url': 'website',
   // Col O — Note → notes
   'note': 'notes', 'notes': 'notes', 'commenti': 'notes', 'descrizione': 'notes',
   'dettagli': 'notes',
@@ -180,10 +180,6 @@ function mapRowToLead(row, headerMapping) {
       lead[field] = val.split(/[,;\/]+/).map(function(s) { return s.trim(); }).filter(Boolean);
     } else if (field === 'notes') {
       lead[field] = lead[field] ? lead[field] + ' | ' + val : val;
-    } else if (field === '_phone') {
-      lead.notes = lead.notes ? lead.notes + ' | Tel: ' + val : 'Tel: ' + val;
-    } else if (field === '_website') {
-      lead.notes = lead.notes ? lead.notes + ' | Web: ' + val : 'Web: ' + val;
     } else {
       lead[field] = val;
     }

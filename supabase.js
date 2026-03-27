@@ -943,6 +943,8 @@ async function insertLead(lead) {
       last_contact: lead.last_contact || null,
       next_followup: lead.next_followup || null,
       notes: lead.notes || null,
+      phone: lead.phone || null,
+      website: lead.website || null,
     };
     var res = await supabase.from('leads').insert(row);
     if (res.error) throw res.error;
