@@ -99,7 +99,11 @@ var SYSTEM_PROMPT =
   '• docs.google.com/document/d/ID → usa read_doc\n' +
   '• docs.google.com/spreadsheets/d/ID → usa read_sheet\n' +
   'Estrai sempre l\'ID dall\'URL e chiama il tool diretto.\n' +
-  '- summarize_channel/thread/doc: usali per recap e riassunti.\n' +
+  '- read_channel: legge messaggi di un canale (INCLUSI bot). USA SEMPRE per analizzare canali specifici.\n' +
+  '- summarize_channel: riassume un canale con AI. read_channel è meglio se servono dati grezzi.\n' +
+  'CANALI PRINCIPALI (ID diretti — non cercarli):\n' +
+  '• #daily → C05846AEV6D (USA read_channel, contiene SOLO messaggi bot)\n' +
+  'Per filtrare per data: passa oldest come timestamp Unix a read_channel.\n' +
   '- review_email_draft: usalo prima di send_email su contenuti importanti.\n' +
   '- find_free_slots: per trovare slot comuni tra più persone.\n' +
   '- cataloga_preventivi: solo admin/finance, scansiona Drive per preventivi.\n\n' +
@@ -143,12 +147,26 @@ function buildSystemPrompt(userRolePrompt) {
     timeZone: 'Europe/Rome',
   });
 
+  // Timestamp helpers for read_channel filtering
+  var dayOfWeek = now.getDay();
+  var diffToMonday = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
+  var monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMonday);
+  monday.setHours(0, 0, 0, 0);
+  var mondayTs = Math.floor(monday.getTime() / 1000);
+  var yesterdayTs = Math.floor((now.getTime() - 86400000) / 1000);
+  var todayTs = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+
   return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
     'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
     'Anno corrente: ' + now.getFullYear() + '. Quest\'anno=' + now.getFullYear() +
     ', l\'anno scorso=' + (now.getFullYear() - 1) + '.\n' +
     'Priorità info: ' + now.getFullYear() + ' > ' + (now.getFullYear() - 1) +
-    ' > ' + (now.getFullYear() - 2) + ' > storico.\n\n' +
+    ' > ' + (now.getFullYear() - 2) + ' > storico.\n' +
+    'TIMESTAMP UTILI (per oldest in read_channel):\n' +
+    '• Lunedì questa settimana: ' + mondayTs + '\n' +
+    '• Ieri: ' + yesterdayTs + '\n' +
+    '• Oggi mezzanotte: ' + todayTs + '\n\n' +
     SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + userRolePrompt;
 }
 

@@ -323,6 +323,25 @@ var definitions = [
     },
   },
   {
+    name: 'read_channel',
+    description: 'Legge i messaggi di un canale Slack in ordine cronologico. ' +
+      'Usa SEMPRE questo tool quando vuoi leggere la storia di un canale specifico, ' +
+      'analizzare l\'attività recente, o fare un riepilogo. ' +
+      'Restituisce ANCHE messaggi di bot — fondamentale per canali con daily automatici (#daily). ' +
+      'NON usare search_slack_messages per leggere un canale — search non mostra messaggi bot.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id:   { type: 'string', description: 'ID del canale (es. C05846AEV6D per #daily)' },
+        channel_name: { type: 'string', description: 'Nome del canale (alternativo a channel_id, senza #)' },
+        limit:        { type: 'number', description: 'Numero massimo messaggi (default 50, max 200)' },
+        oldest:       { type: 'string', description: 'Timestamp Unix (secondi) del messaggio più vecchio. Es. per "da lunedì" calcola il timestamp.' },
+        latest:       { type: 'string', description: 'Timestamp Unix (secondi) del messaggio più recente.' },
+        include_bots: { type: 'boolean', description: 'Includi messaggi bot (default true — IMPORTANTE per #daily)' },
+      },
+    },
+  },
+  {
     name: 'list_channels',
     description: 'Elenca tutti i canali Slack del workspace (pubblici e privati a cui il bot ha accesso). Utile per fare una panoramica, trovare canali per nome, o sapere dove cercare.',
     input_schema: {
@@ -742,6 +761,56 @@ async function execute(toolName, input, userId) {
       });
       return { reactions: reactions, total: reactions.length };
     } catch(e) { return { error: 'Errore reazioni: ' + e.message }; }
+  }
+
+  // ─── Read Channel ──────────────────────────────────────────────────────────
+  if (toolName === 'read_channel') {
+    try {
+      var targetChId = input.channel_id;
+      if (!targetChId && input.channel_name) {
+        var allChs = await getAllChannels(app);
+        var found = allChs.find(function(c) { return c.name === input.channel_name; });
+        if (found) targetChId = found.id;
+      }
+      if (!targetChId) return { error: 'Specifica channel_id o channel_name.' };
+
+      try { await app.client.conversations.join({ channel: targetChId }); } catch(e) {}
+
+      var readParams = { channel: targetChId, limit: Math.min(input.limit || 50, 200) };
+      if (input.oldest) readParams.oldest = String(input.oldest);
+      if (input.latest) readParams.latest = String(input.latest);
+
+      var hist = await app.client.conversations.history(readParams);
+      var allMsgs = (hist.messages || []).filter(function(m) {
+        if (!m.text && !m.attachments) return false;
+        if (input.include_bots === false && m.bot_id) return false;
+        return true;
+      });
+
+      var userCache = {};
+      var formatted = [];
+      for (var ri = allMsgs.length - 1; ri >= 0; ri--) {
+        var rm = allMsgs[ri];
+        var author = rm.username || rm.bot_profile && rm.bot_profile.name || null;
+        if (!author && rm.user) {
+          author = await resolveUserName(app, rm.user, userCache);
+        }
+        formatted.push({
+          author: author || 'unknown',
+          text: (rm.text || '').substring(0, 500),
+          ts: rm.ts,
+          is_bot: !!rm.bot_id,
+          thread_reply_count: rm.reply_count || 0,
+        });
+      }
+
+      return {
+        channel_id: targetChId,
+        messages: formatted,
+        count: formatted.length,
+        has_more: hist.has_more || false,
+      };
+    } catch(e) { return { error: 'Errore lettura canale: ' + e.message }; }
   }
 
   // ─── List Channels ──────────────────────────────────────────────────────────
