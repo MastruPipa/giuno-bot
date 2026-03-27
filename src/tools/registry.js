@@ -23,6 +23,7 @@ var sheetsTools   = require('./sheetsTools');
 var leadsTools    = require('./leadsTools');
 var quotesTools   = require('./quotesTools');
 var webTools      = require('./webTools');
+var suppliersTools = require('./suppliersTools');
 
 var ALL_MODULES = [
   slackTools,
@@ -36,6 +37,7 @@ var ALL_MODULES = [
   quotesTools,
   leadsTools,
   webTools,
+  suppliersTools,
 ];
 
 // ─── Critical action confirmation ─────────────────────────────────────────────
@@ -61,7 +63,7 @@ function getAllTools() {
 var AGENT_TOOL_SETS = {
   threadSummary: ['summarize_thread', 'summarize_channel', 'read_channel', 'search_slack_messages', 'recall_memory', 'get_channel_map'],
   dailyDigest:   ['list_events', 'find_emails', 'recall_memory', 'search_kb', 'search_slack_messages', 'summarize_channel', 'list_channels'],
-  clientRetrieval: ['recall_memory', 'search_kb', 'search_leads', 'query_leads_db', 'search_drive', 'browse_folder', 'search_in_shared_drive', 'list_shared_drives', 'read_channel', 'search_slack_messages', 'search_everywhere', 'ask_gemini', 'list_channels', 'summarize_channel', 'get_pinned_messages'],
+  clientRetrieval: ['recall_memory', 'search_kb', 'search_leads', 'query_leads_db', 'search_suppliers', 'get_supplier', 'search_drive', 'browse_folder', 'search_in_shared_drive', 'list_shared_drives', 'read_channel', 'search_slack_messages', 'search_everywhere', 'ask_gemini', 'list_channels', 'summarize_channel', 'get_pinned_messages'],
   crmUpdate: ['search_leads', 'update_lead', 'create_lead', 'recall_memory'],
   general: null, // null means all tools
 };

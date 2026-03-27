@@ -1394,6 +1394,7 @@ async function queryLeadsDB(input) {
 
 module.exports = {
   isSupabase: function() { return useSupabase; },
+  getClient: function() { return supabase; },
   initAll: initAll,
   // Tokens
   saveToken: saveToken,

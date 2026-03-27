@@ -112,6 +112,18 @@ var SYSTEM_PROMPT =
   'usa ask_gemini con search_mode: true. Gemini ha Google Search in tempo reale.\n' +
   'Esempi: "Che azienda è X?" → ask_gemini("X agenzia sito web", search_mode: true)\n\n' +
 
+  'FORNITORI E COLLABORATORI ESTERNI:\n' +
+  'Usa SEMPRE search_suppliers quando vengono menzionati fornitori, freelance, videomaker, fotografi, creator, tipografie.\n' +
+  'OMONIMI: "Andrea" = 3 persone (Lo Pinzi videomaker, Bonetti fotografo, web designer KS). Disambigua dal contesto.\n' +
+  'NON rispondere da memoria su fornitori.\n\n' +
+
+  'EMAIL E MAIL:\n' +
+  'Quando l\'utente menziona mail o chiede di un flusso email → usa find_emails o gmail tools SUBITO.\n' +
+  'Non chiedere contesto prima di cercare.\n\n' +
+
+  'DATE NELLE MEMORIES:\n' +
+  'Confronta SEMPRE le date nelle memories con oggi. Se una deadline è passata, segnalalo.\n\n' +
+
   'CRM — REGOLE CRITICHE:\n' +
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +
   '- Per aggiornare un lead: usa update_lead. Per crearne uno: create_lead.\n' +
