@@ -7,6 +7,7 @@
 var logger = require('../utils/logger');
 var { INTENTS, classifyIntent } = require('./intentClassifier');
 var { buildContext } = require('./contextBuilder');
+var { preflight } = require('./preflight');
 
 // Agents (lazy-loaded to avoid circular deps)
 function getThreadSummaryAgent()   { return require('../agents/threadSummaryAgent'); }
@@ -28,8 +29,9 @@ async function route(userId, message, options) {
   options = options || {};
 
   try {
-    // 1. Build context
+    // 1. Build context + preflight enrichment
     var ctx = await buildContext({ userId: userId, message: message, options: options });
+    ctx = preflight(message, ctx);
 
     // 2. Classify intent
     var intent = await classifyIntent(message);

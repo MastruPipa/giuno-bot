@@ -22,6 +22,7 @@ var kbTools       = require('./kbTools');
 var sheetsTools   = require('./sheetsTools');
 var leadsTools    = require('./leadsTools');
 var quotesTools   = require('./quotesTools');
+var webTools      = require('./webTools');
 
 var ALL_MODULES = [
   slackTools,
@@ -34,6 +35,7 @@ var ALL_MODULES = [
   sheetsTools,
   quotesTools,
   leadsTools,
+  webTools,
 ];
 
 // ─── Critical action confirmation ─────────────────────────────────────────────

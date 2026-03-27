@@ -446,6 +446,11 @@ async function askGiuno(userId, userMessage, options) {
     });
   }
 
+  // Preflight instruction injection
+  if (options.preflightInstruction) {
+    contextData += '\n' + options.preflightInstruction + '\n';
+  }
+
   var messageWithContext = contextData
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
     : resolvedMessage;

@@ -15,12 +15,13 @@ var IMPLICIT_REFS = /^(mandalo?|fallo?|invialo?|aggiornalo?|procedi|ok fai|sì f
  */
 async function run(message, ctx) {
   var options = {
-    threadTs:       ctx.threadTs,
-    channelId:      ctx.channelId,
-    channelContext: ctx.channelContext,
-    mentionedBy:    ctx.mentionedBy,
-    channelType:    ctx.channelType,
-    isDM:           ctx.isDM,
+    threadTs:             ctx.threadTs,
+    channelId:            ctx.channelId,
+    channelContext:       ctx.channelContext,
+    mentionedBy:          ctx.mentionedBy,
+    channelType:          ctx.channelType,
+    isDM:                 ctx.isDM,
+    preflightInstruction: ctx.preflightInstruction || null,
   };
 
   // If message is an implicit reference, recover context from conversation history
