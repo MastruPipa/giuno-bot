@@ -35,8 +35,8 @@ var COLUMN_MAP = {
   // Col G — LAST CONTACT → last_contact
   'ultimo contatto': 'last_contact', 'last contact': 'last_contact',
   'data ultimo contatto': 'last_contact',
-  // Col H — Contatto → contact_role (generic contact info)
-  'contatto': 'contact_role', 'contact': 'contact_role',
+  // Col H — Contatto → status (sales stage: primo incontro, proposta, trattativa, contratto)
+  'contatto': 'status',
   // Col I — EMAIL → contact_email
   'email': 'contact_email', 'mail': 'contact_email', 'e-mail': 'contact_email',
   'email contatto': 'contact_email',
@@ -137,10 +137,13 @@ function normalizeStatus(val) {
     'cold': 'new',
     // Contacted / Warm
     'contattato': 'contacted', 'contacted': 'contacted', 'in contatto': 'contacted',
-    'warm': 'contacted', 'hot': 'contacted', 'contatto': 'contacted',
+    'warm': 'contacted', 'hot': 'contacted',
     'meet': 'contacted', 'initial contact': 'contacted',
+    'primo incontro': 'contacted', 'primo contatto': 'contacted',
     // Qualified / Follow-up
     'qualified': 'contacted', 'follow-up': 'contacted', 'follow up': 'contacted',
+    // Contratto (from Contatto column)
+    'contratto': 'won', 'contract': 'won',
     // Proposal sent
     'proposta': 'proposal_sent', 'proposta inviata': 'proposal_sent', 'proposal': 'proposal_sent',
     'sent': 'proposal_sent',
