@@ -21,6 +21,7 @@ function getClientRetrievalAgent()  { return require('../agents/clientRetrievalA
 function getGeneralAssistantAgent() { return require('../agents/generalAssistantAgent'); }
 function getQuoteSupportAgent()     { return require('../agents/quoteSupportAgent'); }
 function getCRMUpdateAgent()        { return require('../agents/crmUpdateAgent'); }
+function getScanCommand()           { return require('../commands/scanCommand'); }
 
 /**
  * runAgent — calls an agent with timeout and falls back to general on error.
@@ -72,6 +73,9 @@ async function route(userId, message, options) {
         break;
       case INTENTS.CRM_UPDATE:
         reply = await runAgent(getCRMUpdateAgent, message, ctx, 'crmUpdate');
+        break;
+      case INTENTS.HISTORICAL_SCAN:
+        reply = await getScanCommand().run(message, ctx);
         break;
       case INTENTS.GENERAL:
       default:

@@ -13,6 +13,7 @@ var INTENTS = {
   CLIENT_RETRIEVAL: 'CLIENT_RETRIEVAL',
   QUOTE_SUPPORT:    'QUOTE_SUPPORT',
   CRM_UPDATE:       'CRM_UPDATE',
+  HISTORICAL_SCAN:  'HISTORICAL_SCAN',
   GENERAL:          'GENERAL',
 };
 
@@ -62,6 +63,13 @@ var RULES = [
     },
   },
   {
+    intent: INTENTS.HISTORICAL_SCAN,
+    keywords: [
+      'avvia scan', 'inizia scan', 'scan storico', 'scan slack', 'scan drive',
+      'stato scan', 'progresso scan', 'indicizza slack', 'indicizza drive',
+    ],
+  },
+  {
     intent: INTENTS.CLIENT_RETRIEVAL,
     keywords: [
       'dimmi di', 'info su', 'cosa sai di', 'cliente', 'progetto',
@@ -107,6 +115,7 @@ async function classifyIntent(message) {
         'CLIENT_RETRIEVAL — info su un cliente, progetto o preventivo specifico\n' +
         'QUOTE_SUPPORT — richiesta di preventivo, quotazione, stima costi per un progetto\n' +
         'CRM_UPDATE — aggiornamento CRM, cambio status lead, aggiunta servizi, followup\n' +
+        'HISTORICAL_SCAN — scan storico Slack/Drive, indicizzazione, stato scan\n' +
         'GENERAL — tutto il resto',
       messages: [{ role: 'user', content: message }],
     });
