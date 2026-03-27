@@ -356,11 +356,9 @@ function searchMemories(userId, query) {
   if (useSupabase && results.length > 0) {
     var ids = results.slice(0, 10).map(function(m) { return m.id; }).filter(Boolean);
     if (ids.length > 0) {
-      supabase.from('memories')
-        .update({ last_used_at: new Date().toISOString() })
-        .in('id', ids)
+      supabase.rpc('increment_memory_usage', { memory_ids: ids })
         .then(function() {})
-        .catch(function(e) { process.stdout.write('[MEM-USAGE] ' + e.message + '\n'); });
+        .catch(function(e) { process.stdout.write('[MEM-USAGE] rpc failed: ' + e.message + '\n'); });
     }
   }
 
@@ -650,11 +648,9 @@ function searchKB(query, options) {
   if (useSupabase && results.length > 0) {
     var kbIds = results.slice(0, 10).map(function(e) { return e.id; }).filter(Boolean);
     if (kbIds.length > 0) {
-      supabase.from('knowledge_base')
-        .update({ last_used_at: nowISO })
-        .in('id', kbIds)
+      supabase.rpc('increment_kb_usage', { kb_ids: kbIds })
         .then(function() {})
-        .catch(function(e) { process.stdout.write('[KB-USAGE] ' + e.message + '\n'); });
+        .catch(function(e) { process.stdout.write('[KB-USAGE] rpc failed: ' + e.message + '\n'); });
     }
   }
 
