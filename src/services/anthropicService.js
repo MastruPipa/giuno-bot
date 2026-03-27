@@ -135,7 +135,7 @@ var SYSTEM_PROMPT =
   'Se vedi LINK_OAUTH nell\'input, manda esattamente il testo tra virgolette che segue LINK_OAUTH: è già formattato per Slack, non modificarlo.\n' +
   'Se tool risponde con errore auth, di\' di scrivere \'collega il mio Google\'.';
 
-function buildSystemPrompt(userRolePrompt) {
+function buildSystemPrompt(userRolePrompt, isDM) {
   var now = new Date();
   var dateStr = now.toLocaleDateString('it-IT', {
     weekday: 'long', year: 'numeric',
@@ -157,6 +157,26 @@ function buildSystemPrompt(userRolePrompt) {
   var yesterdayTs = Math.floor((now.getTime() - 86400000) / 1000);
   var todayTs = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
 
+  var dmMode = isDM
+    ? 'MODALITÀ CONVERSAZIONALE (DM privato):\n' +
+      'Rispondi come un chatbot — NON come un sistema di reporting.\n' +
+      '• Risposte brevi e dirette. Domanda semplice = risposta breve.\n' +
+      '• Scrivi in prosa, frasi normali. Niente bullet point se non essenziali.\n' +
+      '• Niente titoli in grassetto tipo "*RIEPILOGO:*" o "*SITUAZIONE:*".\n' +
+      '• Tono diretto e umano. "ok", "fatto", "esatto" vanno bene.\n' +
+      '• Per analisi (es. daily), scrivi in prosa — non una sezione per persona con bullet.\n' +
+      '• MAI concludere con "Serve altro?" o "Il team ora ha la visione completa!".\n' +
+      '• MAI aggiungere recap non richiesti o sezioni extra.\n\n'
+    : 'MODALITÀ CANALE:\n' +
+      'Rispondi in modo strutturato se la risposta è complessa.\n' +
+      'Per risposte brevi, rimani conciso.\n\n';
+
+  var lengthRule = 'LUNGHEZZA RISPOSTA:\n' +
+    '• Domanda semplice → 1-2 frasi\n' +
+    '• Domanda media → 3-8 frasi o lista breve\n' +
+    '• Domanda complessa → strutturata ma senza ripetizioni\n' +
+    '• MAI ripetere lo stesso concetto con parole diverse.\n\n';
+
   return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
     'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
     'Anno corrente: ' + now.getFullYear() + '. Quest\'anno=' + now.getFullYear() +
@@ -167,6 +187,7 @@ function buildSystemPrompt(userRolePrompt) {
     '• Lunedì questa settimana: ' + mondayTs + '\n' +
     '• Ieri: ' + yesterdayTs + '\n' +
     '• Oggi mezzanotte: ' + todayTs + '\n\n' +
+    dmMode + lengthRule +
     SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + userRolePrompt;
 }
 
@@ -415,7 +436,7 @@ async function askGiuno(userId, userMessage, options) {
       response = await client.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1024,
-        system: buildSystemPrompt(getRoleSystemPrompt(userRole)),
+        system: buildSystemPrompt(getRoleSystemPrompt(userRole), options.isDM),
         messages: messages,
         tools: allTools,
       });
