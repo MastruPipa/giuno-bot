@@ -1060,7 +1060,20 @@ function scheduleCrons() {
     var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
     runKnowledgeEngine('system').catch(function(e) { logger.error('[KB-ENGINE] Errore cron:', e.message); });
   }, { timezone: 'Europe/Rome' }); // ogni notte alle 2:00
+  // Historical scanner — gira ogni notte alle 1:00, processa 5 canali per run
+  // Continua automaticamente ogni notte finché tutti i canali non sono 'done'
+  cron.schedule('0 1 * * *', async function() {
+    var locked = await acquireCronLock('historical_scan', 120);
+    if (!locked) return;
+    try {
+      var { runHistoricalScan } = require('../jobs/historicalScanner');
+      var result = await runHistoricalScan({ batchSize: 5 });
+      logger.info('[HISTORICAL-SCAN] Nightly run:', JSON.stringify(result));
+    } catch(e) { logger.error('[HISTORICAL-SCAN] Errore:', e.message); }
+    finally { await releaseCronLock('historical_scan'); }
+  }, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
+  logger.info('Historical scan: ogni notte alle 1:00 (5 canali/run)');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
