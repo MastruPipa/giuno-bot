@@ -352,6 +352,32 @@ async function autoLearn(userId, userMessage, botReply, context) {
   }
 }
 
+// ─── Retry wrapper for API calls ──────────────────────────────────────────────
+
+var RETRY_DELAYS = [2000, 5000, 10000];
+
+async function callAnthropicWithRetry(params) {
+  var lastError = null;
+  for (var attempt = 0; attempt <= 3; attempt++) {
+    try {
+      return await client.messages.create(params);
+    } catch(err) {
+      lastError = err;
+      var isOverloaded = (err.status === 529) || (err.message && err.message.includes('overloaded'));
+      var isRateLimit = (err.status === 429);
+      if ((!isOverloaded && !isRateLimit) || attempt === 3) break;
+      var delay = RETRY_DELAYS[attempt] || 10000;
+      logger.warn('[API] ' + (isOverloaded ? '529 overloaded' : '429 rate limit') +
+        ' — retry ' + (attempt + 1) + '/3 tra ' + (delay / 1000) + 's');
+      await new Promise(function(r) { setTimeout(r, delay); });
+    }
+  }
+  if (lastError && (lastError.status === 529 || lastError.status === 429)) {
+    throw new Error('API_UNAVAILABLE');
+  }
+  throw lastError;
+}
+
 // ─── askGiuno — main LLM agentic loop ─────────────────────────────────────────
 
 async function askGiuno(userId, userMessage, options) {
@@ -429,11 +455,12 @@ async function askGiuno(userId, userMessage, options) {
   var allTools = registry.getAllTools();
   var finalReply = '';
   var retryCount = 0;
+  var toolsCalled = [];
 
   while (true) {
     var response;
     try {
-      response = await client.messages.create({
+      response = await callAnthropicWithRetry({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1024,
         system: buildSystemPrompt(getRoleSystemPrompt(userRole), options.isDM),
@@ -441,15 +468,8 @@ async function askGiuno(userId, userMessage, options) {
         tools: allTools,
       });
     } catch(apiErr) {
-      if (apiErr.status === 429 && retryCount < 2) {
-        retryCount++;
-        var waitSec = retryCount * 5;
-        logger.warn('[RATE-LIMIT] 429, attendo ' + waitSec + 's (tentativo ' + retryCount + '/2)');
-        await new Promise(function(r) { setTimeout(r, waitSec * 1000); });
-        continue;
-      }
-      if (apiErr.status === 429) {
-        return 'Sto ricevendo troppe richieste in questo momento, mbare. Riprova tra un minuto.';
+      if (apiErr.message === 'API_UNAVAILABLE') {
+        return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
       }
       throw apiErr;
     }
@@ -468,6 +488,7 @@ async function askGiuno(userId, userMessage, options) {
       response.content
         .filter(function(b) { return b.type === 'tool_use'; })
         .map(async function(tu) {
+          toolsCalled.push(tu.name);
           var result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
           logger.info('Tool:', tu.name, '| User:', userId, '| Result:', JSON.stringify(result).substring(0, 80));
           return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) };
@@ -475,6 +496,13 @@ async function askGiuno(userId, userMessage, options) {
     );
 
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Output validation — detect hallucinated actions
+  var validator = require('../orchestrator/validator');
+  var validation = validator.validate(finalReply, toolsCalled);
+  if (!validation.valid) {
+    finalReply = validator.fallbackResponse(finalReply, validation.issue);
   }
 
   convCache[convKey].push({ role: 'user', content: messageWithContext });

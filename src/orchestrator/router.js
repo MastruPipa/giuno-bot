@@ -61,6 +61,9 @@ async function route(userId, message, options) {
 
     return reply;
   } catch(e) {
+    if (e.message === 'API_UNAVAILABLE') {
+      return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
+    }
     logger.error('[ROUTER] Errore:', e.message);
     throw e;
   }
