@@ -527,6 +527,17 @@ async function saveConversationSummary(convKey, summary, messagesCount, topics, 
   } catch(e) { logErr('saveConversationSummary', e); }
 }
 
+// ─── Entity resolution ──────────────────────────────────────────────────────
+
+async function resolveEntity(name) {
+  if (!useSupabase || !name) return null;
+  try {
+    var res = await supabase.rpc('resolve_entity', { p_name: name });
+    if (res.data && res.data.length > 0) return res.data[0];
+    return null;
+  } catch(e) { logErr('resolveEntity', e); return null; }
+}
+
 async function getConversationSummary(convKey) {
   if (!useSupabase) return null;
   try {
@@ -1455,6 +1466,8 @@ module.exports = {
   // Conversation Summaries
   saveConversationSummary: saveConversationSummary,
   getConversationSummary: getConversationSummary,
+  // Entity Resolution
+  resolveEntity: resolveEntity,
   // Cron Locks
   acquireCronLock: acquireCronLock,
   releaseCronLock: releaseCronLock,

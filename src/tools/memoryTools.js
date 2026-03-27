@@ -60,6 +60,19 @@ var definitions = [
       required: ['memory_id'],
     },
   },
+  {
+    name: 'resolve_entity',
+    description: 'Risolve un nome (cliente, persona, fornitore, progetto) nella sua entità canonica. ' +
+      'USARE SEMPRE quando l\'utente menziona un nome che può avere alias o varianti. ' +
+      'Restituisce entità canonica + lead CRM collegato se esiste.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Nome da risolvere (parziale, alias, varianti ok)' },
+      },
+      required: ['name'],
+    },
+  },
 ];
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
@@ -106,6 +119,25 @@ async function execute(toolName, input, userId, userRole) {
   if (toolName === 'delete_memory') {
     var deleted = await db.deleteMemory(userId, input.memory_id);
     return deleted ? { success: true } : { error: 'Memoria non trovata.' };
+  }
+
+  if (toolName === 'resolve_entity') {
+    try {
+      var resolved = await db.resolveEntity(input.name);
+      if (!resolved) return { found: false, name: input.name };
+      var result = {
+        found: true,
+        canonical_name: resolved.canonical_name,
+        entity_type: resolved.entity_type,
+        aliases: resolved.aliases,
+        metadata: resolved.metadata,
+      };
+      if (resolved.linked_lead_id) {
+        var lead = await db.queryLeadsDB({ company_name: resolved.canonical_name, limit: 1 });
+        if (lead.leads && lead.leads.length > 0) result.crm = lead.leads[0];
+      }
+      return result;
+    } catch(e) { return { error: 'Errore resolve_entity: ' + e.message }; }
   }
 
   return { error: 'Tool sconosciuto nel modulo memoryTools: ' + toolName };

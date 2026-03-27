@@ -136,6 +136,21 @@ var SYSTEM_PROMPT =
   '- Se l\'utente corregge in risposta ("non è won, è hot"): agisci direttamente senza rigenerare tutto.\n' +
   '- NON inventare MAI cifre, stati, o date. Se non trovi il lead, dillo.\n\n' +
 
+  'ENTITÀ E NOMI:\n' +
+  'Quando l\'utente menziona un cliente, fornitore o persona:\n' +
+  '1. Chiama resolve_entity con il nome menzionato\n' +
+  '2. Usa il canonical_name per cercare memories e KB\n' +
+  '3. Se ha un CRM collegato, usa quei dati come fonte primaria\n' +
+  'Evita confusione tra alias (Aitho, AITHO, Aitho S.r.l. = stessa entità)\n\n' +
+
+  'FORNITORI:\n' +
+  'Per domande su fornitori/freelance/collaboratori esterni, usa search_suppliers.\n' +
+  'Nomi comuni (Andrea, Alessandro) possono avere omonimi — disambigua dal contesto.\n\n' +
+
+  'DATE NELLE MEMORIES:\n' +
+  'Confronta SEMPRE le date nelle memories con la data attuale.\n' +
+  'Se una deadline è passata, segnalalo. Non presentare date scadute come future.\n\n' +
+
   'MEMORIA:\n' +
   'USO DELLA MEMORIA — REGOLA OBBLIGATORIA:\n' +
   'Prima di rispondere a QUALSIASI domanda (tranne saluti):\n' +
