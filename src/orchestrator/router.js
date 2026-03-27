@@ -14,6 +14,7 @@ function getDailyDigestAgent()     { return require('../agents/dailyDigestAgent'
 function getClientRetrievalAgent() { return require('../agents/clientRetrievalAgent'); }
 function getGeneralAssistantAgent(){ return require('../agents/generalAssistantAgent'); }
 function getQuoteSupportAgent()   { return require('../agents/quoteSupportAgent'); }
+function getCRMUpdateAgent()      { return require('../agents/crmUpdateAgent'); }
 
 /**
  * route — main entry point for all user messages.
@@ -48,6 +49,9 @@ async function route(userId, message, options) {
         break;
       case INTENTS.QUOTE_SUPPORT:
         reply = await getQuoteSupportAgent().run(message, ctx);
+        break;
+      case INTENTS.CRM_UPDATE:
+        reply = await getCRMUpdateAgent().run(message, ctx);
         break;
       case INTENTS.GENERAL:
       default:

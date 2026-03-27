@@ -253,6 +253,23 @@ async function getLeadsPipeline() {
 
 // ─── Tool definitions for registry ──────────────────────────────────────────
 
+// Status normalization for CRM updates
+var STATUS_NORM = {
+  'won': 'won', 'vinto': 'won', 'chiuso': 'won', 'contratto firmato': 'won', 'hanno firmato': 'won',
+  'lost': 'lost', 'perso': 'lost', 'rifiutato': 'lost', 'hanno rifiutato': 'lost',
+  'hot': 'contacted', 'caldo': 'contacted', 'warm': 'contacted', 'tiepido': 'contacted',
+  'contacted': 'contacted', 'contattato': 'contacted',
+  'cold': 'dormant', 'freddo': 'dormant', 'dormant': 'dormant',
+  'new': 'new', 'nuovo': 'new',
+  'proposal_sent': 'proposal_sent', 'proposta inviata': 'proposal_sent', 'proposta': 'proposal_sent',
+  'negotiating': 'negotiating', 'trattativa': 'negotiating', 'in trattativa': 'negotiating',
+};
+
+function normalizeStatusCRM(s) {
+  if (!s) return null;
+  return STATUS_NORM[s.toLowerCase().trim()] || null;
+}
+
 var definitions = [
   {
     name: 'query_leads_db',
@@ -268,16 +285,122 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'update_lead',
+    description: 'Aggiorna un lead nel CRM. Usa questo tool ogni volta che bisogna modificare status, valore, servizi, note o fase di un lead. NON listare tutto il CRM — aggiorna solo il lead richiesto e conferma.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Nome azienda o UUID del lead' },
+        status: { type: 'string', description: 'Nuovo status (accetta: hot, warm, cold, won, lost, trattativa, proposta inviata)' },
+        estimated_value: { type: 'number', description: 'Valore stimato in euro' },
+        service_interest: { type: 'array', items: { type: 'string' }, description: 'Lista servizi (es. ["Branding", "Design"])' },
+        notes: { type: 'string', description: 'Note aggiuntive (AGGIUNTE alle esistenti)' },
+        next_followup: { type: 'string', description: 'Data prossimo follow-up YYYY-MM-DD' },
+        owner_slack_id: { type: 'string', description: 'Slack ID responsabile' },
+      },
+      required: ['identifier'],
+    },
+  },
+  {
+    name: 'create_lead',
+    description: 'Crea un nuovo lead nel CRM. Controlla sempre con search_leads prima per evitare duplicati.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        company_name: { type: 'string', description: 'Nome azienda (obbligatorio)' },
+        contact_name: { type: 'string', description: 'Nome referente' },
+        status: { type: 'string', description: 'Status iniziale (default: new)' },
+        estimated_value: { type: 'number', description: 'Valore stimato €' },
+        service_interest: { type: 'array', items: { type: 'string' } },
+        source: { type: 'string', description: 'Fonte: referral|inbound|outbound' },
+        notes: { type: 'string' },
+        contact_email: { type: 'string' },
+        phone: { type: 'string' },
+        owner_slack_id: { type: 'string' },
+      },
+      required: ['company_name'],
+    },
+  },
+  {
+    name: 'search_leads',
+    description: 'Cerca lead nel CRM per nome, status o responsabile. Usa SEMPRE prima di update_lead. Dati freschi da Supabase.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        company_name: { type: 'string', description: 'Nome azienda (ricerca parziale)' },
+        contact_name: { type: 'string', description: 'Nome contatto (ricerca parziale)' },
+        status: { type: 'string', description: 'Filtra per status' },
+        owner_slack_id: { type: 'string' },
+        limit: { type: 'number', description: 'Max risultati (default 10)' },
+      },
+    },
+  },
 ];
 
 async function execute(toolName, input, userId, userRole) {
-  if (toolName === 'query_leads_db') {
+  if (toolName === 'query_leads_db' || toolName === 'search_leads') {
     try {
-      return await db.queryLeadsDB(input);
+      var leads = await db.searchLeads(input);
+      return { leads: leads, count: leads.length };
     } catch(e) {
-      return { error: 'Errore query leads: ' + e.message };
+      return { error: 'Errore ricerca: ' + e.message };
     }
   }
+
+  if (toolName === 'update_lead') {
+    if (!input.identifier) return { error: 'Specifica il nome azienda o ID del lead.' };
+    var updates = {};
+    if (input.status) updates.status = normalizeStatusCRM(input.status) || input.status;
+    if (input.estimated_value !== undefined) updates.estimated_value = input.estimated_value;
+    if (input.service_interest) updates.service_interest = input.service_interest;
+    if (input.next_followup) updates.next_followup = input.next_followup;
+    if (input.owner_slack_id) updates.owner_slack_id = input.owner_slack_id;
+    if (input.notes) {
+      try {
+        var existing = await db.searchLeads({ company_name: input.identifier, limit: 1 });
+        var currentNotes = (existing[0] && existing[0].notes) || '';
+        updates.notes = currentNotes ? currentNotes + ' | ' + input.notes : input.notes;
+      } catch(e) { updates.notes = input.notes; }
+    }
+    if (Object.keys(updates).length === 0) return { error: 'Nessun campo da aggiornare.' };
+    try {
+      var result = await db.updateLead(input.identifier, updates);
+      if (!result || (Array.isArray(result) && result.length === 0)) {
+        return { error: 'Lead "' + input.identifier + '" non trovato nel CRM.' };
+      }
+      var updated = Array.isArray(result) ? result[0] : result;
+      return { success: true, message: 'Lead aggiornato.', lead: { id: updated.id, company_name: updated.company_name, status: updated.status, service_interest: updated.service_interest, estimated_value: updated.estimated_value } };
+    } catch(e) {
+      return { error: 'Errore aggiornamento: ' + e.message };
+    }
+  }
+
+  if (toolName === 'create_lead') {
+    if (!input.company_name) return { error: 'company_name obbligatorio.' };
+    try {
+      var dup = await db.searchLeads({ company_name: input.company_name, limit: 1 });
+      if (dup.length > 0) return { already_exists: true, message: 'Lead già presente.', lead: dup[0], suggestion: 'Usa update_lead per modificarlo.' };
+    } catch(e) {}
+    var newLead = {
+      company_name: input.company_name,
+      contact_name: input.contact_name || null,
+      status: normalizeStatusCRM(input.status) || 'new',
+      estimated_value: input.estimated_value || null,
+      service_interest: input.service_interest || null,
+      source: input.source || 'manual',
+      notes: input.notes || null,
+      contact_email: input.contact_email || null,
+      phone: input.phone || null,
+      owner_slack_id: input.owner_slack_id || null,
+      first_contact: new Date().toISOString().slice(0, 10),
+    };
+    try {
+      var created = await db.insertLead(newLead);
+      return { success: true, message: 'Lead creato.', lead: created };
+    } catch(e) { return { error: 'Errore creazione: ' + e.message }; }
+  }
+
   return { error: 'Tool sconosciuto in leadsTools: ' + toolName };
 }
 

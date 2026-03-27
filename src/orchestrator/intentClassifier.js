@@ -12,6 +12,7 @@ var INTENTS = {
   DAILY_DIGEST:     'DAILY_DIGEST',
   CLIENT_RETRIEVAL: 'CLIENT_RETRIEVAL',
   QUOTE_SUPPORT:    'QUOTE_SUPPORT',
+  CRM_UPDATE:       'CRM_UPDATE',
   GENERAL:          'GENERAL',
 };
 
@@ -32,6 +33,18 @@ var RULES = [
       'briefing', 'routine mattutina', 'recap giornaliero', 'agenda di oggi',
       'cosa ho oggi', 'daily briefing', 'daily digest', 'piano del giorno',
       'cosa mi aspetta', 'mail non lette', 'impegni di oggi',
+    ],
+  },
+  {
+    intent: INTENTS.CRM_UPDATE,
+    keywords: [
+      'aggiorna il crm', 'aggiorna crm', 'aggiorna lead', 'aggiornare il crm',
+      'modifica il crm', 'cambia status', 'cambia lo status',
+      'segna come', 'metti come', 'imposta come',
+      'è won', 'è lost', 'è hot', 'è cold', 'abbiamo chiuso',
+      'hanno firmato', 'ha firmato', 'hanno detto no', 'hanno rifiutato',
+      'aggiungi al crm', 'inserisci nel crm', 'nuovo lead', 'metti nel crm',
+      'prossimo followup', 'follow-up per', 'ricontattare',
     ],
   },
   {
@@ -89,6 +102,7 @@ async function classifyIntent(message) {
         'DAILY_DIGEST — briefing giornaliero, agenda, mail, piano del giorno\n' +
         'CLIENT_RETRIEVAL — info su un cliente, progetto o preventivo specifico\n' +
         'QUOTE_SUPPORT — richiesta di preventivo, quotazione, stima costi per un progetto\n' +
+        'CRM_UPDATE — aggiornamento CRM, cambio status lead, aggiunta servizi, followup\n' +
         'GENERAL — tutto il resto',
       messages: [{ role: 'user', content: message }],
     });

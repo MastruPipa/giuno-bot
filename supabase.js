@@ -1069,6 +1069,35 @@ async function getLeadsPipeline() {
   } catch(e) { logErr('getLeadsPipeline', e); return { byStatus: {}, upcoming: [], total: 0 }; }
 }
 
+async function updateLead(identifier, updates) {
+  if (!useSupabase) return null;
+  try {
+    var updateData = Object.assign({}, updates, { updated_at: new Date().toISOString() });
+    var res;
+    if (identifier.match && identifier.match(/^[0-9a-f-]{36}$/i)) {
+      res = await supabase.from('leads').update(updateData).eq('id', identifier).select();
+    } else {
+      res = await supabase.from('leads').update(updateData).ilike('company_name', identifier).select();
+    }
+    if (res.error) throw res.error;
+    return res.data;
+  } catch(e) { logErr('updateLead', e); throw e; }
+}
+
+async function searchLeads(params) {
+  if (!useSupabase) return [];
+  try {
+    var q = supabase.from('leads').select('*');
+    if (params.company_name) q = q.ilike('company_name', '%' + params.company_name + '%');
+    if (params.contact_name) q = q.ilike('contact_name', '%' + params.contact_name + '%');
+    if (params.status) q = q.eq('status', params.status);
+    if (params.owner_slack_id) q = q.eq('owner_slack_id', params.owner_slack_id);
+    q = q.order('updated_at', { ascending: false }).limit(params.limit || 20);
+    var res = await q;
+    return res.data || [];
+  } catch(e) { logErr('searchLeads', e); return []; }
+}
+
 // ============================================================================
 // KB CLEANUP (cron)
 // ============================================================================
@@ -1185,6 +1214,8 @@ module.exports = {
   // Leads
   leadExists: leadExists,
   insertLead: insertLead,
+  updateLead: updateLead,
+  searchLeads: searchLeads,
   getLeadsPipeline: getLeadsPipeline,
   // Glossary
   loadGlossary: loadGlossary,
