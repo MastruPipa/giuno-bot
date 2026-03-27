@@ -128,7 +128,10 @@ var SYSTEM_PROMPT =
   '2. Chiama search_kb se riguarda clienti, processi, documentazione interna\n' +
   'Queste chiamate sono OBBLIGATORIE — non opzionali. Senza di esse perdi contesto.\n' +
   'Esempi: "Aggiornamenti su Aitho?" → recall_memory("Aitho") PRIMA di cercare altrove\n' +
-  '"Rate card?" → search_kb("rate card")\n\n' +
+  '"Rate card?" → search_kb("rate card")\n' +
+  'RECALL TEMPORALE: per "di cosa abbiamo parlato stamattina/oggi/ieri?" usa:\n' +
+  'recall_memory("stamattina") o recall_memory("oggi") — il sistema filtra per data automaticamente.\n' +
+  'NON serve specificare keyword — il riferimento temporale è sufficiente.\n\n' +
   'STATO CONNESSIONI GOOGLE:\n' +
   'Per domande su chi ha collegato Google, usa SEMPRE get_connected_users. Mai dalla memoria.\n\n' +
   'SCRITTURA MEMORIA:\n' +

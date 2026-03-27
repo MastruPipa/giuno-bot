@@ -337,10 +337,112 @@ function isBlacklisted(content) {
   return _blacklistRegex.test(content) || _financialBlacklist.test(content);
 }
 
+// ─── Temporal reference detection ─────────────────────────────────────────────
+
+var TEMPORAL_REFS = {
+  'stamattina':        { hoursAgo: 12, fromMidnight: true },
+  'questa mattina':    { hoursAgo: 12, fromMidnight: true },
+  'stamani':           { hoursAgo: 12, fromMidnight: true },
+  'oggi':              { hoursAgo: 24, fromMidnight: true },
+  'ieri':              { daysAgo: 2, maxDays: 1, fromMidnight: true },
+  'questa settimana':  { daysAgo: 7 },
+  'settimana scorsa':  { daysAgo: 14, maxDays: 7 },
+  'poco fa':           { hoursAgo: 2 },
+  'recentemente':      { hoursAgo: 24 },
+  'ultimo ora':        { hoursAgo: 1 },
+  'ultime ore':        { hoursAgo: 4 },
+};
+
+function detectTemporalRef(query) {
+  if (!query) return null;
+  var q = query.toLowerCase();
+  for (var ref in TEMPORAL_REFS) {
+    if (q.includes(ref)) return { ref: ref, config: TEMPORAL_REFS[ref] };
+  }
+  return null;
+}
+
+function getTimeRange(config) {
+  var now = new Date();
+  var oldest;
+
+  if (config.fromMidnight && !config.daysAgo) {
+    var midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    if (config.hoursAgo && config.hoursAgo <= 12) {
+      oldest = midnight.getTime();
+    } else {
+      oldest = midnight.getTime();
+    }
+  } else if (config.daysAgo) {
+    oldest = now.getTime() - config.daysAgo * 86400000;
+  } else if (config.hoursAgo) {
+    oldest = now.getTime() - config.hoursAgo * 3600000;
+  } else {
+    oldest = now.getTime() - 86400000;
+  }
+
+  var newest = now.getTime();
+  if (config.maxDays) {
+    newest = now.getTime() - config.maxDays * 86400000;
+  }
+
+  return { oldest: oldest, newest: newest };
+}
+
 function searchMemories(userId, query) {
   if (!_memCache || !_memCache[userId]) return [];
-  var tokens = expandQueryTokens(query);
+
+  var temporal = detectTemporalRef(query);
   var now = Date.now();
+
+  if (temporal) {
+    // TEMPORAL SEARCH: filter by created_at range, return all non-blacklisted
+    var range = getTimeRange(temporal.config);
+    var temporalResults = _memCache[userId].filter(function(m) {
+      if (isBlacklisted(m.content)) return false;
+      if (!m.created) return false;
+      var ts = new Date(m.created).getTime();
+      return ts >= range.oldest && ts <= range.newest;
+    });
+
+    // If query has keywords beyond the temporal ref, also filter by content
+    var extraKeywords = (query || '').toLowerCase()
+      .replace(/stamattina|stamani|questa mattina|oggi|ieri|questa settimana|settimana scorsa|poco fa|recentemente|ultimo ora|ultime ore/g, '')
+      .trim();
+
+    if (extraKeywords.length > 3) {
+      var extraTokens = expandQueryTokens(extraKeywords);
+      if (extraTokens.length > 0) {
+        temporalResults = temporalResults.filter(function(m) {
+          var contentLow = (m.content || '').toLowerCase();
+          return extraTokens.some(function(t) { return contentLow.includes(t); });
+        });
+      }
+    }
+
+    // Sort newest first
+    temporalResults.sort(function(a, b) {
+      return new Date(b.created).getTime() - new Date(a.created).getTime();
+    });
+
+    var tResults = temporalResults.slice(0, 20);
+
+    // Track usage
+    if (useSupabase && tResults.length > 0) {
+      var tIds = tResults.map(function(m) { return m.id; }).filter(Boolean);
+      if (tIds.length > 0) {
+        supabase.rpc('increment_memory_usage', { memory_ids: tIds })
+          .then(function() {})
+          .catch(function(e) { process.stdout.write('[MEM-USAGE] rpc failed: ' + e.message + '\n'); });
+      }
+    }
+
+    return tResults;
+  }
+
+  // KEYWORD SEARCH: existing behavior
+  var tokens = expandQueryTokens(query);
 
   var scored = _memCache[userId].map(function(m) {
     return { memory: m, score: scoreMemory(m, tokens, now) };
