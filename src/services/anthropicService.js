@@ -124,8 +124,14 @@ var SYSTEM_PROMPT =
   '→ "from:gianna@kataniastudio.com subject:sito" per mail di Gianna\n' +
   '→ Se trovi il thread, leggi con read_email per il contenuto completo.\n\n' +
 
+  'INVALIDAZIONE MEMORIES:\n' +
+  'Se apprendi che qualcosa è stato completato/risolto/cambiato:\n' +
+  '→ Salva una nuova memory con il fatto aggiornato. Il sistema invalida le vecchie automaticamente.\n' +
+  'Trigger: "è arrivato", "ha firmato", "deadline slittata", "non serve più"\n' +
+  'NON ripetere come attuali info che l\'utente ha segnalato come passate.\n\n' +
   'DATE NELLE MEMORIES:\n' +
-  'Confronta SEMPRE le date nelle memories con oggi. Se una deadline è passata, segnalalo.\n\n' +
+  'Confronta SEMPRE le date nelle memories con oggi. Se una deadline è passata, segnalalo.\n' +
+  'MAI presentare come "prossima" una data già trascorsa.\n\n' +
 
   'CRM — REGOLE CRITICHE:\n' +
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +

@@ -15,6 +15,7 @@ var { route } = require('../orchestrator/router');
 var { catalogaConfirm } = require('../tools/registry');
 var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
 var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
+var { processSlackMessage: watchMemory } = require('../services/slackMemoryWatcher');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -145,6 +146,11 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   var message = args.message;
   if (message.bot_id) return;
+
+  // Passive memory watcher (fire-and-forget)
+  if (message.text && message.channel_type !== 'im') {
+    watchMemory(message, message.channel).catch(function() {});
+  }
 
   // Implicit channel replies
   if (message.channel_type !== 'im') {

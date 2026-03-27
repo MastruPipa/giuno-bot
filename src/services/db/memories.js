@@ -159,8 +159,65 @@ async function addMemory(userId, content, tags, options) {
     }
 
     process.stdout.write('[storeMemory] ' + classification.type + ' | shared:' + classification.shared + ' | entities:' + (entityRefs.join(',') || 'none') + '\n');
+
+    // Fire-and-forget: invalidate superseded memories
+    invalidateSupersededMemories(entry.id, content, entityRefs, userId)
+      .catch(function(e) { process.stdout.write('[storeMemory] invalidation failed: ' + e.message + '\n'); });
   } catch(e) { c.logErr('addMemory', e); }
   return entry;
+}
+
+// ─── Memory invalidation ─────────────────────────────────────────────────────
+
+async function invalidateSupersededMemories(newMemoryId, newContent, entityRefs, userId) {
+  if (!c.useSupabase) return;
+  try {
+    var ruleRes = await c.getClient().from('memory_invalidation_rules')
+      .select('trigger_pattern, target_pattern, rule_type')
+      .eq('active', true);
+    var rules = ruleRes.data || [];
+    if (rules.length === 0) return;
+
+    var matchingRules = rules.filter(function(rule) {
+      if (!rule.trigger_pattern) return false;
+      return rule.trigger_pattern.split('|').some(function(p) {
+        try { return new RegExp(p.trim(), 'i').test(newContent); } catch(e) { return false; }
+      });
+    });
+    if (matchingRules.length === 0) return;
+
+    var toInvalidate = [];
+    for (var ri = 0; ri < matchingRules.length; ri++) {
+      var rule = matchingRules[ri];
+      var targetPatterns = (rule.target_pattern || '').split('|');
+      var candRes = await c.getClient().from('memories').select('id, content, entity_refs')
+        .is('superseded_by', null).neq('id', newMemoryId)
+        .gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString());
+      var candidates = candRes.data || [];
+
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var m = candidates[ci];
+        var matchesTarget = targetPatterns.some(function(p) {
+          try { return p.trim() && new RegExp(p.trim(), 'i').test(m.content); } catch(e) { return false; }
+        });
+        var sharesEntity = entityRefs && entityRefs.length > 0 && m.entity_refs &&
+          entityRefs.some(function(e) { return (m.entity_refs || []).indexOf(e) !== -1; });
+        if (matchesTarget && (sharesEntity || rule.rule_type === 'content')) {
+          toInvalidate.push(m.id);
+        }
+      }
+    }
+
+    if (toInvalidate.length > 0) {
+      var unique = {};
+      toInvalidate.forEach(function(id) { unique[id] = true; });
+      toInvalidate = Object.keys(unique);
+      await c.getClient().rpc('supersede_memories', { p_new_memory_id: newMemoryId, p_old_memory_ids: toInvalidate });
+      process.stdout.write('[invalidateMemories] Invalidated ' + toInvalidate.length + ' memories\n');
+    }
+  } catch(e) {
+    process.stdout.write('[invalidateMemories] Error (non-blocking): ' + e.message + '\n');
+  }
 }
 
 async function deleteMemory(userId, memoryId) {
