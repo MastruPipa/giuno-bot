@@ -236,30 +236,13 @@ async function deleteMemory(userId, memoryId) {
   return true;
 }
 
-function searchMemories(userId, query) {
+async function searchMemories(userId, query) {
   var temporal = detectTemporalRef(query);
   var now = Date.now();
 
-  if (c.useSupabase && !temporal) {
-    c.getClient().rpc('recall_by_entity', { p_entity_name: query || '', p_limit: 5 })
-      .then(function(res) {
-        if (res.data && res.data.length > 0) {
-          var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
-          c.getClient().rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
-        }
-      }).catch(function() {});
-    c.getClient().rpc('recall_memories_weighted', { p_query: query || '', p_user_id: userId || null, p_limit: 10, p_include_expired: false })
-      .then(function(res) {
-        if (res.data && res.data.length > 0) {
-          var ids = res.data.map(function(m) { return m.id; }).filter(Boolean);
-          c.getClient().rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
-        }
-      }).catch(function(e) { process.stdout.write('[MEM-RPC] ' + e.message + '\n'); });
-  }
-
-  if (!_memCache || !_memCache[userId]) return [];
-
+  // TEMPORAL SEARCH — sync cache (fast, works well)
   if (temporal) {
+    if (!_memCache || !_memCache[userId]) return [];
     var range = getTimeRange(temporal.config);
     var temporalResults = _memCache[userId].filter(function(m) {
       if (search.isBlacklisted(m.content || '')) return false;
@@ -283,14 +266,64 @@ function searchMemories(userId, query) {
     return temporalResults.slice(0, 20);
   }
 
+  // KEYWORD SEARCH — try Supabase RPC first (await results), fallback to cache
+  if (c.useSupabase) {
+    try {
+      var rpcResults = [];
+
+      // Entity recall
+      var entityRes = await c.getClient().rpc('recall_by_entity', { p_entity_name: query || '', p_limit: 5 });
+      if (entityRes.data && entityRes.data.length > 0) {
+        rpcResults = rpcResults.concat(entityRes.data);
+      }
+
+      // Weighted recall
+      var weightedRes = await c.getClient().rpc('recall_memories_weighted', {
+        p_query: query || '', p_user_id: userId || null, p_limit: 10, p_include_expired: false,
+      });
+      if (weightedRes.data && weightedRes.data.length > 0) {
+        rpcResults = rpcResults.concat(weightedRes.data);
+      }
+
+      // Deduplicate by id
+      if (rpcResults.length > 0) {
+        var seen = {};
+        var deduped = [];
+        for (var ri = 0; ri < rpcResults.length; ri++) {
+          if (!seen[rpcResults[ri].id]) {
+            seen[rpcResults[ri].id] = true;
+            deduped.push(rpcResults[ri]);
+          }
+        }
+
+        // Confidence gate: filter out low-quality results
+        deduped = deduped.filter(function(m) {
+          return (m.confidence_score || m.final_score || 0.5) >= 0.3;
+        });
+
+        // Track usage
+        var ids = deduped.map(function(m) { return m.id; }).filter(Boolean);
+        if (ids.length > 0) {
+          c.getClient().rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
+        }
+
+        if (deduped.length > 0) return deduped.slice(0, 15);
+      }
+    } catch(e) {
+      process.stdout.write('[MEM-RPC] Fallback to cache: ' + (e.message || '') + '\n');
+    }
+  }
+
+  // FALLBACK: sync cache search
+  if (!_memCache || !_memCache[userId]) return [];
   var tokens = search.expandQueryTokens(query);
   var scored = _memCache[userId].map(function(m) {
     return { memory: m, score: search.scoreMemory(m, tokens, now) };
   }).filter(function(item) {
-    return item.score > 0 && !search.isBlacklisted(item.memory.content || '');
+    return item.score > 0.3 && !search.isBlacklisted(item.memory.content || '');
   });
   scored.sort(function(a, b) { return b.score - a.score; });
-  return scored.slice(0, 20).map(function(item) { return item.memory; });
+  return scored.slice(0, 15).map(function(item) { return item.memory; });
 }
 
 function getMemCache() { return _memCache || {}; }

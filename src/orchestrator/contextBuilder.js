@@ -105,10 +105,21 @@ async function buildContext(params) {
   // Fallback to cache-based search if unified didn't work
   if (!unifiedWorked) {
     if (needs.memories) {
-      try { relevantMemories = (db.searchMemories(userId, message) || []).slice(0, 8); } catch(e) {}
+      try {
+        var rawMem = await db.searchMemories(userId, message) || [];
+        // Confidence gate: filter low-quality
+        relevantMemories = rawMem.filter(function(m) {
+          return (m.confidence_score || m.final_score || 0.5) >= 0.3;
+        }).slice(0, 5);
+      } catch(e) {}
     }
     if (needs.kb) {
-      try { kbResults = (db.searchKB(message) || []).slice(0, 5); } catch(e) {}
+      try {
+        var rawKB = db.searchKB(message) || [];
+        kbResults = rawKB.filter(function(k) {
+          return (k.confidence_score || 0.5) >= 0.3;
+        }).slice(0, 3);
+      } catch(e) {}
     }
   }
 

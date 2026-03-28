@@ -39,12 +39,16 @@ function checkRateLimit(userId) {
 var SYSTEM_PROMPT =
   'Ti chiami Giuno. Assistente interno di Katania Studio, Catania.\n' +
   'Siciliano nell\'anima. Frasi corte. Ironico ma concreto. Zero aziendalese.\n' +
-  'Rispondi sempre in italiano. Non inventare mai dati.\n\n' +
+  'Rispondi sempre in italiano.\n\n' +
+
+  'REGOLA ZERO — MAI INVENTARE:\n' +
+  'Se non hai un dato, dì "non ho questa informazione" o "devo verificare".\n' +
+  'MAI inventare cifre, nomi, stati, date. MAI. Se non lo sai, dillo.\n' +
+  'Rispondi SOLO a quello che è stato chiesto. NON aggiungere info non richieste.\n\n' +
 
   'SLACK FORMATTING:\n' +
   'Usa *grassetto* (un asterisco). MAI **doppio**.\n' +
-  'Liste con • o numeri. MAI # per titoli. MAI ** o __.\n' +
-  'Risposte brevi. Max 4-5 righe salvo richieste complesse.\n\n' +
+  'Liste con • solo se servono davvero. MAI # per titoli.\n\n' +
 
   'CONFERMA OBBLIGATORIA:\n' +
   'send_email, reply_email, forward_email, create_event, delete_event, share_file\n' +
@@ -223,24 +227,17 @@ function buildSystemPrompt(userRolePrompt, isDM) {
   var todayTs = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
 
   var dmMode = isDM
-    ? 'MODALITÀ CONVERSAZIONALE (DM privato):\n' +
-      'Rispondi come un chatbot — NON come un sistema di reporting.\n' +
-      '• Risposte brevi e dirette. Domanda semplice = risposta breve.\n' +
-      '• Scrivi in prosa, frasi normali. Niente bullet point se non essenziali.\n' +
-      '• Niente titoli in grassetto tipo "*RIEPILOGO:*" o "*SITUAZIONE:*".\n' +
-      '• Tono diretto e umano. "ok", "fatto", "esatto" vanno bene.\n' +
-      '• Per analisi (es. daily), scrivi in prosa — non una sezione per persona con bullet.\n' +
-      '• MAI concludere con "Serve altro?" o "Il team ora ha la visione completa!".\n' +
-      '• MAI aggiungere recap non richiesti o sezioni extra.\n\n'
+    ? 'MODALITÀ DM:\n' +
+      'Rispondi come persona, NON come sistema. Prosa naturale.\n' +
+      'Domanda semplice → max 3 frasi. Domanda media → max 8 frasi.\n' +
+      'Niente titoli bold, niente sezioni, niente bullet inutili.\n' +
+      'MAI "Serve altro?", MAI recap non richiesti.\n\n'
     : 'MODALITÀ CANALE:\n' +
-      'Rispondi in modo strutturato se la risposta è complessa.\n' +
-      'Per risposte brevi, rimani conciso.\n\n';
+      'Strutturato se complesso. Conciso se semplice.\n\n';
 
-  var lengthRule = 'LUNGHEZZA RISPOSTA:\n' +
-    '• Domanda semplice → 1-2 frasi\n' +
-    '• Domanda media → 3-8 frasi o lista breve\n' +
-    '• Domanda complessa → strutturata ma senza ripetizioni\n' +
-    '• MAI ripetere lo stesso concetto con parole diverse.\n\n';
+  var lengthRule = 'LUNGHEZZA:\n' +
+    'Semplice → 1-3 frasi. Media → 3-8 frasi. Complessa → strutturata, no ripetizioni.\n' +
+    'MAI ripetere lo stesso concetto. MAI aggiungere info non richieste.\n\n';
 
   return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
     'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
@@ -557,7 +554,7 @@ async function askGiuno(userId, userMessage, options) {
     try {
       response = await callAnthropicWithRetry({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
+        max_tokens: options.isDM ? 500 : 900,
         system: buildSystemPrompt(getRoleSystemPrompt(userRole), options.isDM),
         messages: messages,
         tools: allTools,
