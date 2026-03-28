@@ -55,7 +55,29 @@ async function run(message, ctx) {
     return '*Scan Drive avviato* — fino a ' + max + ' documenti\nUsa "stato scan" per monitorare.';
   }
 
-  return '*Comandi scan:*\n• "avvia scan storico" / "avvia scan storico 5"\n• "scan drive" / "scan drive 100"\n• "scan completo"\n• "stato scan"';
+  // Sheet scan
+  if (msg.includes('scan sheets') || msg.includes('scan fogli')) {
+    if (ctx.userRole !== 'admin' && ctx.userRole !== 'finance') return 'Solo admin/finance.';
+    var sheetScanner = require('../jobs/sheetScannerJob');
+    sheetScanner.runSheetScanner({ userId: ctx.userId, forceAll: true })
+      .then(function(r) { console.log('[scan] Sheets done:', r); })
+      .catch(function(e) { console.error('[scan-sheets]', e.message); });
+    return '*Scan Sheets avviato* — scansione fogli registrati\nUsa "lista fogli" per vedere il registro.';
+  }
+
+  // List sheets
+  if (msg.includes('lista fogli') || msg.includes('list sheets')) {
+    var sheetScanner = require('../jobs/sheetScannerJob');
+    var list = await sheetScanner.listRegistry();
+    if (list.length === 0) return 'Nessun foglio registrato.';
+    var listMsg = list.map(function(r) {
+      return (r.is_active ? '🟢' : '⚪') + ' ' + r.display_name + ' (' + r.scan_frequency + ')' +
+        (r.last_scanned_at ? ' — ultimo: ' + new Date(r.last_scanned_at).toLocaleDateString('it-IT') : ' — mai scansionato');
+    }).join('\n');
+    return '*Fogli registrati:*\n' + listMsg;
+  }
+
+  return '*Comandi scan:*\n• "avvia scan storico" / "avvia scan storico 5"\n• "scan drive" / "scan drive 100"\n• "scan sheets" / "scan fogli"\n• "lista fogli"\n• "scan completo"\n• "stato scan"';
 }
 
 module.exports = { run: run };
