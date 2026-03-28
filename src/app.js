@@ -15,6 +15,7 @@ var cronHandlers = require('./handlers/cronHandlers');
 // Importing slackHandlers registers all app.event / app.message / app.command
 // handlers onto the Bolt app as a side-effect of require().
 var slackHandlers = require('./handlers/slackHandlers');
+var realTimeListener = require('./listeners/realTimeListener');
 
 async function main() {
   var db = require('../supabase');
@@ -33,6 +34,9 @@ async function main() {
 
   // Wire stats object into oauthHandler dashboard
   oauthHandler.setStats(slackHandlers.stats);
+
+  // Register real-time listener BEFORE app.start()
+  realTimeListener.register(app);
 
   // Start Slack in Socket Mode
   await app.start();

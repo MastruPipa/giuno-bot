@@ -1096,6 +1096,17 @@ function scheduleCrons() {
   logger.info('Historical scan: ogni notte alle 1:00 (5 canali/run)');
   logger.info('PM Signals: lun-ven alle 6:30');
   logger.info('Sheet Scanner: ogni giorno alle 7:00');
+  // Drive Watcher — ogni 30 min durante orario lavorativo
+  cron.schedule('*/30 8-20 * * *', async function() {
+    var locked = await acquireCronLock('drive_watcher', 15);
+    if (!locked) return;
+    try {
+      var { runDriveWatcher } = require('../jobs/driveWatcherJob');
+      await runDriveWatcher();
+    } catch(e) { logger.error('[DRIVE-WATCH] Errore:', e.message); }
+    finally { await releaseCronLock('drive_watcher'); }
+  }, { timezone: 'Europe/Rome' });
+  logger.info('Drive Watcher: ogni 30 min 8-20');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');
