@@ -20,6 +20,7 @@ var leads        = require('./leads');
 var cron         = require('./cron');
 var feedback     = require('./feedback');
 var entities     = require('./entities');
+var unifiedSearch = require('./unifiedSearch');
 
 async function initAll() {
   var results = await Promise.all([
@@ -136,4 +137,14 @@ module.exports = {
 
   // Entities
   resolveEntity: entities.resolveEntity,
+
+  // Unified Search
+  unifiedSearch:        unifiedSearch.unifiedSearch,
+  getChannelContext:    unifiedSearch.getChannelContext,
+  getEntityContext:     unifiedSearch.getEntityContext,
+  upsertChannelProfile: unifiedSearch.upsertChannelProfile,
+  saveDriveContent:     unifiedSearch.saveDriveContent,
+  searchDriveContent:   unifiedSearch.searchDriveContent,
+  upsertEntity:         unifiedSearch.upsertEntity,
+  addGraphEdge:         unifiedSearch.addGraphEdge,
 };
