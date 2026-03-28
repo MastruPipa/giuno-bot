@@ -10,6 +10,8 @@ var logger = require('../utils/logger');
 var CONFIG = {
   SLACK_BATCH_SIZE: 100,
   SLACK_DELAY_MS: 600,
+  MAX_MESSAGES_PER_CHANNEL: 500,  // Cap per evitare scan infiniti
+  MAX_LLM_CALLS_PER_CHANNEL: 20, // Cap chiamate LLM per canale
   MIN_IMPORTANCE: 3,
   SUMMARY_MODEL: 'claude-haiku-4-5-20251001',
   MAX_CONTENT_CHARS: 6000,
@@ -131,7 +133,8 @@ async function scanSlackChannel(scanRow, channelMeta) {
     try { await app.client.conversations.join({ channel: channelId }); } catch(e) {}
 
     var hasMore = true;
-    while (hasMore) {
+    var llmCalls = 0;
+    while (hasMore && totalMessages < CONFIG.MAX_MESSAGES_PER_CHANNEL) {
       var params = { channel: channelId, limit: CONFIG.SLACK_BATCH_SIZE };
       if (cursor) params.cursor = cursor;
 
@@ -152,10 +155,11 @@ async function scanSlackChannel(scanRow, channelMeta) {
       }
 
       var threadKeys = Object.keys(threads);
-      for (var ti = 0; ti < threadKeys.length; ti++) {
+      for (var ti = 0; ti < threadKeys.length && llmCalls < CONFIG.MAX_LLM_CALLS_PER_CHANNEL; ti++) {
         var threadMsgs = threads[threadKeys[ti]];
         var importance = calculateImportance(threadMsgs, channelMeta);
         if (importance >= CONFIG.MIN_IMPORTANCE) {
+          llmCalls++;
           var summary = await generateSummary(threadMsgs, channelMeta);
           if (summary && summary.worth_saving) {
             var kbId = await saveToKB(summary, channelMeta);
@@ -200,6 +204,11 @@ async function runHistoricalScan(options) {
   var { data: channelMap } = await supabase.from('channel_map').select('channel_id, channel_name, cliente, progetto');
   var metaMap = {};
   (channelMap || []).forEach(function(c) { metaMap[c.channel_id] = c; });
+
+  // Reset stuck in_progress channels (>30 min)
+  var stuckCutoff = new Date(Date.now() - 30 * 60000).toISOString();
+  await supabase.from('scan_progress').update({ status: 'pending', updated_at: new Date().toISOString() })
+    .eq('status', 'in_progress').lt('updated_at', stuckCutoff);
 
   var { data: pending } = await supabase.from('scan_progress').select('*')
     .eq('scan_type', 'slack_channel')
