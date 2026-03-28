@@ -1,259 +1,148 @@
-// ─── Quote Support Agent ───────────────────────────────────────────────────────
-// Generates pricing proposals based on rate card, historical quotes, and KB data.
-// Triggered by QUOTE_SUPPORT intent or /giuno preventivo.
-
+// ─── Quote Support Agent V2 ──────────────────────────────────────────────────
+// Fix: status accepted, fuzzy category, unified search, min effort enforcement
 'use strict';
 
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { checkPermission, getAccessDeniedMessage } = require('../../rbac');
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function roundTo50(n) { return Math.ceil(n / 50) * 50; }
+function formatEuro(n) { return n.toLocaleString('it-IT') + ' €'; }
 
-function roundTo50(n) {
-  return Math.ceil(n / 50) * 50;
-}
-
-function formatEuro(n) {
-  return n.toLocaleString('it-IT') + ' €';
-}
-
-// ─── Load pricing data ───────────────────────────────────────────────────────
-
-async function loadRateCard() {
-  var rc = await db.getRateCard();
-  if (!rc) return null;
-  // Also search KB for rate card entries
-  var kbRates = db.searchKB('rate card');
-  return { rateCard: rc, kbRates: kbRates };
-}
+var RELATED_CATEGORIES = {
+  'branding': ['design', 'content'], 'video': ['content', 'social', 'evento'],
+  'social': ['content', 'campagna', 'video'], 'web': ['design', 'branding'],
+  'foto': ['video', 'content', 'evento'], 'design': ['branding', 'web'],
+  'campagna': ['social', 'performance', 'content'], 'evento': ['video', 'foto'],
+  'copy': ['content', 'social'], 'content': ['social', 'copy', 'video'],
+};
 
 async function findSimilarQuotes(serviceCategory) {
   var quotes = [];
   try {
-    quotes = await db.searchQuotes({
-      service_category: serviceCategory,
-      status: 'approved',
-      limit: 10,
-    });
-  } catch(e) {
-    logger.warn('[QUOTE-SUPPORT] Errore searchQuotes:', e.message);
-  }
-  // Sort by date descending, take top 5
+    quotes = await db.searchQuotes({ service_category: serviceCategory, status: 'accepted', limit: 10 });
+    if (quotes.length < 3) {
+      var more = await db.searchQuotes({ service_category: serviceCategory, limit: 10 });
+      var ids = {}; quotes.forEach(function(q) { ids[q.id] = true; });
+      more.forEach(function(q) { if (!ids[q.id]) quotes.push(q); });
+    }
+    if (quotes.length < 2) {
+      var related = RELATED_CATEGORIES[serviceCategory] || ['content', 'branding'];
+      for (var i = 0; i < related.length && quotes.length < 5; i++) {
+        var rel = await db.searchQuotes({ service_category: related[i], limit: 5 });
+        var ids2 = {}; quotes.forEach(function(q) { ids2[q.id] = true; });
+        rel.forEach(function(q) { if (!ids2[q.id]) quotes.push(q); });
+      }
+    }
+  } catch(e) { logger.warn('[QUOTE-V2] searchQuotes error:', e.message); }
   quotes.sort(function(a, b) {
+    if (a.status === 'accepted' && b.status !== 'accepted') return -1;
+    if (b.status === 'accepted' && a.status !== 'accepted') return 1;
     return new Date(b.date || 0) - new Date(a.date || 0);
   });
-  return quotes.slice(0, 5);
+  return quotes.slice(0, 8);
 }
-
-// ─── Estimate effort with LLM ────────────────────────────────────────────────
 
 async function estimateEffort(message, rateCardData, similarQuotes) {
   var Anthropic = require('@anthropic-ai/sdk');
   var client = new Anthropic();
-
   var rateInfo = '';
-  if (rateCardData && rateCardData.rateCard && rateCardData.rateCard.resources) {
-    rateInfo = 'RATE CARD ATTUALE:\n';
-    var resources = rateCardData.rateCard.resources;
-    if (typeof resources === 'string') {
-      try { resources = JSON.parse(resources); } catch(e) { resources = []; }
-    }
-    if (Array.isArray(resources)) {
-      resources.forEach(function(r) {
-        rateInfo += '- ' + (r.role || r.person || 'N/A') + ': ' +
-          (r.hour_rate || r.day_rate || '?') + '€/h\n';
-      });
-    }
-  }
-
-  var quotesInfo = '';
-  if (similarQuotes.length > 0) {
-    quotesInfo = '\nPREVENTIVI SIMILI ACCETTATI:\n';
-    similarQuotes.forEach(function(q) {
-      quotesInfo += '- ' + (q.project_name || q.client_name || 'N/A') +
-        ': ' + (q.total_price || '?') + '€' +
-        ' (' + (q.service_category || '') + ')' +
-        (q.markup_pct ? ' markup: ' + q.markup_pct + '%' : '') + '\n';
+  if (rateCardData && rateCardData.resources) {
+    rateInfo = 'RATE CARD:\n';
+    var resources = typeof rateCardData.resources === 'string' ? JSON.parse(rateCardData.resources) : rateCardData.resources;
+    if (Array.isArray(resources)) resources.forEach(function(r) {
+      rateInfo += '- ' + (r.role || r.person || 'N/A') + ': ' + (r.hour_rate || r.day_rate || '?') + '€/h\n';
     });
   }
-
+  var quotesInfo = '';
+  if (similarQuotes.length > 0) {
+    quotesInfo = '\nPREVENTIVI STORICI:\n';
+    similarQuotes.forEach(function(q) {
+      quotesInfo += '- ' + (q.project_name || q.client_name || 'N/A') + ': ' + (q.price_quoted || q.total_price || '?') + '€ [' + (q.service_category || '') + ', ' + (q.status || '') + ']\n';
+    });
+  }
   var res = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 800,
-    system: 'Sei un esperto di pricing per un\'agenzia creativa (Katania Studio).\n' +
-      'Stima l\'effort per il progetto richiesto.\n' +
-      'Rispondi SOLO in JSON valido:\n' +
-      '{"projectType":"string","scope":"string","client":null,' +
-      '"effort":[{"role":"string","hours":number,"rateInterno":number}],' +
-      '"confidence":"alta|media|bassa",' +
-      '"warnings":["string"]}\n\n' +
-      rateInfo + quotesInfo,
+    model: 'claude-sonnet-4-20250514', max_tokens: 800,
+    system: 'Pricing expert per Katania Studio (agenzia creativa Catania, 9 persone).\n' +
+      'Rispondi SOLO JSON:\n{"projectType":"string","scope":"1-2 frasi","effort":[{"role":"string","hours":number,"rateInterno":number}],"confidence":"alta|media|bassa","warnings":["string"]}\n' +
+      'REGOLE: ore minime 2h/deliverable, includi PM (min 10%), rate default se mancanti: 35€/h junior, 50€/h senior, 65€/h director\n\n' + rateInfo + quotesInfo,
     messages: [{ role: 'user', content: message }],
   });
-
-  var text = res.content[0].text.trim();
-  var jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  return JSON.parse(jsonMatch[0]);
+  var match = res.content[0].text.trim().match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : null;
 }
 
-// ─── Main agent ──────────────────────────────────────────────────────────────
+function extractServiceType(msg) {
+  var m = (msg || '').toLowerCase();
+  var types = {
+    'branding': /brand|logo|identit|marchio|naming/, 'video': /video|film|reel|montaggio|spot/,
+    'social': /social|instagram|tiktok|linkedin|piano\s*editoriale/, 'web': /sito|web|landing|app|e-?commerce/,
+    'foto': /foto|shooting|still\s*life/, 'design': /design|grafica|packaging|ui|ux/,
+    'campagna': /campagna|adv|advertising|lead\s*gen/, 'evento': /evento|fiera|stand/,
+    'copy': /copy|testi|seo|blog/, 'content': /content|contenut|strategi/,
+  };
+  for (var t in types) { if (types[t].test(m)) return t; }
+  return 'altro';
+}
 
 async function run(message, ctx) {
-  // RBAC check
-  if (!checkPermission(ctx.userRole, 'view_quote_price')) {
-    return getAccessDeniedMessage(ctx.userRole);
-  }
-
-  logger.info('[QUOTE-SUPPORT] Richiesta da', ctx.userId, '- ruolo:', ctx.userRole);
-
+  if (!checkPermission(ctx.userRole, 'view_quote_price')) return getAccessDeniedMessage(ctx.userRole);
+  logger.info('[QUOTE-V2] Request from', ctx.userId);
   try {
-    // 1. Load rate card and similar quotes
-    var rateCardData = await loadRateCard();
     var serviceType = extractServiceType(message);
+    var rateCard = await db.getRateCard();
     var similarQuotes = await findSimilarQuotes(serviceType);
+    var estimate = await estimateEffort(message, rateCard, similarQuotes);
+    if (!estimate) return 'Non riesco a stimare. Specifica: tipo progetto, deliverable, timeline.';
 
-    // 2. Estimate effort via LLM
-    var estimate = await estimateEffort(message, rateCardData, similarQuotes);
-    if (!estimate) {
-      return 'Non sono riuscito a stimare l\'effort per questo progetto. Puoi darmi più dettagli su tipo di progetto, deliverable e tempistica?';
-    }
-
-    // 3. Calculate pricing
     var internalCost = 0;
     var effort = estimate.effort || [];
     for (var i = 0; i < effort.length; i++) {
-      var e = effort[i];
-      e.subtotal = (e.hours || 0) * (e.rateInterno || 0);
-      internalCost += e.subtotal;
+      if (!effort[i].rateInterno) effort[i].rateInterno = 45;
+      if (!effort[i].hours || effort[i].hours < 2) effort[i].hours = 4;
+      effort[i].subtotal = effort[i].hours * effort[i].rateInterno;
+      internalCost += effort[i].subtotal;
     }
 
-    // 4. Determine markup
-    var markup = 130; // default 2.3x = 130% markup
-    var warnings = estimate.warnings || [];
-    var acceptedQuotes = similarQuotes.filter(function(q) {
-      return q.status === 'approved' && q.markup_pct;
-    });
+    var markup = 130, warnings = estimate.warnings || [];
+    var accepted = similarQuotes.filter(function(q) { return q.status === 'accepted' && q.markup_pct; });
+    if (accepted.length >= 3) {
+      var sum = 0; accepted.forEach(function(q) { sum += parseFloat(q.markup_pct) || 0; });
+      markup = sum / accepted.length;
+    } else if (accepted.length >= 1) {
+      var avg = 0; accepted.forEach(function(q) { avg += parseFloat(q.markup_pct) || 0; });
+      markup = Math.max(avg / accepted.length, 100);
+    } else { warnings.push('Nessun preventivo accettato trovato — markup default 2.3x'); }
 
-    if (acceptedQuotes.length >= 3) {
-      var totalMarkup = 0;
-      for (var qi = 0; qi < acceptedQuotes.length; qi++) {
-        totalMarkup += parseFloat(acceptedQuotes[qi].markup_pct) || 0;
-      }
-      markup = totalMarkup / acceptedQuotes.length;
-    } else if (acceptedQuotes.length >= 1) {
-      var avgMarkup = 0;
-      for (var qi2 = 0; qi2 < acceptedQuotes.length; qi2++) {
-        avgMarkup += parseFloat(acceptedQuotes[qi2].markup_pct) || 0;
-      }
-      avgMarkup = avgMarkup / acceptedQuotes.length;
-      markup = Math.max(avgMarkup, 100); // min 2.0x
-    } else {
-      warnings.push('Nessun precedente simile trovato — markup default 2.3x applicato');
-    }
-
-    // 5. Calculate scenarios
     var midPrice = roundTo50(internalCost * (1 + markup / 100));
     var lowPrice = roundTo50(midPrice * 0.85);
     var highPrice = roundTo50(midPrice * 1.20);
+    if (midPrice < 200) warnings.push('Prezzo molto basso — verifica effort');
 
-    // 6. Confidence
-    var confidence = 'bassa';
-    var confidenceEmoji = '🔴';
-    if (acceptedQuotes.length >= 3) {
-      confidence = 'alta';
-      confidenceEmoji = '🟢';
-    } else if (acceptedQuotes.length >= 1 || effort.length > 0) {
-      confidence = 'media';
-      confidenceEmoji = '🟡';
-    }
+    var confidence = accepted.length >= 3 ? 'alta' : (accepted.length >= 1 || similarQuotes.length >= 3 ? 'media' : 'bassa');
+    var cEmoji = { 'alta': '🟢', 'media': '🟡', 'bassa': '🔴' }[confidence] || '🔴';
+    var totalHours = 0; effort.forEach(function(e) { totalHours += e.hours; });
 
-    // 7. Build references
-    var references = similarQuotes.slice(0, 3).map(function(q) {
-      return {
-        name: q.project_name || q.client_name || 'N/A',
-        price: q.total_price || 0,
-        status: q.status || 'unknown',
-      };
-    });
-
-    // 8. Format output
-    var totalHours = 0;
-    effort.forEach(function(e) { totalHours += (e.hours || 0); });
-
-    var msg = '*Quote Support — ' + (estimate.projectType || 'Progetto') + '*\n';
-    if (estimate.scope) msg += estimate.scope + '\n';
-    msg += '\n';
-    msg += '*Scenario LOW:* ' + formatEuro(lowPrice) + '\n';
-    msg += '*Scenario MID:* ' + formatEuro(midPrice) + ' ← consigliato\n';
-    msg += '*Scenario HIGH:* ' + formatEuro(highPrice) + '\n';
-    msg += '\n*Basato su:*\n';
-    msg += '• ' + acceptedQuotes.length + ' preventivi simili';
-    if (acceptedQuotes.length > 0) {
-      var years = acceptedQuotes.map(function(q) {
-        return new Date(q.date || Date.now()).getFullYear();
-      });
-      msg += ' (periodo: ' + Math.min.apply(null, years) + '-' + Math.max.apply(null, years) + ')';
-    }
-    msg += '\n';
-    msg += '• Effort stimato: ' + totalHours + 'h totali\n';
-    msg += '• Markup applicato: ' + Math.round(markup) + '%\n';
-
-    if (effort.length > 0) {
-      msg += '\n*Breakdown risorse:*\n';
-      for (var ei = 0; ei < effort.length; ei++) {
-        var r = effort[ei];
-        msg += '• ' + (r.role || 'N/A') + ': ' + (r.hours || 0) + 'h × ' +
-          (r.rateInterno || 0) + '€/h interno = ' + formatEuro(r.subtotal || 0) + '\n';
-      }
-    }
-
-    if (references.length > 0) {
+    var msg = '*💰 Quote — ' + (estimate.projectType || serviceType) + '*\n';
+    if (estimate.scope) msg += '_' + estimate.scope + '_\n';
+    msg += '\n*LOW:* ' + formatEuro(lowPrice) + '\n*MID:* ' + formatEuro(midPrice) + ' ← consigliato\n*HIGH:* ' + formatEuro(highPrice) + '\n\n';
+    msg += '*Breakdown:*\n';
+    effort.forEach(function(r) { msg += '• ' + r.role + ': ' + r.hours + 'h × ' + r.rateInterno + '€ = ' + formatEuro(r.subtotal) + '\n'; });
+    msg += '_Totale: ' + totalHours + 'h | Interno: ' + formatEuro(internalCost) + ' | Markup: ' + Math.round(markup) + '%_\n';
+    if (similarQuotes.length > 0) {
       msg += '\n*Riferimenti:*\n';
-      for (var ri = 0; ri < references.length; ri++) {
-        var ref = references[ri];
-        msg += '• ' + ref.name + ': ' + formatEuro(ref.price) + ' (' + ref.status + ')\n';
-      }
+      similarQuotes.slice(0, 3).forEach(function(q) {
+        msg += '• ' + (q.status === 'accepted' ? '✅' : '📝') + ' ' + (q.project_name || q.client_name || '?') + ': ' + formatEuro(q.price_quoted || q.total_price || 0) + '\n';
+      });
     }
-
-    msg += '\n*Confidence:* ' + confidenceEmoji + ' ' + confidence.charAt(0).toUpperCase() + confidence.slice(1) + '\n';
-
-    if (warnings.length > 0) {
-      for (var wi = 0; wi < warnings.length; wi++) {
-        msg += '\n⚠️ ' + warnings[wi];
-      }
-      msg += '\n';
-    }
-
-    msg += '\n_Richiede approvazione di Gianna o Corrado prima dell\'invio al cliente._';
-
+    msg += '\n*Confidence:* ' + cEmoji + ' ' + confidence + '\n';
+    warnings.forEach(function(w) { msg += '⚠️ ' + w + '\n'; });
+    msg += '\n_Richiede approvazione prima dell\'invio al cliente._';
     return msg;
   } catch(e) {
-    logger.error('[QUOTE-SUPPORT] Errore:', e.message);
-    return 'Errore nella generazione del preventivo: ' + e.message;
+    logger.error('[QUOTE-V2]', e.message);
+    return 'Errore: ' + e.message + '\nSpecifica: tipo progetto, deliverable, timeline.';
   }
-}
-
-// ─── Extract service type from message ───────────────────────────────────────
-
-function extractServiceType(message) {
-  var msgLow = (message || '').toLowerCase();
-  var types = {
-    'branding': /brand|logo|identit|marchio/,
-    'video': /video|film|reel|montaggio|riprese|clip/,
-    'social': /social|instagram|facebook|tiktok|linkedin|content/,
-    'web': /sito|web|landing|portale|app/,
-    'foto': /foto|shooting|servizio fotografico/,
-    'design': /design|grafica|layout|ui|ux/,
-    'campagna': /campagna|adv|advertising|marketing/,
-    'evento': /evento|event|fiera|stand/,
-    'copy': /copy|testi|copywriting|seo/,
-  };
-  for (var type in types) {
-    if (types[type].test(msgLow)) return type;
-  }
-  return 'altro';
 }
 
 module.exports = { run: run };
