@@ -9,6 +9,7 @@ var http = require('http');
 var url  = require('url');
 var google = require('googleapis').google;
 var logger = require('../utils/logger');
+var metricsService = require('../services/metricsService');
 var { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI, salvaTokenUtente } = require('../services/googleAuthService');
 
 var OAUTH_PORT = process.env.OAUTH_PORT || 3000;
@@ -50,6 +51,17 @@ var oauthServer = http.createServer(async function(req, res) {
       '</body></html>';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
+    return;
+  }
+
+
+  if (parsed.pathname === '/metrics') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      startedAt: _stats.startedAt,
+      appStats: _stats,
+      counters: metricsService.snapshot(),
+    }, null, 2));
     return;
   }
 
