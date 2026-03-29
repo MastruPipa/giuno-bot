@@ -6,6 +6,7 @@
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { askGemini } = require('../services/geminiService');
+var { UserInputError } = require('../errors');
 
 // ─── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -49,15 +50,27 @@ var definitions = [
   },
 ];
 
+function normalizeArray(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v;
+  return [];
+}
+
 // ─── Tool execution ────────────────────────────────────────────────────────────
 
 async function execute(toolName, input, userId) {
+  input = input || {};
+
   if (toolName === 'add_to_kb') {
-    var kbContent = input.content;
+    var kbContent = (input.content || '').trim();
+    if (!kbContent) throw new UserInputError('Contenuto KB mancante.');
+
+    var tags = normalizeArray(input.tags).filter(function(t) { return typeof t === 'string' && t.trim(); });
+
     var kbNote = null;
     try {
       var kbReview = await askGemini(
-        'Questa informazione sta per essere salvata nella knowledge base aziendale:\n\n"' + kbContent + '"\n\nTags: ' + JSON.stringify(input.tags || []) +
+        'Questa informazione sta per essere salvata nella knowledge base aziendale:\n\n"' + kbContent + '"\n\nTags: ' + JSON.stringify(tags) +
         '\n\nControlla: è un\'informazione utile e corretta? È troppo vaga o troppo specifica? Suggerisci miglioramenti al testo o ai tag se necessario. Se va bene rispondi solo "OK".',
         'Sei un revisore di knowledge base aziendale. Rispondi in italiano, brevissimo.'
       );
@@ -67,19 +80,26 @@ async function execute(toolName, input, userId) {
       }
     } catch(e) { logger.error('Gemini KB review error:', e.message); }
 
-    db.addKBEntry(kbContent, input.tags || [], userId);
+    await Promise.resolve(db.addKBEntry(kbContent, tags, userId));
     var kbResult = { success: true, message: 'Aggiunto alla knowledge base aziendale.' };
     if (kbNote) kbResult.gemini_review = kbNote;
     return kbResult;
   }
 
   if (toolName === 'search_kb') {
-    var kbResults = db.searchKB(input.query);
+    var query = (input.query || '').trim();
+    if (!query) throw new UserInputError('Query KB mancante.');
+
+    var kbResults = await Promise.resolve(db.searchKB(query));
+    kbResults = Array.isArray(kbResults) ? kbResults : [];
     return { entries: kbResults, count: kbResults.length };
   }
 
   if (toolName === 'delete_from_kb') {
-    var kbDeleted = await db.deleteKBEntry(input.entry_id);
+    var entryId = (input.entry_id || '').trim();
+    if (!entryId) throw new UserInputError('ID entry KB mancante.');
+
+    var kbDeleted = await Promise.resolve(db.deleteKBEntry(entryId));
     return kbDeleted ? { success: true } : { error: 'Entry non trovata.' };
   }
 
