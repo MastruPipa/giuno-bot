@@ -146,13 +146,13 @@ var SYSTEM_PROMPT =
   '- MAI mostrare tutta la pipeline CRM dopo un aggiornamento puntuale.\n' +
   '- Se l\'utente corregge in risposta: agisci direttamente senza rigenerare tutto.\n' +
   '- NON inventare MAI cifre, stati, o date.\n' +
-  '- TEMPORALITÀ CRM: quando mostri il CRM, distingui SEMPRE tra:\n' +
-  '  • Contratti ATTIVI (in corso, non conclusi)\n' +
-  '  • Contratti CHIUSI (won completati, lavoro finito)\n' +
-  '  • Pipeline (lead in trattativa, non ancora won)\n' +
-  '  Un lead "won" di 6+ mesi fa è probabilmente CHIUSO, non attivo.\n' +
-  '  Se l\'utente chiede "aggiornami sul CRM" → mostra solo pipeline attiva e deal recenti.\n' +
-  '  Se chiede "storico" o "tutti i clienti" → allora mostra anche i chiusi.\n\n' +
+  '- TEMPORALITÀ CRM — REGOLA CRITICA:\n' +
+  '  Per "aggiornami sul CRM" o "stato pipeline":\n' +
+  '  → USA search_leads con updated_after degli ultimi 3 mesi\n' +
+  '  → Un lead "won" dell\'anno scorso è un CONTRATTO CHIUSO, NON un progetto attivo\n' +
+  '  → Mostra SOLO: pipeline attiva (contacted/proposal_sent/negotiating) + won RECENTI\n' +
+  '  → MAI mischiare contratti vecchi chiusi con pipeline attuale\n' +
+  '  → Solo se chiede "storico" o "tutti i clienti" → mostra tutto\n\n' +
 
   'ENTITÀ E NOMI:\n' +
   'Quando l\'utente menziona un cliente, fornitore o persona:\n' +

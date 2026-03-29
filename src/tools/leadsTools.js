@@ -324,15 +324,19 @@ var definitions = [
   },
   {
     name: 'search_leads',
-    description: 'Cerca lead nel CRM per nome, status o responsabile. Usa SEMPRE prima di update_lead. Dati freschi da Supabase.',
+    description: 'Cerca lead nel CRM per nome, status, data o responsabile. Dati freschi da Supabase. ' +
+      'IMPORTANTE: per "aggiornami sul CRM" usa updated_after per filtrare solo deal recenti (ultimi 3-6 mesi). ' +
+      'NON mostrare contratti won dell\'anno scorso come attivi.',
     input_schema: {
       type: 'object',
       properties: {
         company_name: { type: 'string', description: 'Nome azienda (ricerca parziale)' },
         contact_name: { type: 'string', description: 'Nome contatto (ricerca parziale)' },
-        status: { type: 'string', description: 'Filtra per status' },
+        status: { type: 'string', description: 'Filtra per status: new|contacted|proposal_sent|negotiating|won|lost|dormant' },
         owner_slack_id: { type: 'string' },
-        limit: { type: 'number', description: 'Max risultati (default 10)' },
+        updated_after: { type: 'string', description: 'Solo lead aggiornati dopo questa data ISO (es. "2026-01-01"). Usa per filtrare deal recenti.' },
+        created_after: { type: 'string', description: 'Solo lead creati dopo questa data ISO.' },
+        limit: { type: 'number', description: 'Max risultati (default 20)' },
       },
     },
   },
