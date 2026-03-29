@@ -17,6 +17,7 @@ var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
 var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
 var { processSlackMessage: watchMemory } = require('../services/slackMemoryWatcher');
 var { createRequestContext, withRequestContext } = require('../utils/requestContext');
+var metricsService = require('../services/metricsService');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ app.event('app_mention', async function(args) {
   if (!dedup(event.ts)) return;
   var threadTs = event.thread_ts || event.ts;
   stats.messagesHandled++;
+  metricsService.increment('request_total');
+  metricsService.increment('request_app_mention_total');
 
   return withRequestContext(createRequestContext({
     userId: event.user,
@@ -150,6 +153,8 @@ app.event('app_mention', async function(args) {
     detectAndSaveDeadlines(event.user, text, event.channel).catch(function(e) {});
     autoSummarizeDriveLinks(event.user, event.text, event.channel, threadTs).catch(function(e) {});
   } catch(err) {
+    metricsService.increment('request_failed_total');
+    metricsService.increment('request_app_mention_failed_total');
     await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
   });
@@ -160,6 +165,9 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   var message = args.message;
   if (message.bot_id) return;
+
+  metricsService.increment('request_total');
+  metricsService.increment('request_app_message_total');
 
   return withRequestContext(createRequestContext({
     userId: message.user,
@@ -204,7 +212,7 @@ app.message(async function(args) {
       }
       // Background: detect deadlines
       detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
-    } catch(err) { logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
+    } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
     return;
   }
 
@@ -279,7 +287,7 @@ app.message(async function(args) {
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
-  } catch(err) { await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
+  } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
   });
 });
 
@@ -289,6 +297,9 @@ app.command('/giuno', async function(args) {
   var command = args.command, ack = args.ack, respond = args.respond;
   await ack();
   var text = command.text.trim();
+
+  metricsService.increment('request_total');
+  metricsService.increment('request_slash_giuno_total');
 
   return withRequestContext(createRequestContext({
     userId: command.user_id,
@@ -448,7 +459,7 @@ app.command('/giuno', async function(args) {
   try {
     var reply = await route(command.user_id, text);
     await respond({ text: formatPerSlack(reply), response_type: 'in_channel' });
-  } catch(err) { await respond('Errore: ' + err.message); }
+  } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_slash_giuno_failed_total'); await respond('Errore: ' + err.message); }
   });
 });
 
