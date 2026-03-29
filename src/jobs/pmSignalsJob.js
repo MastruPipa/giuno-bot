@@ -68,7 +68,9 @@ async function saveSignals(supabase, signals) {
         urgency_score: s.severity === 'high' ? 5 : (s.severity === 'medium' ? 3 : 1),
         confidence: 0.75, status: 'open', detected_at: new Date().toISOString(),
       });
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[PM-SIGNALS] operazione fallita:', e.message);
+    }
   }
 }
 

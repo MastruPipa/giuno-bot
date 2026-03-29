@@ -130,7 +130,9 @@ async function scanSlackChannel(scanRow, channelMeta) {
   var totalKB = scanRow.kb_entries_created || 0;
 
   try {
-    try { await app.client.conversations.join({ channel: channelId }); } catch(e) {}
+    try { await app.client.conversations.join({ channel: channelId }); } catch(e) {
+      logger.debug('[SCANNER] join canale ignorato:', e.message);
+    }
 
     var hasMore = true;
     var llmCalls = 0;
