@@ -2,6 +2,7 @@
 // "avvia scan storico", "scan drive", "scan completo", "stato scan"
 'use strict';
 
+var logger = require('../utils/logger');
 var scanner = require('../jobs/historicalScanner');
 
 async function run(message, ctx) {
@@ -36,7 +37,7 @@ async function run(message, ctx) {
     var withDrive = msg.includes('completo') || msg.includes('drive');
 
     scanner.runHistoricalScan({ batchSize: batch, userId: ctx.userId, includeDrive: withDrive })
-      .catch(function(e) { console.error('[scan]', e.message); });
+      .catch(function(e) { logger.error('[scan]', e.message); });
 
     return '*Scan avviato*\nSlack: ' + batch + ' canali/batch' +
       (withDrive ? '\nDrive: incluso' : '') + '\nUsa "stato scan" per monitorare.';
@@ -50,7 +51,7 @@ async function run(message, ctx) {
     if (dm) max = Math.min(200, parseInt(dm[1]));
 
     scanner.runHistoricalScan({ batchSize: 0, userId: ctx.userId, includeDrive: true, driveMaxFiles: max })
-      .catch(function(e) { console.error('[scan-drive]', e.message); });
+      .catch(function(e) { logger.error('[scan-drive]', e.message); });
 
     return '*Scan Drive avviato* — fino a ' + max + ' documenti\nUsa "stato scan" per monitorare.';
   }
@@ -60,8 +61,8 @@ async function run(message, ctx) {
     if (ctx.userRole !== 'admin' && ctx.userRole !== 'finance') return 'Solo admin/finance.';
     var sheetScanner = require('../jobs/sheetScannerJob');
     sheetScanner.runSheetScanner({ userId: ctx.userId, forceAll: true })
-      .then(function(r) { console.log('[scan] Sheets done:', r); })
-      .catch(function(e) { console.error('[scan-sheets]', e.message); });
+      .then(function(r) { logger.info('[scan] Sheets done:', r); })
+      .catch(function(e) { logger.error('[scan-sheets]', e.message); });
     return '*Scan Sheets avviato* — scansione fogli registrati\nUsa "lista fogli" per vedere il registro.';
   }
 
