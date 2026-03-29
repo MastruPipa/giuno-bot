@@ -248,7 +248,7 @@ app.message(async function(args) {
           text: '*Import completato!*\n• Importati: ' + impResult.imported + '\n• Saltati (duplicati): ' + impResult.skipped + '\n• Errori: ' + impResult.errors,
         });
       } catch(e) {
-        await app.client.chat.postMessage({ channel: message.channel, text: 'Errore import: ' + e.message });
+        await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(e) });
       }
       return;
     } else if (impTesto === 'no' || impTesto === 'annulla') {
@@ -323,7 +323,7 @@ app.command('/giuno', async function(args) {
         text: 'Ciao ' + myName + '!\n• Slack ID: `' + command.user_id + '`\n• Livello di accesso: *' + myRole.toUpperCase() + '*\n• ' + roleDesc,
         response_type: 'ephemeral',
       });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -333,7 +333,7 @@ app.command('/giuno', async function(args) {
       var canaliBriefing = await getSlackBriefingData();
       var parti = await buildBriefingUtente(command.user_id, canaliBriefing);
       await respond({ text: formatPerSlack(parti.join('\n\n')) || 'Niente di nuovo, mbare.', response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore recap: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -360,7 +360,7 @@ app.command('/giuno', async function(args) {
         pMsg += '\n_Nessun followup in scadenza oggi/domani._';
       }
       await respond({ text: pMsg, response_type: 'ephemeral' });
-    } catch(e) { await respond({ text: 'Errore: ' + e.message, response_type: 'ephemeral' }); }
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -410,7 +410,7 @@ app.command('/giuno', async function(args) {
       }
       var reply = await route(command.user_id, 'Fammi un preventivo per: ' + prevText);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -454,7 +454,7 @@ app.command('/giuno', async function(args) {
       var prompt = 'Mostrami gli slot liberi nel mio calendario' + (datePart ? ' per il giorno ' + datePart : ' oggi');
       var reply = await route(command.user_id, prompt);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -463,7 +463,7 @@ app.command('/giuno', async function(args) {
       var query = text.replace(/^email\s*/, '').trim() || 'is:unread is:important';
       var reply = await route(command.user_id, 'Mostrami le email: ' + query);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -477,7 +477,7 @@ app.command('/giuno', async function(args) {
       await respond({ text: 'Avvio scansione preventivi su Drive... dammi un momento.', response_type: 'ephemeral' });
       var { catalogaPreventivi } = require('./cronHandlers');
       await catalogaPreventivi(command.user_id, command.channel_id);
-    } catch(err) { await respond({ text: 'Errore cataloga: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -625,7 +625,7 @@ async function handleAdmin(command, respond) {
       // Auto-expire after 2 minutes
       setTimeout(function() { catalogaConfirm.delete(importKey); }, 120000);
     } catch(e) {
-      await respond({ text: 'Errore lettura CRM: ' + e.message, response_type: 'ephemeral' });
+      await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' });
     }
     return;
   }
