@@ -395,7 +395,9 @@ async function execute(toolName, input, userId, userRole) {
     try {
       var dup = await db.searchLeads({ company_name: input.company_name, limit: 1 });
       if (dup.length > 0) return { already_exists: true, message: 'Lead già presente.', lead: dup[0], suggestion: 'Usa update_lead per modificarlo.' };
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[LEADS-TOOLS] operazione fallita:', e.message);
+    }
     var newLead = {
       company_name: input.company_name,
       contact_name: input.contact_name || null,

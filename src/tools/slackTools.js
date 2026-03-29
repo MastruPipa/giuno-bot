@@ -389,7 +389,9 @@ async function execute(toolName, input, userId) {
           var nameL = input.target_user_name.toLowerCase();
           var match = allUsers.find(function(u) { return u.name.toLowerCase().includes(nameL); });
           if (match) input.target_user_id = match.id;
-        } catch(e) {}
+        } catch(e) {
+          logger.warn('[SLACK-TOOLS] operazione fallita:', e.message);
+        }
       }
       if (!input.target_user_id) return { error: 'Destinatario non trovato. Specifica il nome esatto o lo Slack ID.' };
     }
@@ -472,7 +474,9 @@ async function execute(toolName, input, userId) {
       if (!target) return { error: 'Canale #' + input.channel_name + ' non trovato.' };
 
       // Auto-join channel
-      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {
+        logger.debug('[SLACK-TOOLS] join canale ignorato:', e.message);
+      }
 
       // Paginated history
       var allMsgs = await getChannelHistory(app, target.id, oldest, 300);
@@ -551,11 +555,15 @@ async function execute(toolName, input, userId) {
           var chanList = await getAllChannels(app);
           var found = chanList.find(function(c) { return c.name === chanName; });
           if (found) channelId = found.id;
-        } catch(e) {}
+        } catch(e) {
+          logger.warn('[SLACK-TOOLS] operazione fallita:', e.message);
+        }
       }
       var posted = await app.client.chat.postMessage({ channel: channelId, text: text });
       for (var pi = 0; pi < options.length; pi++) {
-        try { await app.client.reactions.add({ channel: channelId, timestamp: posted.ts, name: EMOJI_NAMES[pi] }); } catch(e) {}
+        try { await app.client.reactions.add({ channel: channelId, timestamp: posted.ts, name: EMOJI_NAMES[pi] }); } catch(e) {
+          logger.warn('[SLACK-TOOLS] operazione fallita:', e.message);
+        }
       }
       return { success: true, ts: posted.ts };
     } catch(e) { return { error: e.message }; }
@@ -774,7 +782,9 @@ async function execute(toolName, input, userId) {
       }
       if (!targetChId) return { error: 'Specifica channel_id o channel_name.' };
 
-      try { await app.client.conversations.join({ channel: targetChId }); } catch(e) {}
+      try { await app.client.conversations.join({ channel: targetChId }); } catch(e) {
+        logger.debug('[SLACK-TOOLS] join canale ignorato:', e.message);
+      }
 
       var readParams = { channel: targetChId, limit: Math.min(input.limit || 50, 200) };
       if (input.oldest) readParams.oldest = String(input.oldest);

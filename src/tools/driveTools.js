@@ -419,7 +419,9 @@ async function execute(toolName, input, userId) {
       try {
         var fi = await withTimeout(drv.files.get({ fileId: folderId, fields: 'id, name, mimeType, driveId', supportsAllDrives: true }), 8000, 'browse_folder_info');
         folderInfo = fi.data;
-      } catch(e) {}
+      } catch(e) {
+        logger.warn('[DRIVE-TOOLS] operazione fallita:', e.message);
+      }
       var bMax = input.max || 30;
       var bq = "'" + folderId + "' in parents and trashed = false";
       if (input.mime_type) {
