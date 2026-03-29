@@ -33,17 +33,3 @@ git add src/services/slackService.js
 git commit -m "fix: resolve slackService merge conflict"
 git push
 ```
-
-
-## 5) Caso come lo screenshot (stessa logica, formato diverso)
-Se il blocco `Current` e `Incoming` fanno la **stessa cosa** (es. stesso `catch(err)` con stessi `metricsService.increment(...)`) ma cambia solo formattazione, scegli:
-
-- **Accept current change** se vuoi mantenere lo stile del branch hardening.
-- Poi rimuovi eventuali marker residui e verifica con:
-
-```bash
-npm run check:conflicts
-npm test
-```
-
-In quel caso specifico dello screenshot, va bene `Accept current change`.
