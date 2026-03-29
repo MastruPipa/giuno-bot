@@ -58,7 +58,9 @@ async function getSlackBriefingData() {
       var hist = await app.client.conversations.history({ channel: ch.id, oldest: ieri, limit: 30 });
       var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message'; });
       if (msgs.length > 0) risultati.push({ id: ch.id, name: ch.name, messages: msgs, count: msgs.length });
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[CRON] operazione fallita:', e.message);
+    }
   }
   return risultati;
 }
@@ -154,7 +156,9 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
         if (!haiRisposto) {
           senzaRisposta.push({ channel: canale.name, channelId: canale.id, ts: threadTs, testo: msg.text.replace(/<[^>]+>/g, '').trim().substring(0, 80) });
         }
-      } catch(e) {}
+      } catch(e) {
+        logger.warn('[CRON] operazione fallita:', e.message);
+      }
     }
   }
   if (senzaRisposta.length > 0) {
@@ -174,7 +178,9 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
       taskMemories.slice(0, 4).forEach(function(m) { s += '• ' + m.content + '\n'; });
       parti.push(s.trim());
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[CRON] operazione fallita:', e.message);
+  }
 
   // 5. News
   if (newsMarketing) {
@@ -268,7 +274,9 @@ async function pubblicaRecapStandup() {
       var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
       var target = (channelsRes.channels || []).find(function(c) { return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL; });
       if (!target) { logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.'); return; }
-      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {}
+      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {
+        logger.debug('[CRON] join canale ignorato:', e.message);
+      }
       await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
       logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
     } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
@@ -287,7 +295,9 @@ async function getSlackWeekData() {
       var hist = await app.client.conversations.history({ channel: ch.id, oldest: unaSettimanaFa, limit: 200 });
       var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message'; });
       if (msgs.length > 0) risultati.push({ id: ch.id, name: ch.name, count: msgs.length });
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[CRON] operazione fallita:', e.message);
+    }
   }
   return risultati;
 }
@@ -593,7 +603,9 @@ async function inviaOnboardingPersonalizzato(slackUserId) {
       var uInfo = await app.client.users.info({ user: slackUserId });
       nome = (uInfo.user.real_name || uInfo.user.name || '').split(' ')[0];
       if (nome) userCtx += 'Nome: ' + nome + '\n';
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[CRON] operazione fallita:', e.message);
+    }
 
     var mansioneLookup = MANSIONI_TEAM[nome.toLowerCase()] || null;
     if (mansioneLookup) {
@@ -713,7 +725,9 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
     try {
       var folderRes = await drv.files.list({ q: "name contains '" + folderKeywords[fi] + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false", fields: 'files(id, name)', pageSize: 10 });
       (folderRes.data.files || []).forEach(function(f) { targetFolderIds.push(f.id); });
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[CRON] operazione fallita:', e.message);
+    }
   }
 
   var searchTerms = ['economics', 'preventivo', 'proposta', 'quotation', 'offerta', 'katania studio'];
@@ -727,7 +741,9 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
         try {
           var fRes = await drv.files.list({ q: "'" + targetFolderIds[fIdx] + "' in parents and mimeType = '" + searchMimes[mi] + "' and trashed = false", fields: 'files(id, name, modifiedTime, mimeType)', pageSize: 50 });
           (fRes.data.files || []).forEach(function(f) { if (!foundFiles.has(f.id)) foundFiles.set(f.id, f); });
-        } catch(e) {}
+        } catch(e) {
+          logger.warn('[CRON] operazione fallita:', e.message);
+        }
       }
     }
   }
@@ -737,7 +753,9 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
       try {
         var sRes = await drv.files.list({ q: "fullText contains '" + searchTerms[si] + "' and mimeType = '" + searchMimes[mi] + "' and trashed = false", fields: 'files(id, name, modifiedTime, mimeType)', pageSize: 20, orderBy: 'modifiedTime desc' });
         (sRes.data.files || []).forEach(function(f) { if (!foundFiles.has(f.id)) foundFiles.set(f.id, f); });
-      } catch(e) {}
+      } catch(e) {
+        logger.warn('[CRON] operazione fallita:', e.message);
+      }
     }
   }
 
@@ -834,7 +852,9 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
             needs_review = true;
             data.notes = (data.notes || '') + ' [Gemini: ' + crossCheck.response.substring(0, 100) + ']';
           }
-        } catch(e) {}
+        } catch(e) {
+          logger.warn('[CRON] operazione fallita:', e.message);
+        }
       }
 
       await db.saveQuote({
@@ -954,9 +974,13 @@ async function monitoraDomandeInSospeso() {
               });
               logger.info('[MONITOR] Risposta postata in #' + ch.name);
             }
-          } catch(e) {}
+          } catch(e) {
+            logger.warn('[CRON] operazione fallita:', e.message);
+          }
         }
-      } catch(e) {}
+      } catch(e) {
+        logger.warn('[CRON] operazione fallita:', e.message);
+      }
     }
   } catch(e) {
     logger.error('[MONITOR] Errore:', e.message);
