@@ -16,6 +16,7 @@ var { catalogaConfirm } = require('../tools/registry');
 var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
 var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
 var { processSlackMessage: watchMemory } = require('../services/slackMemoryWatcher');
+var { createRequestContext, withRequestContext } = require('../utils/requestContext');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -52,6 +53,12 @@ app.event('app_mention', async function(args) {
   var threadTs = event.thread_ts || event.ts;
   stats.messagesHandled++;
 
+  return withRequestContext(createRequestContext({
+    userId: event.user,
+    channelId: event.channel,
+    threadTs: threadTs,
+    source: 'app_mention',
+  }), async function() {
   try {
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
@@ -145,6 +152,7 @@ app.event('app_mention', async function(args) {
   } catch(err) {
     await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
   }
+  });
 });
 
 // ─── app.message ──────────────────────────────────────────────────────────────
@@ -152,6 +160,13 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   var message = args.message;
   if (message.bot_id) return;
+
+  return withRequestContext(createRequestContext({
+    userId: message.user,
+    channelId: message.channel,
+    threadTs: message.thread_ts || message.ts,
+    source: 'app_message',
+  }), async function() {
 
   // Passive memory watcher (fire-and-forget)
   if (message.text && message.channel_type !== 'im') {
@@ -265,6 +280,7 @@ app.message(async function(args) {
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
   } catch(err) { await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
+  });
 });
 
 // ─── /giuno command ────────────────────────────────────────────────────────────
@@ -273,6 +289,12 @@ app.command('/giuno', async function(args) {
   var command = args.command, ack = args.ack, respond = args.respond;
   await ack();
   var text = command.text.trim();
+
+  return withRequestContext(createRequestContext({
+    userId: command.user_id,
+    channelId: command.channel_id,
+    source: 'slash_giuno',
+  }), async function() {
 
   if (text.startsWith('admin')) {
     await handleAdmin(command, respond);
@@ -427,6 +449,7 @@ app.command('/giuno', async function(args) {
     var reply = await route(command.user_id, text);
     await respond({ text: formatPerSlack(reply), response_type: 'in_channel' });
   } catch(err) { await respond('Errore: ' + err.message); }
+  });
 });
 
 // ─── team_join ────────────────────────────────────────────────────────────────

@@ -1,23 +1,28 @@
 // ─── App Bootstrap ─────────────────────────────────────────────────────────────
 // Initialises all services, registers handlers, starts listeners.
-// v2.1 — OAuth fixes: token persistence + verb conjugation matching
+// v2.2 — Runtime env validation + lazy service loading for safer startup
 
 'use strict';
 
-require('dotenv').config();
-
-var logger       = require('./utils/logger');
-var slackService = require('./services/slackService');
-var googleAuth   = require('./services/googleAuthService');
+var logger = require('./utils/logger');
+var runtimeConfig = require('./config/runtime');
+var googleAuth = require('./services/googleAuthService');
 var oauthHandler = require('./handlers/oauthHandler');
 var cronHandlers = require('./handlers/cronHandlers');
-
-// Importing slackHandlers registers all app.event / app.message / app.command
-// handlers onto the Bolt app as a side-effect of require().
-var slackHandlers = require('./handlers/slackHandlers');
 var realTimeListener = require('./listeners/realTimeListener');
 
 async function main() {
+  runtimeConfig.validateEnv([
+    'SLACK_BOT_TOKEN',
+    'SLACK_SIGNING_SECRET',
+    'SLACK_APP_TOKEN',
+  ], 'APP_BOOT');
+
+  // Importing slackHandlers registers all app.event / app.message / app.command
+  // handlers onto the Bolt app as a side-effect of require().
+  var slackService = require('./services/slackService');
+  var slackHandlers = require('./handlers/slackHandlers');
+
   var db = require('../supabase');
   var app = slackService.app;
 
@@ -25,7 +30,7 @@ async function main() {
   try {
     await db.initAll();
     logger.info('Token cache caricata');
-  } catch(e) {
+  } catch (e) {
     logger.error('Errore caricamento cache (app parte comunque):', e.message);
   }
 
