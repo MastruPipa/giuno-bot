@@ -3,10 +3,15 @@
 
 'use strict';
 
-require('dotenv').config();
-
 var BoltApp = require('@slack/bolt').App;
 var logger = require('../utils/logger');
+var runtimeConfig = require('../config/runtime');
+
+runtimeConfig.validateEnv([
+  'SLACK_BOT_TOKEN',
+  'SLACK_SIGNING_SECRET',
+  'SLACK_APP_TOKEN',
+], 'SLACK_SERVICE');
 
 // ─── App singleton ─────────────────────────────────────────────────────────────
 
@@ -46,10 +51,10 @@ async function resolveSlackMentions(text) {
     try {
       var res = await app.client.users.info({ user: slackId });
       var u = res.user;
-      var name  = u.real_name || u.name;
+      var name = u.real_name || u.name;
       var email = (u.profile && u.profile.email) || '';
       resolved = resolved.split('<@' + slackId + '>').join('@' + name + (email ? ' (' + email + ')' : ''));
-    } catch(e) {
+    } catch (e) {
       logger.debug('[SLACK-SVC] operazione Slack ignorata:', e.message);
     }
   }
@@ -58,7 +63,7 @@ async function resolveSlackMentions(text) {
 
 async function leggiCanaleSlack(channelId, limit) {
   limit = limit || 10;
-  try { await app.client.conversations.join({ channel: channelId }); } catch(e) {
+  try { await app.client.conversations.join({ channel: channelId }); } catch (e) {
     logger.debug('[SLACK-SVC] join canale ignorato:', e.message);
   }
   var res = await app.client.conversations.history({ channel: channelId, limit: limit });
