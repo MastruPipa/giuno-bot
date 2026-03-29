@@ -3,6 +3,8 @@
 // a focused system prompt, and a data loader that fetches targeted context.
 'use strict';
 
+var logger = require('../utils/logger');
+
 var SKILLS = [
   {
     id: 'content_creation',
@@ -62,7 +64,9 @@ var SKILLS = [
         try {
           var { data: entity } = await db.getClient().rpc('resolve_entity', { p_name: entityName });
           if (entity && entity.length > 0) context.entity = entity[0];
-        } catch(e) {}
+        } catch(e) {
+          logger.warn('[SKILL-DEFS] esecuzione skill fallita:', e.message);
+        }
         var memories = await db.searchMemories(ctx.userId, entityName);
         if (memories && memories.length > 0) context.memories = memories.slice(0, 5);
       }

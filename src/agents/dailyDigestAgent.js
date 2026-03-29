@@ -61,7 +61,9 @@ async function buildPersonalizedContext(ctx) {
       if (profile.digest_scope) digestScope = profile.digest_scope;
       if (profile.is_admin) isAdmin = true;
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+  }
 
   if (userName) parts.push('UTENTE: ' + userName + ' | Scope: ' + digestScope);
   if (ctx.profile && ctx.profile.ruolo) {
@@ -101,7 +103,9 @@ async function buildPersonalizedContext(ctx) {
         parts.push('SCADENZE:\n' + deadlines.map(function(m) { return '• [' + m.memory_type + '] ' + m.content; }).join('\n'));
       }
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+  }
 
   // Active projects from channel_profiles
   try {
@@ -138,7 +142,9 @@ async function buildPersonalizedContext(ctx) {
         }).join('\n'));
       }
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+  }
 
   // Admin-only: CRM pipeline summary
   if (isAdmin) {
@@ -154,7 +160,9 @@ async function buildPersonalizedContext(ctx) {
         for (var s in labels) { if (byStatus[s]) pipeParts.push(labels[s] + ': ' + byStatus[s]); }
         if (pipeParts.length > 0) parts.push(pipeStr + pipeParts.join(' | '));
       }
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+    }
 
     // Admin: PM signals
     try {
@@ -167,7 +175,9 @@ async function buildPersonalizedContext(ctx) {
           return '• ' + (s.urgency_score >= 5 ? '🔴' : '🟡') + ' ' + s.message_excerpt;
         }).join('\n'));
       }
-    } catch(e) {}
+    } catch(e) {
+      logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+    }
   }
 
   // Recent KB entries (24h)
@@ -180,7 +190,9 @@ async function buildPersonalizedContext(ctx) {
     if (recentKB && recentKB.length > 0) {
       parts.push('NUOVE INFO:\n' + recentKB.map(function(k) { return '• ' + (k.content || '').substring(0, 120); }).join('\n'));
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+  }
 
   return { parts: parts, isAdmin: isAdmin, userName: userName };
 }

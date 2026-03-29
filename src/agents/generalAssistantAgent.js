@@ -4,6 +4,7 @@
 
 'use strict';
 
+var logger = require('../utils/logger');
 var { askGiuno } = require('../services/anthropicService');
 var db = require('../../supabase');
 
@@ -55,7 +56,9 @@ async function run(message, ctx) {
             'Esegui l\'azione usando il tool appropriato. NON inventare azioni non proposte.';
           return await askGiuno(ctx.userId, enriched, options);
         }
-      } catch(e) {}
+      } catch(e) {
+        logger.warn('[GENERAL-AGENT] context recovery fallito:', e.message);
+      }
     }
 
     if (lastAssistant) {
