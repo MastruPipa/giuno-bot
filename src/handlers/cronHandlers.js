@@ -1107,6 +1107,36 @@ function scheduleCrons() {
     finally { await releaseCronLock('drive_watcher'); }
   }, { timezone: 'Europe/Rome' });
   logger.info('Drive Watcher: ogni 30 min 8-20');
+  // Memory maintenance — domenica notte
+  cron.schedule('0 2 * * 0', async function() {
+    var locked = await acquireCronLock('memory_consolidation', 60);
+    if (!locked) return;
+    try { var { runConsolidation } = require('../jobs/memoryConsolidationJob'); await runConsolidation(); }
+    catch(e) { logger.error('[MEM-CONSOLIDATE]', e.message); }
+    finally { await releaseCronLock('memory_consolidation'); }
+  }, { timezone: 'Europe/Rome' });
+  cron.schedule('0 3 * * 0', async function() {
+    var locked = await acquireCronLock('graph_enricher', 60);
+    if (!locked) return;
+    try { var { runGraphEnricher } = require('../jobs/graphEnricherJob'); await runGraphEnricher(); }
+    catch(e) { logger.error('[GRAPH-ENRICH]', e.message); }
+    finally { await releaseCronLock('graph_enricher'); }
+  }, { timezone: 'Europe/Rome' });
+  cron.schedule('0 4 * * 0', async function() {
+    var locked = await acquireCronLock('entity_backfill', 60);
+    if (!locked) return;
+    try { var { runEntityBackfill } = require('../jobs/entityBackfillJob'); await runEntityBackfill(); }
+    catch(e) { logger.error('[ENTITY-BACKFILL]', e.message); }
+    finally { await releaseCronLock('entity_backfill'); }
+  }, { timezone: 'Europe/Rome' });
+  cron.schedule('0 5 1-7 * 1', async function() {
+    var locked = await acquireCronLock('kb_quality_sweep', 60);
+    if (!locked) return;
+    try { var { runQualitySweep } = require('../jobs/kbQualitySweepJob'); await runQualitySweep(); }
+    catch(e) { logger.error('[KB-SWEEP]', e.message); }
+    finally { await releaseCronLock('kb_quality_sweep'); }
+  }, { timezone: 'Europe/Rome' });
+  logger.info('Memory maintenance: dom 2:00-4:00, KB sweep 1° lun mese');
   logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
   logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');
   logger.info('Drive auto-index: ogni 2 ore');

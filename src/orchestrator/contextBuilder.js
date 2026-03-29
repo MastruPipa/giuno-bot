@@ -7,6 +7,7 @@ var db = require('../../supabase');
 var rbac = require('../../rbac');
 var logger = require('../utils/logger');
 var { generaLinkOAuth } = require('../services/googleAuthService');
+var embeddingService = require('../services/embeddingService');
 
 var getUserRole = rbac.getUserRole;
 
@@ -119,6 +120,18 @@ async function buildContext(params) {
         kbResults = rawKB.filter(function(k) {
           return (k.confidence_score || 0.5) >= 0.3;
         }).slice(0, 3);
+      } catch(e) {}
+    }
+
+    // Semantic search layer (if embeddings available)
+    if (embeddingService.getProvider() && message.length > 10) {
+      try {
+        var semResults = await embeddingService.semanticSearch(message, { limit: 3 });
+        if (semResults && semResults.length > 0) {
+          semResults.forEach(function(sr) {
+            kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
+          });
+        }
       } catch(e) {}
     }
   }
