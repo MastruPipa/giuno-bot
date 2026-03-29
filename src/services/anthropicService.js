@@ -141,14 +141,15 @@ var SYSTEM_PROMPT =
   'CRM — REGOLE CRITICHE:\n' +
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +
   '- Per aggiornare un lead: usa update_lead. Per crearne uno: create_lead.\n' +
-  '- NON usare MAI search_kb o recall_memory per dati CRM (importi, status, pipeline).\n' +
-  '- IMPARA DAL FEEDBACK: se l\'utente dice "questo è chiuso", "non è più attivo", ' +
-  '"questo contratto è finito" → USA SUBITO update_lead con is_active: false.\n' +
-  '- Se dice "abbiamo sentito X ieri" → aggiorna last_contact.\n' +
-  '- Se corregge un dato (status, valore, servizi) → aggiorna SUBITO senza chiedere conferma.\n' +
-  '- Quando aggiorni: conferma in 2-3 righe SOLO il lead modificato.\n' +
-  '- MAI mostrare tutta la pipeline CRM dopo un aggiornamento puntuale.\n' +
-  '- Se l\'utente corregge in risposta: agisci direttamente senza rigenerare tutto.\n' +
+  '- NON usare MAI search_kb o recall_memory per dati CRM. NON "memorizzare" in memoria.\n' +
+  '- REGOLA FONDAMENTALE: quando l\'utente ti dà info su clienti (nomi, valori, status, servizi),\n' +
+  '  DEVI usare create_lead o update_lead per OGNI cliente menzionato.\n' +
+  '  NON basta "memorizzare" — i dati CRM vanno SEMPRE nel database leads.\n' +
+  '  Se l\'utente dice "abbiamo attivi: X, Y, Z" → chiama create_lead o update_lead per OGNUNO.\n' +
+  '- Se dice "questo è chiuso" → update_lead con is_active: false.\n' +
+  '- Se dice "abbiamo sentito X ieri" → update_lead con last_contact.\n' +
+  '- Se corregge un dato → aggiorna SUBITO senza chiedere conferma.\n' +
+  '- Quando aggiorni: conferma in 2-3 righe, NON rigenerare tutto il CRM.\n' +
   '- NON inventare MAI cifre, stati, o date.\n' +
   '- TEMPORALITÀ CRM — REGOLA CRITICA:\n' +
   '  Per "aggiornami sul CRM" o "stato pipeline":\n' +
