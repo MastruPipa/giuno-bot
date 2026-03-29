@@ -65,7 +65,9 @@ app.event('app_mention', async function(args) {
       if (ch.topic && ch.topic.value) channelContext += '\nTopic: ' + ch.topic.value;
       if (ch.purpose && ch.purpose.value) channelContext += '\nDescrizione: ' + ch.purpose.value;
       channelContext += '\n';
-    } catch(e) {}
+    } catch(e) {
+      logger.debug('[SLACK-HANDLER] conversations.info ignorato:', e.message);
+    }
 
     try {
       var recentMsgs;
@@ -84,7 +86,9 @@ app.event('app_mention', async function(args) {
           channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
         }
       }
-    } catch(e) {}
+    } catch(e) {
+      logger.debug('[SLACK-HANDLER] fetch messaggi recenti ignorato:', e.message);
+    }
 
     try {
       var membersRes = await app.client.conversations.members({ channel: event.channel, limit: 50 });
@@ -92,7 +96,9 @@ app.event('app_mention', async function(args) {
       if (memberIds.length > 0) {
         channelContext += '\nMEMBRI PRESENTI NEL CANALE: ' + memberIds.map(function(id) { return '<@' + id + '>'; }).join(', ') + '\n';
       }
-    } catch(e) {}
+    } catch(e) {
+      logger.debug('[SLACK-HANDLER] fetch membri canale ignorato:', e.message);
+    }
 
     var mentionChannelType = ch.is_private ? 'private' : 'public';
     var reply = await route(event.user, text, {

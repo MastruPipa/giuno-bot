@@ -3,6 +3,7 @@
 
 'use strict';
 
+var logger = require('../utils/logger');
 var db = require('../../supabase');
 
 var ALWAYS_SEARCH_PATTERNS = [
@@ -33,7 +34,9 @@ function preflight(message, ctx) {
         'Non rispondere basandoti solo sul contesto della conversazione o sulla memoria. ' +
         'Cerca SEMPRE dati freschi.';
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[PREFLIGHT] pattern check fallito:', e.message);
+  }
 
   return enriched;
 }
