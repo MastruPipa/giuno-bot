@@ -6,7 +6,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node --test test/*.test.js",
-    "check:conflicts": "bash scripts/check-conflicts.sh"
+    "check:conflicts": "bash scripts/check-conflicts.sh",
+    "check:deploy": "bash scripts/post-deploy-check.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
