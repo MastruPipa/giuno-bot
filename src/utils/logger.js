@@ -2,8 +2,6 @@
 
 'use strict';
 
-var requestContext = require('./requestContext');
-
 var LEVEL_PRIORITY = {
   debug: 10,
   info: 20,
@@ -35,9 +33,7 @@ function formatArg(arg) {
 function log(level) {
   if (!shouldLog(level)) return;
   var args = Array.prototype.slice.call(arguments, 1).map(formatArg);
-  var ctx = requestContext.getRequestContext();
-  var ctxPart = (ctx && ctx.requestId) ? ' [REQ ' + ctx.requestId + ']' : '';
-  process.stdout.write('[' + new Date().toISOString() + '] [' + level.toUpperCase() + ']' + ctxPart + ' ' + args.join(' ') + '\n');
+  process.stdout.write('[' + new Date().toISOString() + '] [' + level.toUpperCase() + '] ' + args.join(' ') + '\n');
 }
 
 var logger = {

@@ -287,16 +287,21 @@ var definitions = [
   },
   {
     name: 'update_lead',
-    description: 'Aggiorna un lead nel CRM. Usa questo tool ogni volta che bisogna modificare status, valore, servizi, note o fase di un lead. NON listare tutto il CRM — aggiorna solo il lead richiesto e conferma.',
+    description: 'Aggiorna un lead nel CRM. Usa per modificare QUALSIASI campo: status, valore, servizi, note, is_active, last_contact. ' +
+      'Quando l\'utente dice "questo contratto è chiuso" o "non è più attivo" → usa is_active: false. ' +
+      'Quando dice "abbiamo sentito X ieri" → aggiorna last_contact. ' +
+      'Agisci SUBITO senza chiedere conferma per modifiche semplici.',
     input_schema: {
       type: 'object',
       properties: {
         identifier: { type: 'string', description: 'Nome azienda o UUID del lead' },
-        status: { type: 'string', description: 'Nuovo status (accetta: hot, warm, cold, won, lost, trattativa, proposta inviata)' },
+        status: { type: 'string', description: 'Nuovo status (hot, warm, cold, won, lost, trattativa, proposta inviata)' },
         estimated_value: { type: 'number', description: 'Valore stimato in euro' },
-        service_interest: { type: 'array', items: { type: 'string' }, description: 'Lista servizi (es. ["Branding", "Design"])' },
+        service_interest: { type: 'array', items: { type: 'string' }, description: 'Lista servizi' },
         notes: { type: 'string', description: 'Note aggiuntive (AGGIUNTE alle esistenti)' },
         next_followup: { type: 'string', description: 'Data prossimo follow-up YYYY-MM-DD' },
+        last_contact: { type: 'string', description: 'Data ultimo contatto YYYY-MM-DD' },
+        is_active: { type: 'boolean', description: 'true = lead/contratto attivo. false = chiuso/completato/non più attivo.' },
         owner_slack_id: { type: 'string', description: 'Slack ID responsabile' },
       },
       required: ['identifier'],
@@ -324,15 +329,22 @@ var definitions = [
   },
   {
     name: 'search_leads',
-    description: 'Cerca lead nel CRM per nome, status o responsabile. Usa SEMPRE prima di update_lead. Dati freschi da Supabase.',
+    description: 'Cerca lead nel CRM. Dati freschi da Supabase. ' +
+      'IMPORTANTE: per "aggiornami sul CRM" usa is_active: true. ' +
+      'Questo filtra automaticamente i contratti chiusi/vecchi. ' +
+      'Solo se l\'utente chiede "tutti i clienti" o "storico" ometti is_active.',
     input_schema: {
       type: 'object',
       properties: {
         company_name: { type: 'string', description: 'Nome azienda (ricerca parziale)' },
         contact_name: { type: 'string', description: 'Nome contatto (ricerca parziale)' },
-        status: { type: 'string', description: 'Filtra per status' },
+        status: { type: 'string', description: 'Filtra per status: new|contacted|proposal_sent|negotiating|won|lost|dormant' },
         owner_slack_id: { type: 'string' },
-        limit: { type: 'number', description: 'Max risultati (default 10)' },
+        updated_after: { type: 'string', description: 'Solo lead aggiornati dopo questa data ISO.' },
+        created_after: { type: 'string', description: 'Solo lead creati dopo questa data ISO.' },
+        active_after: { type: 'string', description: 'Solo lead con last_contact O first_contact dopo questa data.' },
+        is_active: { type: 'boolean', description: 'true = solo lead attivi (default per CRM update). false = solo chiusi/storici. Ometti per tutti.' },
+        limit: { type: 'number', description: 'Max risultati (default 20)' },
       },
     },
   },
@@ -370,6 +382,8 @@ async function execute(toolName, input, userId, userRole) {
     if (input.service_interest) updates.service_interest = input.service_interest;
     if (input.next_followup) updates.next_followup = input.next_followup;
     if (input.owner_slack_id) updates.owner_slack_id = input.owner_slack_id;
+    if (input.last_contact) updates.last_contact = input.last_contact;
+    if (input.is_active === true || input.is_active === false) updates.is_active = input.is_active;
     if (input.notes) {
       try {
         var existing = await db.searchLeads({ company_name: input.identifier, limit: 1 });

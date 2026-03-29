@@ -4,7 +4,6 @@
 - Runtime guard variabili ambiente (`src/config/runtime.js`)
 - Logger strutturato + request context (`src/utils/logger.js`, `src/utils/requestContext.js`)
 - Metriche con persistenza locale + endpoint `/metrics` (`src/services/metricsService.js`, `src/handlers/oauthHandler.js`)
-- Persistenza KPI su backend condiviso (schema `runtime_metrics` + flush best-effort)
 - Retry/timeout policy + classifier Slack (`src/utils/retryPolicy.js`, `src/services/slackRetry.js`)
 - Retry applicato in punti critici (`src/services/slackService.js`, `src/orchestrator/contextBuilder.js`)
 - Circuit breaker leggero su Gemini (`src/utils/circuitBreaker.js`, `src/services/geminiService.js`)
@@ -12,12 +11,13 @@
 - Tooling operativo (`scripts/check-conflicts.sh`, `scripts/post-deploy-check.sh`, `scripts/resolve-slackservice-conflict.sh`)
 - CI quality gate (`.github/workflows/ci.yml`)
 - Suite test unitari + integration smoke (`test/*.test.js`)
-- Runbook incidenti (`docs/INCIDENT_RUNBOOK.md`)
 
 ## 🔄 Rimane per chiudere il programma al 100%
-1. Integration test end-to-end multi-scenario con mocking Slack/Web API più realistico
-2. Hardening finale dei catch rimanenti meno critici nei rami admin legacy
+1. Integration test più estesi sul flusso completo Slack -> router -> tool -> risposta (multi-scenario)
+2. Consolidare *tutti* i catch dei sotto-command `/giuno` con mapper errori uniforme
+3. Runbook incident response operativo (SLA, escalation, checklist on-call)
+4. KPI persistenti su backend condiviso (Supabase) invece che solo file locale
 
 ## Stima residua
-- Chiusura "production-ready": completata.
-- Chiusura "programma 100%": ~1-2 giorni lavorativi.
+- Chiusura "production-ready": 2-4 giorni lavorativi.
+- Chiusura estesa (observability storica + runbook completo): 1 settimana.
