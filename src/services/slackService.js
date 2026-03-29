@@ -6,6 +6,8 @@
 var BoltApp = require('@slack/bolt').App;
 var logger = require('../utils/logger');
 var runtimeConfig = require('../config/runtime');
+var { withTimeout, withRetry } = require('../utils/retryPolicy');
+var { shouldRetrySlackError } = require('./slackRetry');
 
 runtimeConfig.validateEnv([
   'SLACK_BOT_TOKEN',
@@ -22,10 +24,27 @@ var app = new BoltApp({
   appToken: process.env.SLACK_APP_TOKEN,
 });
 
+async function slackCall(label, fn, options) {
+  options = options || {};
+  var timeoutMs = options.timeoutMs || 4000;
+  var retries = options.retries == null ? 1 : options.retries;
+
+  return withRetry(function() {
+    return withTimeout(fn, timeoutMs, label);
+  }, {
+    retries: retries,
+    baseDelayMs: 150,
+    shouldRetry: shouldRetrySlackError,
+  });
+}
+
 // ─── User helpers ──────────────────────────────────────────────────────────────
 
 async function getUtenti() {
-  var res = await app.client.users.list();
+  var res = await slackCall('SLACK.users.list', function() {
+    return app.client.users.list();
+  }, { timeoutMs: 5000, retries: 2 });
+
   return (res.members || [])
     .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted; })
     .map(function(u) {
@@ -49,7 +68,10 @@ async function resolveSlackMentions(text) {
   for (var i = 0; i < ids.length; i++) {
     var slackId = ids[i];
     try {
-      var res = await app.client.users.info({ user: slackId });
+      var res = await slackCall('SLACK.users.info', function() {
+        return app.client.users.info({ user: slackId });
+      }, { timeoutMs: 3500, retries: 1 });
+
       var u = res.user;
       var name = u.real_name || u.name;
       var email = (u.profile && u.profile.email) || '';
@@ -63,10 +85,19 @@ async function resolveSlackMentions(text) {
 
 async function leggiCanaleSlack(channelId, limit) {
   limit = limit || 10;
-  try { await app.client.conversations.join({ channel: channelId }); } catch (e) {
+
+  try {
+    await slackCall('SLACK.conversations.join', function() {
+      return app.client.conversations.join({ channel: channelId });
+    }, { timeoutMs: 3000, retries: 1 });
+  } catch (e) {
     logger.debug('[SLACK-SVC] join canale ignorato:', e.message);
   }
-  var res = await app.client.conversations.history({ channel: channelId, limit: limit });
+
+  var res = await slackCall('SLACK.conversations.history', function() {
+    return app.client.conversations.history({ channel: channelId, limit: limit });
+  }, { timeoutMs: 5000, retries: 1 });
+
   return res.messages || [];
 }
 
