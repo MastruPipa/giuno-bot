@@ -46,6 +46,23 @@ function dedup(ts) {
   return true;
 }
 
+async function saveCorrectionFeedback(userId, text) {
+  try {
+    var content = 'CORREZIONE_BRIEFING: ' + (text || '').substring(0, 500);
+    await db.addMemory(userId, content, ['feedback', 'correzione', 'briefing'], {
+      memoryType: 'feedback',
+      confidenceScore: 0.9,
+      source: 'dm_correction',
+      entityRefs: [],
+    });
+    logger.info('[FEEDBACK-CORRECTION] salvata per user:', userId);
+    return true;
+  } catch (e) {
+    logger.error('[FEEDBACK-CORRECTION] errore salvataggio:', e.message);
+    return false;
+  }
+}
+
 // ─── app_mention ───────────────────────────────────────────────────────────────
 
 app.event('app_mention', async function(args) {
@@ -283,7 +300,15 @@ app.message(async function(args) {
   stats.messagesHandled++;
   var threadTs = message.thread_ts || null;
   try {
-    var reply = await route(message.user, message.text, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
+    var originalText = message.text || '';
+    var textForRoute = originalText;
+    if (isCorrectionFeedback(originalText)) {
+      metricsService.increment('feedback_correction_total');
+      await saveCorrectionFeedback(message.user, originalText);
+      textForRoute = buildCorrectionPrompt(originalText);
+    }
+
+    var reply = await route(message.user, textForRoute, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });

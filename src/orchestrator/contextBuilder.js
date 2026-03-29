@@ -152,6 +152,23 @@ async function buildContext(params) {
     }
   }
 
+  // Always inject latest user corrections for briefing/summary quality
+  if (needs.memories) {
+    var correctionMemories = (await safeCall(
+      'CTX.searchMemories.corrections',
+      function() { return db.searchMemories(userId, 'CORREZIONE_BRIEFING feedback correzione briefing'); },
+      []
+    )) || [];
+    if (correctionMemories.length > 0) {
+      var normalized = correctionMemories
+        .filter(function(m) { return m && m.content && m.content.includes('CORREZIONE_BRIEFING:'); })
+        .slice(0, 3);
+      if (normalized.length > 0) {
+        relevantMemories = normalized.concat(relevantMemories || []).slice(0, 8);
+      }
+    }
+  }
+
   // Channel context from RPC or options
   var channelContext = options.channelContext || null;
   if (options.channelId && !channelProfile) {

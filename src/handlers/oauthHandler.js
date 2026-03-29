@@ -13,6 +13,7 @@ var metricsService = require('../services/metricsService');
 var { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI, salvaTokenUtente } = require('../services/googleAuthService');
 
 var OAUTH_PORT = process.env.OAUTH_PORT || 3000;
+var OAUTH_ADMIN_TOKEN = process.env.OAUTH_ADMIN_TOKEN || '';
 
 // Stats reference — set by app.js after slackHandlers loads
 var _stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
@@ -28,10 +29,26 @@ function getUserTokens() {
   return require('../services/googleAuthService').getUserTokens();
 }
 
+function isProtectedPath(pathname) {
+  return pathname === '/dashboard' || pathname === '/metrics' || pathname === '/debug/search';
+}
+
+function isAuthorizedAdminRequest(req, parsed) {
+  if (!OAUTH_ADMIN_TOKEN) return true;
+  var headerToken = req.headers['x-admin-token'];
+  var queryToken = parsed && parsed.query ? parsed.query.token : null;
+  return headerToken === OAUTH_ADMIN_TOKEN || queryToken === OAUTH_ADMIN_TOKEN;
+}
+
 // ─── HTTP server ───────────────────────────────────────────────────────────────
 
 var oauthServer = http.createServer(async function(req, res) {
   var parsed = url.parse(req.url, true);
+  if (isProtectedPath(parsed.pathname) && !isAuthorizedAdminRequest(req, parsed)) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'unauthorized' }));
+    return;
+  }
 
   if (parsed.pathname === '/dashboard') {
     var connectedUsers = Object.keys(getUserTokens());
@@ -140,7 +157,15 @@ function startOAuthServer() {
   oauthServer.listen(OAUTH_PORT, function() {
     logger.info('OAuth + Dashboard server su porta ' + OAUTH_PORT);
     logger.info('Dashboard: http://localhost:' + OAUTH_PORT + '/dashboard');
+    if (OAUTH_ADMIN_TOKEN) logger.info('Dashboard/metrics protetti da OAUTH_ADMIN_TOKEN');
   });
 }
 
-module.exports = { oauthServer: oauthServer, startOAuthServer: startOAuthServer, setStats: setStats, OAUTH_PORT: OAUTH_PORT };
+module.exports = {
+  oauthServer: oauthServer,
+  startOAuthServer: startOAuthServer,
+  setStats: setStats,
+  OAUTH_PORT: OAUTH_PORT,
+  isProtectedPath: isProtectedPath,
+  isAuthorizedAdminRequest: isAuthorizedAdminRequest,
+};
