@@ -14,6 +14,7 @@ var INTENTS = {
   QUOTE_SUPPORT:    'QUOTE_SUPPORT',
   CRM_UPDATE:       'CRM_UPDATE',
   HISTORICAL_SCAN:  'HISTORICAL_SCAN',
+  PROSPECTING:      'PROSPECTING',
   GENERAL:          'GENERAL',
 };
 
@@ -68,6 +69,10 @@ var RULES = [
       'avvia scan', 'inizia scan', 'scan storico', 'scan slack', 'scan drive',
       'stato scan', 'progresso scan', 'indicizza slack', 'indicizza drive',
     ],
+  },
+  {
+    intent: INTENTS.PROSPECTING,
+    keywords: ['prospect', 'analizza azienda', 'valuta azienda', 'fit score', 'dovremmo contattare', 'vale la pena contattare', 'scheda azienda'],
   },
   {
     intent: INTENTS.CLIENT_RETRIEVAL,
