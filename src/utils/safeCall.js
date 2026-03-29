@@ -16,7 +16,7 @@ async function safeCall(label, fn, fallback) {
   try {
     return await fn();
   } catch (e) {
-    logger.warn('[' + label + '] fallita: ' + e.message);
+    logger.warn('[' + label + '] fallita:', e.message, e.stack || '');
     return (fallback !== undefined ? fallback : null);
   }
 }
@@ -29,10 +29,14 @@ async function safeCall(label, fn, fallback) {
  * @param {*}      fallback — valore di ritorno in caso di errore (default null)
  */
 function safeParse(label, str, fallback) {
+  if (str == null) {
+    logger.warn('[' + label + '] input null/undefined');
+    return (fallback !== undefined ? fallback : null);
+  }
   try {
     return JSON.parse(str);
   } catch (e) {
-    logger.warn('[' + label + '] JSON malformato: ' + e.message);
+    logger.warn('[' + label + '] JSON malformato:', e.message, e.stack || '');
     return (fallback !== undefined ? fallback : null);
   }
 }
