@@ -97,7 +97,9 @@ async function callGeminiWithSearch(prompt, options) {
       if (cand && cand.groundingMetadata && cand.groundingMetadata.webSearchQueries) {
         sources = cand.groundingMetadata.webSearchQueries;
       }
-    } catch(e) {}
+    } catch(e) {
+      logger.debug('[GEMINI] grounding metadata non disponibile:', e.message);
+    }
     return { text: text, sources: sources };
   } catch(e) {
     logger.error('[GEMINI-SEARCH] Errore:', e.message);

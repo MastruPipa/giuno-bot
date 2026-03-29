@@ -6,7 +6,9 @@
 
 var fs = require('fs');
 var createClient = null;
-try { createClient = require('@supabase/supabase-js').createClient; } catch(e) {}
+try { createClient = require('@supabase/supabase-js').createClient; } catch(e) {
+  console.warn('[DB-CLIENT] supabase-js non disponibile:', e.message);
+}
 
 var _client = null;
 var useSupabase = false;
@@ -23,7 +25,9 @@ function readJSON(file, defaultVal) {
 }
 
 function writeJSON(file, data) {
-  try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch(e) {}
+  try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch(e) {
+    console.warn('[DB-CLIENT] cache write fallita:', e.message);
+  }
 }
 
 function logErr(ctx, e) {

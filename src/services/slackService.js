@@ -49,14 +49,18 @@ async function resolveSlackMentions(text) {
       var name  = u.real_name || u.name;
       var email = (u.profile && u.profile.email) || '';
       resolved = resolved.split('<@' + slackId + '>').join('@' + name + (email ? ' (' + email + ')' : ''));
-    } catch(e) {}
+    } catch(e) {
+      logger.debug('[SLACK-SVC] operazione Slack ignorata:', e.message);
+    }
   }
   return resolved;
 }
 
 async function leggiCanaleSlack(channelId, limit) {
   limit = limit || 10;
-  try { await app.client.conversations.join({ channel: channelId }); } catch(e) {}
+  try { await app.client.conversations.join({ channel: channelId }); } catch(e) {
+    logger.debug('[SLACK-SVC] join canale ignorato:', e.message);
+  }
   var res = await app.client.conversations.history({ channel: channelId, limit: limit });
   return res.messages || [];
 }

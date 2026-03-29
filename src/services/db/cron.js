@@ -2,6 +2,7 @@
 'use strict';
 
 var c = require('./client');
+var logger = require('../../utils/logger');
 
 var INSTANCE_ID = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
 
@@ -26,7 +27,11 @@ async function acquireCronLock(jobName, ttlMinutes) {
 
 async function releaseCronLock(jobName) {
   if (!c.useSupabase) return;
-  try { await c.getClient().from('cron_locks').delete().eq('job_name', jobName).eq('locked_by', INSTANCE_ID); } catch(e) {}
+  try {
+    await c.getClient().from('cron_locks').delete().eq('job_name', jobName).eq('locked_by', INSTANCE_ID);
+  } catch(e) {
+    logger.warn('[DB-CRON] release lock fallita:', e.message);
+  }
 }
 
 module.exports = { acquireCronLock: acquireCronLock, releaseCronLock: releaseCronLock };

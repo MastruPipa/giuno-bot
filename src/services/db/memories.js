@@ -3,6 +3,7 @@
 
 var c = require('./client');
 var search = require('./search');
+var logger = require('../../utils/logger');
 
 // ─── Memory type classification ───────────────────────────────────────────────
 
@@ -134,7 +135,9 @@ async function addMemory(userId, content, tags, options) {
         return e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase());
       }).map(function(e) { return e.canonical_name; });
     }
-  } catch(e) {}
+  } catch(e) {
+    logger.warn('[DB-MEMORIES] operazione fallita:', e.message);
+  }
 
   try {
     await c.getClient().from('memories').insert({
