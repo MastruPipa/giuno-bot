@@ -5,10 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test test/*.test.js",
-    "check:conflicts": "bash scripts/check-conflicts.sh",
-    "check:deploy": "bash scripts/post-deploy-check.sh",
-    "resolve:slack-conflict": "bash scripts/resolve-slackservice-conflict.sh"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
