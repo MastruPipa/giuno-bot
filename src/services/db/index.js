@@ -130,6 +130,7 @@ module.exports = {
   searchLeads:     leads.searchLeads,
   getLeadsPipeline: leads.getLeadsPipeline,
   queryLeadsDB:    leads.queryLeadsDB,
+  deleteLead:      leads.deleteLead,
 
   // Cron locks
   acquireCronLock: cron.acquireCronLock,

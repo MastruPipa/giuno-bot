@@ -64,7 +64,7 @@ var AGENT_TOOL_SETS = {
   threadSummary: ['summarize_thread', 'summarize_channel', 'read_channel', 'search_slack_messages', 'recall_memory', 'get_channel_map'],
   dailyDigest:   ['list_events', 'find_emails', 'recall_memory', 'search_kb', 'search_slack_messages', 'summarize_channel', 'list_channels'],
   clientRetrieval: ['resolve_entity', 'recall_memory', 'search_kb', 'search_leads', 'query_leads_db', 'search_suppliers', 'get_supplier', 'search_drive', 'browse_folder', 'search_in_shared_drive', 'list_shared_drives', 'read_channel', 'search_slack_messages', 'search_everywhere', 'ask_gemini', 'list_channels', 'summarize_channel', 'get_pinned_messages'],
-  crmUpdate: ['search_leads', 'update_lead', 'create_lead', 'recall_memory'],
+  crmUpdate: ['search_leads', 'update_lead', 'create_lead', 'delete_lead', 'recall_memory'],
   general: null, // null means all tools
 };
 

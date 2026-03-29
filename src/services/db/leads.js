@@ -87,4 +87,19 @@ async function queryLeadsDB(input) {
   } catch(e) { c.logErr('queryLeadsDB', e); return { leads: [], count: 0 }; }
 }
 
-module.exports = { leadExists: leadExists, insertLead: insertLead, getLeadsPipeline: getLeadsPipeline, updateLead: updateLead, searchLeads: searchLeads, queryLeadsDB: queryLeadsDB };
+async function deleteLead(identifier) {
+  if (!c.useSupabase) return null;
+  try {
+    var q = c.getClient().from('leads').delete();
+    if (identifier.match && identifier.match(/^[0-9a-f-]{36}$/i)) {
+      q = q.eq('id', identifier);
+    } else {
+      q = q.ilike('company_name', identifier);
+    }
+    var res = await q.select();
+    if (res.error) throw res.error;
+    return res.data || [];
+  } catch(e) { c.logErr('deleteLead', e); throw e; }
+}
+
+module.exports = { leadExists: leadExists, insertLead: insertLead, getLeadsPipeline: getLeadsPipeline, updateLead: updateLead, searchLeads: searchLeads, queryLeadsDB: queryLeadsDB, deleteLead: deleteLead };

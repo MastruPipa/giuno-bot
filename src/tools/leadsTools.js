@@ -336,6 +336,20 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'delete_lead',
+    description: 'Elimina un lead dal CRM. Solo admin. ' +
+      'Senza confirm=true, mostra solo i match trovati e chiede conferma. ' +
+      'Con confirm=true, elimina effettivamente.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Nome azienda o UUID del lead da eliminare' },
+        confirm: { type: 'boolean', description: 'Se true, elimina davvero. Se false (default), mostra solo i match.' },
+      },
+      required: ['identifier'],
+    },
+  },
 ];
 
 async function execute(toolName, input, userId, userRole) {
@@ -399,6 +413,32 @@ async function execute(toolName, input, userId, userRole) {
       var created = await db.insertLead(newLead);
       return { success: true, message: 'Lead creato.', lead: created };
     } catch(e) { return { error: 'Errore creazione: ' + e.message }; }
+  }
+
+  if (toolName === 'delete_lead') {
+    if (userRole !== 'admin') return { error: 'Solo admin possono eliminare lead.' };
+    if (!input.identifier) return { error: 'Specifica il nome azienda o ID.' };
+
+    // Step 1: Find matches
+    var matches = await db.searchLeads({ company_name: input.identifier, limit: 5 });
+    if (matches.length === 0) return { error: 'Nessun lead trovato per: ' + input.identifier };
+
+    // Step 2: If no confirm, just show matches
+    if (!input.confirm) {
+      return {
+        action: 'confirm_required',
+        message: 'Trovati ' + matches.length + ' lead. Conferma per eliminare.',
+        matches: matches.map(function(l) {
+          return { id: l.id, company_name: l.company_name, contact_name: l.contact_name, status: l.status };
+        }),
+      };
+    }
+
+    // Step 3: Actually delete
+    try {
+      var deleted = await db.deleteLead(input.identifier);
+      return { success: true, message: 'Lead eliminato.', deleted_count: (deleted || []).length };
+    } catch(e) { return { error: 'Errore eliminazione: ' + e.message }; }
   }
 
   return { error: 'Tool sconosciuto in leadsTools: ' + toolName };
