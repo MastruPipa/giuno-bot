@@ -1,3 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FILE="src/services/slackService.js"
+
+if [[ ! -f "$FILE" ]]; then
+  echo "❌ File non trovato: $FILE"
+  exit 1
+fi
+
+if ! rg -n "^(<<<<<<<|=======|>>>>>>>)" "$FILE" >/dev/null 2>&1; then
+  echo "✅ Nessun marker di conflitto in $FILE"
+  exit 0
+fi
+
+cat > "$FILE" <<'JS'
 // ─── Slack Service ─────────────────────────────────────────────────────────────
 // Slack App initialisation, user helpers, message reading, mention resolution.
 
@@ -6,6 +22,8 @@
 var BoltApp = require('@slack/bolt').App;
 var logger = require('../utils/logger');
 var runtimeConfig = require('../config/runtime');
+var { withTimeout, withRetry } = require('../utils/retryPolicy');
+var { shouldRetrySlackError } = require('./slackRetry');
 
 runtimeConfig.validateEnv([
   'SLACK_BOT_TOKEN',
@@ -83,7 +101,12 @@ async function resolveSlackMentions(text) {
 
 async function leggiCanaleSlack(channelId, limit) {
   limit = limit || 10;
-  try { await app.client.conversations.join({ channel: channelId }); } catch (e) {
+
+  try {
+    await slackCall('SLACK.conversations.join', function() {
+      return app.client.conversations.join({ channel: channelId });
+    }, { timeoutMs: 3000, retries: 1 });
+  } catch (e) {
     logger.debug('[SLACK-SVC] join canale ignorato:', e.message);
   }
 
@@ -109,3 +132,6 @@ module.exports = {
   leggiCanaleSlack: leggiCanaleSlack,
   getChannelMapEntry: getChannelMapEntry,
 };
+JS
+
+echo "✅ Conflitto risolto in $FILE con la versione canonica hardening"
