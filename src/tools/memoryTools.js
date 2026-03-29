@@ -81,19 +81,24 @@ async function execute(toolName, input, userId, userRole) {
   userRole = userRole || 'member';
 
   if (toolName === 'save_memory') {
-    db.addMemory(userId, input.content, input.tags || []);
+    var content = String(input.content || '').trim();
+    if (!content) return { error: 'Contenuto memoria vuoto.' };
+    await db.addMemory(userId, content, input.tags || []);
     return { success: true, message: 'Memorizzato.' };
   }
 
   if (toolName === 'recall_memory') {
+    var query = String(input.query || '').trim();
+    if (!query) return { memories: [], count: 0 };
+
     if (checkPermission(userRole, 'view_all_memories') && input.user_id) {
-      var results = db.searchMemories(input.user_id, input.query);
+      var results = await db.searchMemories(input.user_id, query);
       return { memories: results, count: results.length };
     }
-    var results = db.searchMemories(userId, input.query);
+    var results = await db.searchMemories(userId, query);
     if (userRole === 'restricted') {
       results = results.filter(function(m) {
-        return m.tags.some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
+        return (m.tags || []).some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
       });
     }
     return { memories: results, count: results.length };
@@ -106,11 +111,11 @@ async function execute(toolName, input, userId, userRole) {
     }
     var userMems = db.getMemCache()[targetId] || [];
     var filtered = input.tag
-      ? userMems.filter(function(m) { return m.tags.some(function(t) { return t.toLowerCase().includes(input.tag.toLowerCase()); }); })
+      ? userMems.filter(function(m) { return (m.tags || []).some(function(t) { return String(t || '').toLowerCase().includes(input.tag.toLowerCase()); }); })
       : userMems;
     if (userRole === 'restricted') {
       filtered = filtered.filter(function(m) {
-        return m.tags.some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
+        return (m.tags || []).some(function(t) { return (t || '').toLowerCase().includes('offkatania'); });
       });
     }
     return { memories: filtered, count: filtered.length };

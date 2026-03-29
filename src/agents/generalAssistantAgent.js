@@ -68,6 +68,23 @@ async function run(message, ctx) {
         'Esegui l\'azione proposta nel contesto usando il tool appropriato (es. send_dm). NON inventare azioni non proposte.';
       return await askGiuno(ctx.userId, enrichedMessage, options);
     }
+
+    // 3. Fallback: recover from recent intent-like memories
+    try {
+      var mem = await db.searchMemories(ctx.userId, 'pending in attesa conferma da fare reminder');
+      if (mem && mem.length > 0) {
+        var memHint = '[CONTEXT RECOVERY da memoria]\n' +
+          'L\'utente dice "' + message + '".\n' +
+          'Possibile azione recente: "' + String(mem[0].content || '').substring(0, 300) + '".\n' +
+          'Se il contesto è sufficientemente chiaro, esegui col tool corretto; altrimenti chiedi chiarimento.';
+        return await askGiuno(ctx.userId, memHint, options);
+      }
+    } catch(e) {
+      logger.warn('[GENERAL-AGENT] context recovery memory error:', e.message);
+    }
+
+    // 4. No recoverable context — ask explicitly
+    return 'Perfetto, ma mi manca il contesto: quale azione devo eseguire esattamente e per chi?';
   }
 
   return await askGiuno(ctx.userId, message, options);
