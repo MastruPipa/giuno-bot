@@ -135,9 +135,11 @@ async function buildContext(params) {
     if (embeddingService.getProvider() && message.length > 10) {
       var semResults = (await safeCall('CTX.semanticSearch',
         function() { return embeddingService.semanticSearch(message, { limit: 3 }); }, [])) || [];
-      semResults.forEach(function(sr) {
-        kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
-      });
+      if (semResults && semResults.length > 0) {
+        semResults.forEach(function(sr) {
+          kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
+        });
+      }
     }
   }
 
