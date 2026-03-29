@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check:conflicts": "! grep -rn '<<<<<<< ' src/ --include='*.js' || true"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
