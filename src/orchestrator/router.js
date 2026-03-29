@@ -11,6 +11,7 @@ var { INTENTS, classifyIntent } = require('./intentClassifier');
 var { buildContext } = require('./contextBuilder');
 var { preflight } = require('./preflight');
 var { withTimeout } = require('../utils/timeout');
+var { matchSkill, executeSkill } = require('../skills/skillRegistry');
 
 var AGENT_TIMEOUT_MS = 55000; // 55s — below Railway/Slack 60s hard limit
 
@@ -48,7 +49,27 @@ async function route(userId, message, options) {
   options = options || {};
 
   try {
-    // 1. Classify intent first (fast, keyword-based) so contextBuilder can be lazy
+    // 0. Try skill matching FIRST (before intent classification)
+    var channelName = '';
+    if (options.channelId) {
+      var db = require('../../supabase');
+      var chMap = db.getChannelMapCache()[options.channelId];
+      if (chMap) channelName = chMap.channel_name || '';
+    }
+    var skillMatch = matchSkill(message, options.channelId, channelName);
+    if (skillMatch && !skillMatch.skill.delegateTo) {
+      // Build minimal context for skill
+      var skillCtx = await buildContext({ userId: userId, message: message, options: options, intent: 'GENERAL' });
+      skillCtx = preflight(message, skillCtx);
+      var skillReply = await executeSkill(skillMatch.skill, message, skillCtx);
+      if (skillReply) {
+        logger.info('[ROUTER] Skill handled:', skillMatch.skill.id);
+        return skillReply;
+      }
+      // If skill returned null, fall through to normal routing
+    }
+
+    // 1. Classify intent (fast, keyword-based)
     var intent = await classifyIntent(message);
     logger.info('[ROUTER] User:', userId, '| Intent:', intent);
 
