@@ -1,3 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FILE="src/services/slackService.js"
+
+if [[ ! -f "$FILE" ]]; then
+  echo "❌ File non trovato: $FILE"
+  exit 1
+fi
+
+if ! rg -n "^(<<<<<<<|=======|>>>>>>>)" "$FILE" >/dev/null 2>&1; then
+  echo "✅ Nessun marker di conflitto in $FILE"
+  exit 0
+fi
+
+cat > "$FILE" <<'JS'
 // ─── Slack Service ─────────────────────────────────────────────────────────────
 // Slack App initialisation, user helpers, message reading, mention resolution.
 
@@ -116,3 +132,6 @@ module.exports = {
   leggiCanaleSlack: leggiCanaleSlack,
   getChannelMapEntry: getChannelMapEntry,
 };
+JS
+
+echo "✅ Conflitto risolto in $FILE con la versione canonica hardening"
