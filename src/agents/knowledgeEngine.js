@@ -175,7 +175,9 @@ async function indexSlack(report) {
   for (var ci = 0; ci < channels.length; ci++) {
     var ch = channels[ci];
     try {
-      try { await app.client.conversations.join({ channel: ch.id }); } catch(e) {}
+      try { await app.client.conversations.join({ channel: ch.id }); } catch(e) {
+        logger.debug('[KB-ENGINE] join canale ignorato:', e.message);
+      }
 
       var hist = await app.client.conversations.history({
         channel: ch.id,

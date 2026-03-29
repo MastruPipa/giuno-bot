@@ -14,7 +14,9 @@ var logger = require('../utils/logger');
 // ─── Load credentials ──────────────────────────────────────────────────────────
 
 var webCreds = null;
-try { webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web; } catch(e) {}
+try { webCreds = JSON.parse(fs.readFileSync('credentials-web.json')).web; } catch(e) {
+  console.warn('[GOOGLE-AUTH] credentials-web.json non trovato, Google OAuth disabilitato');
+}
 
 var GOOGLE_CLIENT_ID     = (webCreds && webCreds.client_id)     || process.env.GOOGLE_CLIENT_ID;
 var GOOGLE_CLIENT_SECRET = (webCreds && webCreds.client_secret) || process.env.GOOGLE_CLIENT_SECRET;
