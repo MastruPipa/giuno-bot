@@ -2,6 +2,8 @@
 // admin > finance > manager > member > restricted
 // ────────────────────────────────────────────────────────────────────────────
 
+var logger = require('./src/utils/logger');
+
 // Reuse the shared Supabase client — no duplicate connection.
 function getSupabase() { return require('./supabase').getClient(); }
 
@@ -27,7 +29,7 @@ async function getUserRole(slackUserId) {
         return res.data.role;
       }
     } catch(e) {
-      // Supabase non raggiungibile → fail-safe: member
+      logger.warn('[RBAC] getUserRole fallback a member:', e.message);
     }
   }
 
@@ -167,6 +169,7 @@ async function setUserRole(slackUserId, role, displayName, assignedBy) {
     invalidateRoleCache(slackUserId);
     return true;
   } catch(e) {
+    logger.error('[RBAC] setUserRole fallita:', e.message);
     return false;
   }
 }
@@ -178,6 +181,7 @@ async function getAllRoles() {
     var res = await supabase.from('user_roles').select('*').order('display_name');
     return res.data || [];
   } catch(e) {
+    logger.error('[RBAC] getAllRoles fallita:', e.message);
     return [];
   }
 }
