@@ -407,6 +407,46 @@ async function execute(toolName, input, userId) {
     return { error: e.message };
   }
 
+  if (toolName === 'list_shared_drives') {
+    var drv = getDrivePerUtente(userId);
+    if (!drv) return { error: 'Google Drive non collegato. Scrivi "collega il mio Google".' };
+    try {
+      var drivesRes = await withTimeout(drv.drives.list({ pageSize: 50, fields: 'drives(id, name)' }), 8000, 'list_shared_drives');
+      var drives = (drivesRes.data.drives || []);
+      if (input.name_filter) {
+        var f = (input.name_filter || '').toLowerCase();
+        drives = drives.filter(function(d) { return (d.name || '').toLowerCase().includes(f); });
+      }
+      return { shared_drives: drives.map(function(d) { return { id: d.id, name: d.name }; }), count: drives.length };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore listing shared drives: ' + e.message };
+    }
+  }
+
+  if (toolName === 'search_in_shared_drive') {
+    var drv = getDrivePerUtente(userId);
+    if (!drv) return { error: 'Google Drive non collegato.' };
+    try {
+      var max = input.max || 20;
+      var escaped = (input.query || '').replace(/'/g, "\\'");
+      var q = "fullText contains '" + escaped + "' and trashed = false";
+      if (input.mime_type) {
+        var mimeMap = { 'document': 'application/vnd.google-apps.document', 'spreadsheet': 'application/vnd.google-apps.spreadsheet', 'presentation': 'application/vnd.google-apps.presentation', 'pdf': 'application/pdf', 'folder': 'application/vnd.google-apps.folder' };
+        q += " and mimeType = '" + (mimeMap[input.mime_type] || input.mime_type) + "'";
+      }
+      var res = await withTimeout(drv.files.list({
+        q: q, driveId: input.drive_id, corpora: 'drive',
+        supportsAllDrives: true, includeItemsFromAllDrives: true,
+        fields: 'files(id, name, mimeType, webViewLink, modifiedTime, description)', pageSize: max, orderBy: 'modifiedTime desc',
+      }), 10000, 'search_in_shared_drive');
+      return { drive_id: input.drive_id, files: (res.data.files || []).map(function(f) { return { id: f.id, name: f.name, type: f.mimeType, link: f.webViewLink, modified: f.modifiedTime }; }), count: (res.data.files || []).length };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore ricerca Drive condiviso: ' + e.message };
+    }
+  }
+
   if (toolName === 'browse_folder') {
     var drv = getDrivePerUtente(userId);
     if (!drv) return { error: 'Google Drive non collegato. Scrivi "collega il mio Google".' };

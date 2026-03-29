@@ -111,6 +111,7 @@ async function addKBEntry(content, tags, addedBy, options) {
   var smartClass = classifyKBContent(content, tier);
   var score = smartClass ? smartClass.score : tierDef.score;
   var expiryDays = smartClass ? smartClass.expiryDays : (options.expiresInDays != null ? options.expiresInDays : tierDef.expiryDays);
+  var now = new Date();
   var expiresAt = expiryDays ? new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000).toISOString() : null;
 
   var entry = {

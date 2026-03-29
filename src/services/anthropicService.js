@@ -13,6 +13,7 @@ var { getUserRole, getRoleSystemPrompt } = require('../../rbac');
 var { resolveSlackMentions } = require('./slackService');
 var { generaLinkOAuth } = require('./googleAuthService');
 var registry = require('../tools/registry');
+var { safeParse } = require('../utils/safeCall');
 
 var client = new Anthropic();
 
@@ -375,8 +376,8 @@ async function autoLearn(userId, userMessage, botReply, context) {
     var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return;
 
-    var analysis = JSON.parse(jsonMatch[0]);
-    if (analysis.skip) return;
+    var analysis = safeParse('AUTO-LEARN', jsonMatch[0], null);
+    if (!analysis || analysis.skip) return;
 
     // Memories
     if (analysis.memories && analysis.memories.length > 0) {
