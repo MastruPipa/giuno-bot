@@ -324,9 +324,10 @@ var definitions = [
   },
   {
     name: 'search_leads',
-    description: 'Cerca lead nel CRM per nome, status, data o responsabile. Dati freschi da Supabase. ' +
-      'IMPORTANTE: per "aggiornami sul CRM" usa updated_after per filtrare solo deal recenti (ultimi 3-6 mesi). ' +
-      'NON mostrare contratti won dell\'anno scorso come attivi.',
+    description: 'Cerca lead nel CRM. Dati freschi da Supabase. ' +
+      'IMPORTANTE: per "aggiornami sul CRM" usa is_active: true. ' +
+      'Questo filtra automaticamente i contratti chiusi/vecchi. ' +
+      'Solo se l\'utente chiede "tutti i clienti" o "storico" ometti is_active.',
     input_schema: {
       type: 'object',
       properties: {
@@ -336,7 +337,8 @@ var definitions = [
         owner_slack_id: { type: 'string' },
         updated_after: { type: 'string', description: 'Solo lead aggiornati dopo questa data ISO.' },
         created_after: { type: 'string', description: 'Solo lead creati dopo questa data ISO.' },
-        active_after: { type: 'string', description: 'Solo lead con last_contact O first_contact dopo questa data. USA QUESTO per "aggiornami sul CRM" — es. "2026-01-01" per lead attivi nel 2026.' },
+        active_after: { type: 'string', description: 'Solo lead con last_contact O first_contact dopo questa data.' },
+        is_active: { type: 'boolean', description: 'true = solo lead attivi (default per CRM update). false = solo chiusi/storici. Ometti per tutti.' },
         limit: { type: 'number', description: 'Max risultati (default 20)' },
       },
     },

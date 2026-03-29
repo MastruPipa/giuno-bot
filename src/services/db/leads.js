@@ -71,6 +71,8 @@ async function searchLeads(params) {
     if (params.created_after)   q = q.gte('created_at', params.created_after);
     if (params.active_after)    q = q.or('last_contact.gte.' + params.active_after + ',first_contact.gte.' + params.active_after);
     if (params.exclude_status)  q = q.not('status', 'in', '(' + params.exclude_status.map(function(s) { return '"' + s + '"'; }).join(',') + ')');
+    if (params.is_active === true)  q = q.eq('is_active', true);
+    if (params.is_active === false) q = q.eq('is_active', false);
     q = q.order('updated_at', { ascending: false }).limit(params.limit || 20);
     var res = await q;
     return res.data || [];

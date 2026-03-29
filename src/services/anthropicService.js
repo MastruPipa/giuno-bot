@@ -148,11 +148,9 @@ var SYSTEM_PROMPT =
   '- NON inventare MAI cifre, stati, o date.\n' +
   '- TEMPORALITÀ CRM — REGOLA CRITICA:\n' +
   '  Per "aggiornami sul CRM" o "stato pipeline":\n' +
-  '  → USA search_leads con active_after: "2026-01-01" (filtra per last_contact/first_contact)\n' +
-  '  → Questo esclude automaticamente contratti 2025 chiusi\n' +
-  '  → Un lead "won" con last_contact nel 2025 è CHIUSO, NON attivo\n' +
-  '  → L\'unico modo affidabile per sapere se un lead è attivo è guardare last_contact\n' +
-  '  → Solo se chiede "storico" o "tutti i clienti" → ometti active_after\n\n' +
+  '  → USA search_leads con is_active: true\n' +
+  '  → Questo esclude automaticamente contratti chiusi e vecchi\n' +
+  '  → Solo se chiede "storico" o "tutti i clienti" → ometti is_active\n\n' +
 
   'ENTITÀ E NOMI:\n' +
   'Quando l\'utente menziona un cliente, fornitore o persona:\n' +
