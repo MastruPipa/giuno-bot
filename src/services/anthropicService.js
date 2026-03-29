@@ -142,7 +142,11 @@ var SYSTEM_PROMPT =
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +
   '- Per aggiornare un lead: usa update_lead. Per crearne uno: create_lead.\n' +
   '- NON usare MAI search_kb o recall_memory per dati CRM (importi, status, pipeline).\n' +
-  '- Quando aggiorni un lead: conferma in 2-3 righe SOLO il lead modificato.\n' +
+  '- IMPARA DAL FEEDBACK: se l\'utente dice "questo è chiuso", "non è più attivo", ' +
+  '"questo contratto è finito" → USA SUBITO update_lead con is_active: false.\n' +
+  '- Se dice "abbiamo sentito X ieri" → aggiorna last_contact.\n' +
+  '- Se corregge un dato (status, valore, servizi) → aggiorna SUBITO senza chiedere conferma.\n' +
+  '- Quando aggiorni: conferma in 2-3 righe SOLO il lead modificato.\n' +
   '- MAI mostrare tutta la pipeline CRM dopo un aggiornamento puntuale.\n' +
   '- Se l\'utente corregge in risposta: agisci direttamente senza rigenerare tutto.\n' +
   '- NON inventare MAI cifre, stati, o date.\n' +
