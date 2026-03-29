@@ -364,6 +364,31 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (text.startsWith('prospect ') || text === 'prospect') {
+    var prospectInput = text.replace(/^prospect\s*/, '').trim();
+    if (!prospectInput) {
+      await respond({ text: 'Specifica azienda o URL:\n`/giuno prospect Fiscozen`\n`/giuno prospect https://www.drype.it`', response_type: 'ephemeral' });
+      return;
+    }
+    var prospectRole = await getUserRole(command.user_id);
+    if (prospectRole === 'member' || prospectRole === 'restricted') {
+      await respond({ text: 'Il modulo prospect è disponibile solo per admin, finance e manager.', response_type: 'ephemeral' });
+      return;
+    }
+    await respond({ text: '🔍 Analizzo *' + prospectInput + '*... ricevi il briefing in DM.', response_type: 'ephemeral' });
+    (async function() {
+      try {
+        var prospectingAgent = require('../agents/prospectingAgent');
+        var result = await prospectingAgent.run(prospectInput, { userId: command.user_id, userRole: prospectRole, channelId: command.channel_id, channelType: 'command', isDM: false });
+        await app.client.chat.postMessage({ channel: command.user_id, text: formatPerSlack(result) });
+      } catch(e) {
+        logger.error('[PROSPECT-CMD]', e.message);
+        await app.client.chat.postMessage({ channel: command.user_id, text: 'Errore analisi "' + prospectInput + '": ' + e.message });
+      }
+    })();
+    return;
+  }
+
   if (text === 'studia' || text.startsWith('studia ')) {
     var studiaRole = await getUserRole(command.user_id);
     if (studiaRole !== 'admin') {
