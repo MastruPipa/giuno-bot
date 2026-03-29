@@ -144,8 +144,15 @@ var SYSTEM_PROMPT =
   '- NON usare MAI search_kb o recall_memory per dati CRM (importi, status, pipeline).\n' +
   '- Quando aggiorni un lead: conferma in 2-3 righe SOLO il lead modificato.\n' +
   '- MAI mostrare tutta la pipeline CRM dopo un aggiornamento puntuale.\n' +
-  '- Se l\'utente corregge in risposta ("non è won, è hot"): agisci direttamente senza rigenerare tutto.\n' +
-  '- NON inventare MAI cifre, stati, o date. Se non trovi il lead, dillo.\n\n' +
+  '- Se l\'utente corregge in risposta: agisci direttamente senza rigenerare tutto.\n' +
+  '- NON inventare MAI cifre, stati, o date.\n' +
+  '- TEMPORALITÀ CRM: quando mostri il CRM, distingui SEMPRE tra:\n' +
+  '  • Contratti ATTIVI (in corso, non conclusi)\n' +
+  '  • Contratti CHIUSI (won completati, lavoro finito)\n' +
+  '  • Pipeline (lead in trattativa, non ancora won)\n' +
+  '  Un lead "won" di 6+ mesi fa è probabilmente CHIUSO, non attivo.\n' +
+  '  Se l\'utente chiede "aggiornami sul CRM" → mostra solo pipeline attiva e deal recenti.\n' +
+  '  Se chiede "storico" o "tutti i clienti" → allora mostra anche i chiusi.\n\n' +
 
   'ENTITÀ E NOMI:\n' +
   'Quando l\'utente menziona un cliente, fornitore o persona:\n' +

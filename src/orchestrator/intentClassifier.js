@@ -77,7 +77,7 @@ var RULES = [
   {
     intent: INTENTS.CLIENT_RETRIEVAL,
     keywords: [
-      'dimmi di', 'info su', 'cosa sai di', 'cliente', 'progetto',
+      'dimmi di', 'info su', 'cosa sai di',
       'lavoriamo con', 'chi è', 'storia di',
       'dossier', 'cerca tutto su',
     ],
