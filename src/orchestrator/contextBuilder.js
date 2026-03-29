@@ -8,6 +8,7 @@ var rbac = require('../../rbac');
 var logger = require('../utils/logger');
 var { generaLinkOAuth } = require('../services/googleAuthService');
 var embeddingService = require('../services/embeddingService');
+var { safeCall } = require('../utils/safeCall');
 
 var getUserRole = rbac.getUserRole;
 
@@ -22,6 +23,18 @@ var CONTEXT_NEEDS = {
   HISTORICAL_SCAN:  { memories: false, kb: false, glossary: false, entities: false, drive: false },
   GENERAL:          { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true  },
 };
+
+// ─── Trivial message detection ───────────────────────────────────────────────
+
+var TRIVIAL_PATTERNS = [
+  /^(ok|sì|si|no|grazie|perfetto|capito|certo|esatto|giusto|bene|dai|vabbè|oki|yep|yes|nope|np|ok!)$/i,
+  /^(ok grazie|grazie mille|perfetto grazie|va bene|va benissimo|ottimo|fatto|ricevuto|confermato)$/i,
+];
+
+function isTrivialMessage(message) {
+  var m = (message || '').trim();
+  return TRIVIAL_PATTERNS.some(function(p) { return p.test(m); });
+}
 
 // ─── Main builder ────────────────────────────────────────────────────────────
 
@@ -73,7 +86,7 @@ async function buildContext(params) {
   var teamContext = null;
 
   var unifiedWorked = false;
-  if (message.length > 5 && (needs.memories || needs.kb || needs.entities || needs.drive)) {
+  if (!isTrivialMessage(message) && message.length > 5 && (needs.memories || needs.kb || needs.entities || needs.drive)) {
     try {
       var searchResults = await db.unifiedSearch(message, userId, 12,
         [needs.memories ? 'memories' : null, needs.kb ? 'kb' : null,
@@ -106,64 +119,52 @@ async function buildContext(params) {
   // Fallback to cache-based search if unified didn't work
   if (!unifiedWorked) {
     if (needs.memories) {
-      try {
-        var rawMem = await db.searchMemories(userId, message) || [];
-        // Confidence gate: filter low-quality
-        relevantMemories = rawMem.filter(function(m) {
-          return (m.confidence_score || m.final_score || 0.5) >= 0.3;
-        }).slice(0, 5);
-      } catch(e) {}
+      var rawMem = (await safeCall('CTX.searchMemories', function() { return db.searchMemories(userId, message); }, [])) || [];
+      relevantMemories = rawMem.filter(function(m) {
+        return (m.confidence_score || m.final_score || 0.5) >= 0.3;
+      }).slice(0, 5);
     }
     if (needs.kb) {
-      try {
-        var rawKB = db.searchKB(message) || [];
-        kbResults = rawKB.filter(function(k) {
-          return (k.confidence_score || 0.5) >= 0.3;
-        }).slice(0, 3);
-      } catch(e) {}
+      var rawKB = (await safeCall('CTX.searchKB', function() { return db.searchKB(message); }, [])) || [];
+      kbResults = rawKB.filter(function(k) {
+        return (k.confidence_score || 0.5) >= 0.3;
+      }).slice(0, 3);
     }
 
     // Semantic search layer (if embeddings available)
     if (embeddingService.getProvider() && message.length > 10) {
-      try {
-        var semResults = await embeddingService.semanticSearch(message, { limit: 3 });
-        if (semResults && semResults.length > 0) {
-          semResults.forEach(function(sr) {
-            kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
-          });
-        }
-      } catch(e) {}
+      var semResults = (await safeCall('CTX.semanticSearch',
+        function() { return embeddingService.semanticSearch(message, { limit: 3 }); }, [])) || [];
+      semResults.forEach(function(sr) {
+        kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
+      });
     }
   }
 
   // Channel context from RPC or options
   var channelContext = options.channelContext || null;
   if (options.channelId && !channelProfile) {
-    try {
-      var rpcCtx = await db.getChannelContext(options.channelId, 8);
-      if (rpcCtx) channelProfile = rpcCtx;
-    } catch(e) {}
+    var rpcCtx = await safeCall('CTX.getChannelContext',
+      function() { return db.getChannelContext(options.channelId, 8); }, null);
+    if (rpcCtx) channelProfile = rpcCtx;
   }
 
   // Entity graph context
   if (needs.entities && relevantEntities.length > 0) {
-    try {
-      var entityCtx = await db.getEntityContext(relevantEntities[0].name, 1);
-      if (entityCtx && entityCtx.found) teamContext = entityCtx;
-    } catch(e) {}
+    var entityCtx = await safeCall('CTX.getEntityContext',
+      function() { return db.getEntityContext(relevantEntities[0].name, 1); }, null);
+    if (entityCtx && entityCtx.found) teamContext = entityCtx;
   }
 
   // Glossary
   var glossaryContext = null;
   if (needs.glossary) {
-    try {
-      var gm = db.searchGlossary(message) || [];
-      if (gm.length > 0) {
-        glossaryContext = gm.slice(0, 5).map(function(g) {
-          return g.term + ': ' + g.definition + (g.synonyms && g.synonyms.length > 0 ? ' (sinonimi: ' + g.synonyms.join(', ') + ')' : '');
-        }).join('\n');
-      }
-    } catch(e) {}
+    var gm = (await safeCall('CTX.searchGlossary', function() { return db.searchGlossary(message); }, [])) || [];
+    if (gm.length > 0) {
+      glossaryContext = gm.slice(0, 5).map(function(g) {
+        return g.term + ': ' + g.definition + (g.synonyms && g.synonyms.length > 0 ? ' (sinonimi: ' + g.synonyms.join(', ') + ')' : '');
+      }).join('\n');
+    }
   }
 
   return {
