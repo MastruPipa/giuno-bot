@@ -6,6 +6,7 @@
 
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
+var { safeParse } = require('../utils/safeCall');
 
 var CONFIG = {
   SLACK_BATCH_SIZE: 100,
@@ -66,7 +67,7 @@ async function generateSummary(messages, channelMeta) {
     });
     var raw = res.content[0].text.trim().replace(/```json|```/g, '').trim();
     var match = raw.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    return match ? safeParse('SCANNER.parse', match[0], null) : null;
   } catch(e) {
     logger.warn('[SCANNER] Summary failed:', e.message);
     return null;

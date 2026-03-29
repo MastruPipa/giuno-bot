@@ -5,6 +5,7 @@
 
 var logger = require('../utils/logger');
 var dbClient = require('../services/db/client');
+var { safeParse } = require('../utils/safeCall');
 
 var BOT_USER_ID = process.env.GIUNO_BOT_USER_ID || null;
 var FLUSH_INTERVAL_MS = 30000; // 30 seconds
@@ -121,7 +122,7 @@ async function flushChannel(channelId) {
 
     var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
     if (!match) return;
-    var result = JSON.parse(match[0]);
+    var result = safeParse('RT-LISTENER', match[0], null);
     if (!result.worth_saving || !result.items || result.items.length === 0) return;
 
     // Save each item to KB

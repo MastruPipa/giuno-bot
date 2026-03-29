@@ -5,6 +5,7 @@
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { checkPermission, getAccessDeniedMessage } = require('../../rbac');
+var { safeParse } = require('../utils/safeCall');
 
 function roundTo50(n) { return Math.ceil(n / 50) * 50; }
 function formatEuro(n) { return n.toLocaleString('it-IT') + ' €'; }
@@ -49,7 +50,7 @@ async function estimateEffort(message, rateCardData, similarQuotes) {
   var rateInfo = '';
   if (rateCardData && rateCardData.resources) {
     rateInfo = 'RATE CARD:\n';
-    var resources = typeof rateCardData.resources === 'string' ? JSON.parse(rateCardData.resources) : rateCardData.resources;
+    var resources = typeof rateCardData.resources === 'string' ? safeParse('QUOTE.resources', rateCardData.resources, []) : rateCardData.resources;
     if (Array.isArray(resources)) resources.forEach(function(r) {
       rateInfo += '- ' + (r.role || r.person || 'N/A') + ': ' + (r.hour_rate || r.day_rate || '?') + '€/h\n';
     });
@@ -69,7 +70,7 @@ async function estimateEffort(message, rateCardData, similarQuotes) {
     messages: [{ role: 'user', content: message }],
   });
   var match = res.content[0].text.trim().match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : null;
+  return match ? safeParse('QUOTE.parse', match[0], null) : null;
 }
 
 function extractServiceType(msg) {

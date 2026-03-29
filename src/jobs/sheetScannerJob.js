@@ -6,6 +6,7 @@ var crypto = require('crypto');
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var { getSheetPerUtente } = require('../services/googleAuthService');
+var { safeParse } = require('../utils/safeCall');
 
 var CONFIG = {
   MODEL: 'claude-haiku-4-5-20251001',
@@ -54,7 +55,7 @@ async function generateSummary(rows, displayName, category) {
       }],
     });
     var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    return match ? safeParse('SHEET-SCANNER', match[0], null) : null;
   } catch(e) {
     logger.warn('[SHEET-SCAN] AI summary error:', e.message);
     return null;

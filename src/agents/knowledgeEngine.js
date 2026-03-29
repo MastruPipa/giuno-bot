@@ -10,6 +10,7 @@ var { getDrivePerUtente, getDocsPerUtente, getSheetPerUtente } = require('../ser
 var { extractDocText } = require('../tools/driveTools');
 var { withTimeout } = require('../utils/timeout');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
+var { safeParse } = require('../utils/safeCall');
 
 // ─── Document Classification (Haiku) ─────────────────────────────────────────
 
@@ -151,7 +152,7 @@ async function classifySlackThread(channelName, threadText) {
     var text = res.content[0].text.trim();
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]);
+    return safeParse('KB-ENGINE', jsonMatch[0], null);
   } catch(e) {
     logger.error('[KB-ENGINE][SLACK] Haiku error:', e.message);
     return null;

@@ -7,6 +7,7 @@ var logger = require('../utils/logger');
 var dbClient = require('../services/db/client');
 var { getDrivePerUtente, getDocsPerUtente, getSheetPerUtente } = require('../services/googleAuthService');
 var { extractDocText } = require('../tools/driveTools');
+var { safeParse } = require('../utils/safeCall');
 
 var CONFIG = {
   MODEL: 'claude-haiku-4-5-20251001',
@@ -43,7 +44,7 @@ async function processDocument(drv, docsApi, file, supabase) {
       }],
     });
     var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    return match ? safeParse('DRIVE-WATCHER', match[0], null) : null;
   } catch(e) {
     logger.warn('[DRIVE-WATCH] Doc process error:', file.name, e.message);
     return null;

@@ -4,6 +4,7 @@
 
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
+var { safeParse } = require('../utils/safeCall');
 
 async function detectStaleChannels(supabase) {
   var signals = [];
@@ -45,7 +46,8 @@ async function detectDeadlines(supabase) {
           messages: [{ role: 'user', content: 'Oggi: ' + new Date().toISOString().slice(0, 10) + '.\nEstrai scadenze entro 7 giorni. JSON array:\n[{"deadline":"YYYY-MM-DD","who":"chi","what":"cosa","days_left":N,"severity":"high|medium|low"}]\nSe nessuna: []\n\nMEMORIE:\n' + texts }],
         });
         var match = aiRes.content[0].text.trim().replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
-        if (match) JSON.parse(match[0]).forEach(function(d) {
+        var pmData = safeParse('PM-SIGNALS.parse', match && match[0], null);
+        if (pmData) pmData.forEach(function(d) {
           signals.push({
             signal_type: 'approaching_deadline', severity: d.severity || (d.days_left <= 1 ? 'high' : 'medium'),
             description: (d.who || '?') + ': ' + (d.what || '?') + ' — scadenza ' + (d.deadline || '?') + ' (' + (d.days_left || '?') + 'gg)',

@@ -4,6 +4,7 @@
 
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
+var { safeParse } = require('../utils/safeCall');
 
 function jaccard(a, b) {
   var setA = new Set((a || '').toLowerCase().split(/\W+/).filter(function(w) { return w.length > 3; }));
@@ -85,7 +86,8 @@ async function runQualitySweep() {
 
           var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
           if (match) {
-            var scores = JSON.parse(match[0]);
+            var scores = safeParse('KB-SWEEP', match[0], null);
+            if (!scores) continue;
             for (var si = 0; si < scores.length; si++) {
               var s = scores[si];
               var entry = batch[s.idx];

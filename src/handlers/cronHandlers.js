@@ -22,6 +22,7 @@ var { app, getUtenti } = require('../services/slackService');
 var { askGemini } = require('../services/geminiService');
 var { fetchNewsMarketing } = require('../services/geminiService');
 var { catalogaConfirm } = require('../tools/registry');
+var { safeParse } = require('../utils/safeCall');
 
 var getUserRole = rbac.getUserRole;
 var getRoleSystemPrompt = rbac.getRoleSystemPrompt;
@@ -466,7 +467,7 @@ async function autoMapChannel(channelId) {
     var text = res.content[0].text.trim();
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
-    var parsed = JSON.parse(jsonMatch[0]);
+    var parsed = safeParse('CRON.459', jsonMatch[0], null);
     var mapping = { channel_name: ch.name, cliente: parsed.cliente || null, progetto: parsed.progetto || null, tags: parsed.tags || [], note: ch.topic ? ch.topic.value : null };
     db.saveChannelMapping(channelId, mapping);
     logger.info('[CHANNEL-MAP] #' + ch.name + ' → cliente:', mapping.cliente, '| progetto:', mapping.progetto);
@@ -524,7 +525,7 @@ async function digerisciCanali() {
         var analysisText = analysisRes.content[0].text.trim();
         var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
-        var analysis = JSON.parse(jsonMatch[0]);
+        var analysis = safeParse('CRON.517', jsonMatch[0], null);
         if (analysis.skip) { db.saveChannelDigest(ch.id, 'nessuna novita', newestTs); continue; }
 
         if (analysis.digest) db.saveChannelDigest(ch.id, analysis.digest, newestTs);
@@ -707,7 +708,7 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
       var rcText = rcExtract.content[0].text.trim();
       var rcJson = rcText.match(/\{[\s\S]*\}/);
       if (rcJson) {
-        var parsed = JSON.parse(rcJson[0]);
+        var parsed = safeParse('CRON.698', rcJson[0], null);
         if (!parsed.skip) {
           rateCard = parsed;
           rateCard.source_doc_id = rcFile.id;
@@ -828,7 +829,7 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
       var extText = extraction.content[0].text.trim();
       var extJson = extText.match(/\{[\s\S]*\}/);
       if (!extJson) { results.da_rivedere.push(file.name + ' (parsing fallito)'); continue; }
-      var data = JSON.parse(extJson[0]);
+      var data = safeParse('CRON.813', extJson[0], null);
 
       var pricing_era = 'unknown';
       if (data.date) {
@@ -1041,7 +1042,7 @@ async function consolidaMemorie() {
         var jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
 
-        var result = JSON.parse(jsonMatch[0]);
+        var result = safeParse('CRON.1020', jsonMatch[0], null);
         if (result.delete_ids && result.delete_ids.length > 0) {
           for (var d = 0; d < result.delete_ids.length; d++) {
             await db.deleteMemory(userId, result.delete_ids[d]);

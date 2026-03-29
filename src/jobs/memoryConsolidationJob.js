@@ -5,6 +5,7 @@
 
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
+var { safeParse } = require('../utils/safeCall');
 
 async function runConsolidation() {
   var supabase = dbClient.getClient();
@@ -65,7 +66,7 @@ async function runConsolidation() {
 
         var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
         if (!match) continue;
-        var result = JSON.parse(match[0]);
+        var result = safeParse('MEM-CONSOLIDATION', match[0], null);
         if (result.skip) continue;
 
         for (var ci = 0; ci < (result.consolidations || []).length; ci++) {
