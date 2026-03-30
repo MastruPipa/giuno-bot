@@ -14,6 +14,7 @@ var INTENTS = {
   QUOTE_SUPPORT:    'QUOTE_SUPPORT',
   CRM_UPDATE:       'CRM_UPDATE',
   HISTORICAL_SCAN:  'HISTORICAL_SCAN',
+  PROSPECTING:      'PROSPECTING',
   GENERAL:          'GENERAL',
 };
 
@@ -70,9 +71,13 @@ var RULES = [
     ],
   },
   {
+    intent: INTENTS.PROSPECTING,
+    keywords: ['prospect', 'analizza azienda', 'valuta azienda', 'fit score', 'dovremmo contattare', 'vale la pena contattare', 'scheda azienda'],
+  },
+  {
     intent: INTENTS.CLIENT_RETRIEVAL,
     keywords: [
-      'dimmi di', 'info su', 'cosa sai di', 'cliente', 'progetto',
+      'dimmi di', 'info su', 'cosa sai di',
       'lavoriamo con', 'chi è', 'storia di',
       'dossier', 'cerca tutto su',
     ],

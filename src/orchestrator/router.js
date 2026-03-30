@@ -23,6 +23,7 @@ function getGeneralAssistantAgent() { return require('../agents/generalAssistant
 function getQuoteSupportAgent()     { return require('../agents/quoteSupportAgent'); }
 function getCRMUpdateAgent()        { return require('../agents/crmUpdateAgent'); }
 function getScanCommand()           { return require('../commands/scanCommand'); }
+function getProspectingAgent()      { return require('../agents/prospectingAgent'); }
 
 /**
  * runAgent — calls an agent with timeout and falls back to general on error.
@@ -97,6 +98,9 @@ async function route(userId, message, options) {
         break;
       case INTENTS.HISTORICAL_SCAN:
         reply = await getScanCommand().run(message, ctx);
+        break;
+      case INTENTS.PROSPECTING:
+        reply = await getProspectingAgent().run(message, ctx);
         break;
       case INTENTS.GENERAL:
       default:
