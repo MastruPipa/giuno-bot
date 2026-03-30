@@ -177,3 +177,13 @@ CREATE TABLE IF NOT EXISTS rate_card_history (
 -- ALTER TABLE user_tokens ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE user_prefs ENABLE ROW LEVEL SECURITY;
 -- etc.
+
+
+-- 15. Runtime metrics (persistenza KPI operativi)
+CREATE TABLE IF NOT EXISTS runtime_metrics (
+  metric_name TEXT PRIMARY KEY,
+  metric_value NUMERIC NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_metrics_updated_at ON runtime_metrics(updated_at);

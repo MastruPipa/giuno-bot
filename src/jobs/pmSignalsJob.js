@@ -5,17 +5,30 @@
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
+var { isInternalProjectText, shouldExcludeText, extractExcludedPhrases } = require('../utils/briefingFilters');
 
 async function detectStaleChannels(supabase) {
   var signals = [];
   var cutoff = new Date(Date.now() - 5 * 86400000).toISOString();
+  var excludedPhrases = [];
+  try {
+    var resEx = await supabase.from('memories').select('content')
+      .ilike('content', '%CORREZIONE_BRIEFING:%')
+      .order('created_at', { ascending: false }).limit(20);
+    excludedPhrases = extractExcludedPhrases((resEx && resEx.data) || []);
+  } catch (_) {}
   try {
     var res = await supabase.from('channel_profiles')
       .select('channel_id, channel_name, cliente, progetto, project_phase, last_activity')
       .not('cliente', 'is', null).not('project_phase', 'eq', 'chiuso')
       .or('last_activity.is.null,last_activity.lt.' + cutoff).limit(20);
     if (res.data) res.data.forEach(function(ch) {
-      var days = ch.last_activity ? Math.round((Date.now() - new Date(ch.last_activity).getTime()) / 86400000) : 999;
+      var text = [ch.channel_name, ch.cliente, ch.progetto].filter(Boolean).join(' | ');
+      if (isInternalProjectText(text)) return;
+      if (shouldExcludeText(text, excludedPhrases)) return;
+      if (!ch.last_activity) return; // evita falsi positivi "999gg" quando manca il dato
+      var days = Math.round((Date.now() - new Date(ch.last_activity).getTime()) / 86400000);
+      if (!Number.isFinite(days) || days < 0) return;
       signals.push({
         signal_type: 'stale_channel', severity: days > 10 ? 'high' : 'medium',
         channel_id: ch.channel_id, channel_name: ch.channel_name,
