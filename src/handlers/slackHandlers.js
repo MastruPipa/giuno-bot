@@ -20,6 +20,7 @@ var { createRequestContext, withRequestContext } = require('../utils/requestCont
 var metricsService = require('../services/metricsService');
 var { toUserErrorMessage } = require('../utils/errorResponse');
 var feedbackCorrections = require('../utils/feedbackCorrections');
+var { isDegradedReply } = require('../utils/degradedReply');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -138,9 +139,11 @@ app.event('app_mention', async function(args) {
       channelType: mentionChannelType,
     });
 
+    var degradedMentionReply = isDegradedReply(reply);
+
     // Gemini quality gate
     var { askGemini } = require('../services/geminiService');
-    if (reply && reply.length > 30) {
+    if (!degradedMentionReply && reply && reply.length > 30) {
       try {
         var qgReview = await askGemini(
           'Rivedi questa risposta di un bot aziendale in un canale Slack pubblico.\n' +
@@ -169,8 +172,10 @@ app.event('app_mention', async function(args) {
     }
 
     // Background: detect deadlines and auto-summarize Drive links
-    detectAndSaveDeadlines(event.user, text, event.channel).catch(function(e) {});
-    autoSummarizeDriveLinks(event.user, event.text, event.channel, threadTs).catch(function(e) {});
+    if (!degradedMentionReply) {
+      detectAndSaveDeadlines(event.user, text, event.channel).catch(function(e) {});
+      autoSummarizeDriveLinks(event.user, event.text, event.channel, threadTs).catch(function(e) {});
+    }
   } catch(err) {
     metricsService.increment('request_failed_total');
     metricsService.increment('request_app_mention_failed_total');
@@ -222,6 +227,7 @@ app.message(async function(args) {
     stats.messagesHandled++;
     try {
       var reply = await route(message.user, message.text, { threadTs: implicitThreadTs, channelId: message.channel, channelType: 'public' });
+      var degradedImplicitReply = isDegradedReply(reply);
       var formatted = formatPerSlack(reply);
       if (!formatted) return;
       var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: implicitThreadTs });
@@ -230,7 +236,7 @@ app.message(async function(args) {
         lastBotMessageByChannel.set(message.channel, { ts: posted.ts, userId: message.user, timestamp: Date.now() });
       }
       // Background: detect deadlines
-      detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
+      if (!degradedImplicitReply) detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
     } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
     return;
   }
@@ -492,7 +498,8 @@ app.command('/giuno', async function(args) {
 
   try {
     var reply = await route(command.user_id, text);
-    await respond({ text: formatPerSlack(reply), response_type: 'in_channel' });
+    var degradedSlashReply = isDegradedReply(reply);
+    await respond({ text: formatPerSlack(reply), response_type: degradedSlashReply ? 'ephemeral' : 'in_channel' });
   } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_slash_giuno_failed_total'); await respond(toUserErrorMessage(err)); }
   });
 });
