@@ -9,6 +9,7 @@ var logger = require('../utils/logger');
 var { generaLinkOAuth } = require('../services/googleAuthService');
 var embeddingService = require('../services/embeddingService');
 var { safeCall } = require('../utils/safeCall');
+var { withTimeout, withRetry } = require('../utils/retryPolicy');
 
 var getUserRole = rbac.getUserRole;
 
@@ -88,10 +89,14 @@ async function buildContext(params) {
   var unifiedWorked = false;
   if (!isTrivialMessage(message) && message.length > 5 && (needs.memories || needs.kb || needs.entities || needs.drive)) {
     try {
-      var searchResults = await db.unifiedSearch(message, userId, 12,
-        [needs.memories ? 'memories' : null, needs.kb ? 'kb' : null,
-         needs.entities ? 'entities' : null, needs.drive ? 'drive' : null, 'channels']
-        .filter(Boolean));
+      var searchResults = await withRetry(function() {
+        return withTimeout(function() {
+          return db.unifiedSearch(message, userId, 12,
+            [needs.memories ? 'memories' : null, needs.kb ? 'kb' : null,
+             needs.entities ? 'entities' : null, needs.drive ? 'drive' : null, 'channels']
+            .filter(Boolean));
+        }, 4000, 'CTX.unifiedSearch');
+      }, { retries: 1, baseDelayMs: 120 });
 
       if (searchResults && searchResults.length > 0) {
         unifiedWorked = true;
@@ -134,11 +139,32 @@ async function buildContext(params) {
     // Semantic search layer (if embeddings available)
     if (embeddingService.getProvider() && message.length > 10) {
       var semResults = (await safeCall('CTX.semanticSearch',
-        function() { return embeddingService.semanticSearch(message, { limit: 3 }); }, [])) || [];
+        function() {
+          return withTimeout(function() {
+            return embeddingService.semanticSearch(message, { limit: 3 });
+          }, 3500, 'CTX.semanticSearch');
+        }, [])) || [];
       if (semResults && semResults.length > 0) {
         semResults.forEach(function(sr) {
           kbResults.push({ content: sr.content, confidence_tier: 'semantic_match', confidence_score: sr.similarity || 0.7 });
         });
+      }
+    }
+  }
+
+  // Always inject latest user corrections for briefing/summary quality
+  if (needs.memories) {
+    var correctionMemories = (await safeCall(
+      'CTX.searchMemories.corrections',
+      function() { return db.searchMemories(userId, 'CORREZIONE_BRIEFING feedback correzione briefing'); },
+      []
+    )) || [];
+    if (correctionMemories.length > 0) {
+      var normalized = correctionMemories
+        .filter(function(m) { return m && m.content && m.content.includes('CORREZIONE_BRIEFING:'); })
+        .slice(0, 3);
+      if (normalized.length > 0) {
+        relevantMemories = normalized.concat(relevantMemories || []).slice(0, 8);
       }
     }
   }
