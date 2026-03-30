@@ -67,6 +67,12 @@ async function searchLeads(params) {
     if (params.contact_name)    q = q.ilike('contact_name', '%' + params.contact_name + '%');
     if (params.status)          q = q.eq('status', params.status);
     if (params.owner_slack_id)  q = q.eq('owner_slack_id', params.owner_slack_id);
+    if (params.updated_after)   q = q.gte('updated_at', params.updated_after);
+    if (params.created_after)   q = q.gte('created_at', params.created_after);
+    if (params.active_after)    q = q.or('last_contact.gte.' + params.active_after + ',first_contact.gte.' + params.active_after);
+    if (params.exclude_status)  q = q.not('status', 'in', '(' + params.exclude_status.map(function(s) { return '"' + s + '"'; }).join(',') + ')');
+    if (params.is_active === true)  q = q.eq('is_active', true);
+    if (params.is_active === false) q = q.eq('is_active', false);
     q = q.order('updated_at', { ascending: false }).limit(params.limit || 20);
     var res = await q;
     return res.data || [];

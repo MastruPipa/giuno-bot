@@ -8,7 +8,6 @@ test('isCorrectionFeedback detects explicit correction phrases', function() {
   assert.equal(isCorrectionFeedback('Sputo 16 è stato chiuso e inviato'), true);
   assert.equal(isCorrectionFeedback('Non è un cliente, è un progetto interno'), true);
   assert.equal(isCorrectionFeedback('Non hai menzionato tutto il lavoro da fare'), true);
-  assert.equal(isCorrectionFeedback('Rimuovi dalle memories il sistema tracking catania studio'), true);
 });
 
 test('isCorrectionFeedback ignores neutral chat messages', function() {

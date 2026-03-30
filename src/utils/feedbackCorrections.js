@@ -3,7 +3,7 @@
 function isCorrectionFeedback(text) {
   var t = (text || '').toLowerCase().trim();
   if (!t || t.length < 8) return false;
-  return /non hai menzionato|hai confuso|stai confondendo|non è un cliente|non e un cliente|è stato chiuso|e stato chiuso|è chiuso|e chiuso|da correggere|errore di classificazione|rifai il briefing|aggiorna briefing|aggiorna il briefing|rimuovi dalle memor|non menzionare|non citare|evento vecchio|evento chiuso/.test(t);
+  return /non hai menzionato|hai confuso|stai confondendo|non è un cliente|non e un cliente|è stato chiuso|e stato chiuso|è chiuso|e chiuso|da correggere|errore di classificazione|rifai il briefing|aggiorna briefing|aggiorna il briefing/.test(t);
 }
 
 function buildCorrectionPrompt(originalText) {
