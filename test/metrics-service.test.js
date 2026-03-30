@@ -2,6 +2,7 @@
 
 var test = require('node:test');
 var assert = require('node:assert/strict');
+var fs = require('fs');
 var metrics = require('../src/services/metricsService');
 
 test('metrics increment/get/snapshot/reset', function() {
@@ -23,4 +24,5 @@ test('metrics increment/get/snapshot/reset', function() {
 
   metrics.reset();
   assert.deepEqual(metrics.snapshot(), {});
+  assert.equal(fs.existsSync(metrics.getMetricsFilePath()), true);
 });
