@@ -6,6 +6,7 @@
 require('dotenv').config();
 
 var logger = require('../utils/logger');
+var { createCircuitBreaker } = require('../utils/circuitBreaker');
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,7 @@ try { GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI; 
 
 var gemini = null;
 var geminiModel = null;
+var geminiBreaker = createCircuitBreaker('gemini', { failureThreshold: 3, cooldownMs: 20000 });
 
 if (GoogleGenerativeAI && process.env.GEMINI_API_KEY) {
   gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -33,7 +35,7 @@ async function askGemini(prompt, systemInstruction) {
     var model = systemInstruction
       ? gemini.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: systemInstruction })
       : geminiModel;
-    var result = await model.generateContent(prompt);
+    var result = await geminiBreaker.exec(function() { return model.generateContent(prompt); });
     return { response: result.response.text() };
   } catch(e) {
     logger.error('Errore Gemini:', e.message);
@@ -55,13 +57,13 @@ async function fetchNewsMarketing() {
       model: 'gemini-2.0-flash',
       tools: [{ googleSearch: {} }],
     });
-    var result = await newsModel.generateContent(
+    var result = await geminiBreaker.exec(function() { return newsModel.generateContent(
       'Dammi le 4 notizie più rilevanti di oggi nel mondo del marketing digitale, comunicazione, social media e advertising. ' +
       'Per ognuna: titolo breve, fonte e link. ' +
       'Rispondi SOLO con un elenco nel formato:\n' +
       '• *Titolo* — Fonte — <URL|Leggi>\n' +
       'Niente introduzioni, niente commenti. Solo le 4 notizie.'
-    );
+    ); });
     var testo = result.response.text().trim();
     if (testo) {
       _newsCache = { date: oggi, testo: testo };
@@ -83,13 +85,13 @@ async function callGeminiWithSearch(prompt, options) {
       model: 'gemini-2.0-flash',
       tools: [{ googleSearch: {} }],
     });
-    var result = await searchModel.generateContent({
+    var result = await geminiBreaker.exec(function() { return searchModel.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
         maxOutputTokens: options.maxTokens || 1024,
         temperature: options.temperature || 0.3,
       },
-    });
+    }); });
     var text = result.response.text();
     var sources = [];
     try {
@@ -113,4 +115,5 @@ module.exports = {
   askGemini: askGemini,
   callGeminiWithSearch: callGeminiWithSearch,
   fetchNewsMarketing: fetchNewsMarketing,
+  getGeminiBreakerStatus: function() { return geminiBreaker.status(); },
 };

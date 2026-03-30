@@ -16,6 +16,10 @@ var { catalogaConfirm } = require('../tools/registry');
 var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
 var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
 var { processSlackMessage: watchMemory } = require('../services/slackMemoryWatcher');
+var { createRequestContext, withRequestContext } = require('../utils/requestContext');
+var metricsService = require('../services/metricsService');
+var { toUserErrorMessage } = require('../utils/errorResponse');
+var feedbackCorrections = require('../utils/feedbackCorrections');
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -44,6 +48,23 @@ function dedup(ts) {
   return true;
 }
 
+async function saveCorrectionFeedback(userId, text) {
+  try {
+    var content = 'CORREZIONE_BRIEFING: ' + (text || '').substring(0, 500);
+    await db.addMemory(userId, content, ['feedback', 'correzione', 'briefing'], {
+      memoryType: 'feedback',
+      confidenceScore: 0.9,
+      source: 'dm_correction',
+      entityRefs: [],
+    });
+    logger.info('[FEEDBACK-CORRECTION] salvata per user:', userId);
+    return true;
+  } catch (e) {
+    logger.error('[FEEDBACK-CORRECTION] errore salvataggio:', e.message);
+    return false;
+  }
+}
+
 // ─── app_mention ───────────────────────────────────────────────────────────────
 
 app.event('app_mention', async function(args) {
@@ -51,7 +72,15 @@ app.event('app_mention', async function(args) {
   if (!dedup(event.ts)) return;
   var threadTs = event.thread_ts || event.ts;
   stats.messagesHandled++;
+  metricsService.increment('request_total');
+  metricsService.increment('request_app_mention_total');
 
+  return withRequestContext(createRequestContext({
+    userId: event.user,
+    channelId: event.channel,
+    threadTs: threadTs,
+    source: 'app_mention',
+  }), async function() {
   try {
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
@@ -143,8 +172,11 @@ app.event('app_mention', async function(args) {
     detectAndSaveDeadlines(event.user, text, event.channel).catch(function(e) {});
     autoSummarizeDriveLinks(event.user, event.text, event.channel, threadTs).catch(function(e) {});
   } catch(err) {
-    await app.client.chat.postMessage({ channel: event.channel, text: 'Errore: ' + err.message, thread_ts: threadTs });
+    metricsService.increment('request_failed_total');
+    metricsService.increment('request_app_mention_failed_total');
+    await app.client.chat.postMessage({ channel: event.channel, text: toUserErrorMessage(err), thread_ts: threadTs });
   }
+  });
 });
 
 // ─── app.message ──────────────────────────────────────────────────────────────
@@ -152,6 +184,16 @@ app.event('app_mention', async function(args) {
 app.message(async function(args) {
   var message = args.message;
   if (message.bot_id) return;
+
+  metricsService.increment('request_total');
+  metricsService.increment('request_app_message_total');
+
+  return withRequestContext(createRequestContext({
+    userId: message.user,
+    channelId: message.channel,
+    threadTs: message.thread_ts || message.ts,
+    source: 'app_message',
+  }), async function() {
 
   // Passive memory watcher (fire-and-forget)
   if (message.text && message.channel_type !== 'im') {
@@ -189,7 +231,7 @@ app.message(async function(args) {
       }
       // Background: detect deadlines
       detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
-    } catch(err) { logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
+    } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
     return;
   }
 
@@ -225,7 +267,7 @@ app.message(async function(args) {
           text: '*Import completato!*\n• Importati: ' + impResult.imported + '\n• Saltati (duplicati): ' + impResult.skipped + '\n• Errori: ' + impResult.errors,
         });
       } catch(e) {
-        await app.client.chat.postMessage({ channel: message.channel, text: 'Errore import: ' + e.message });
+        await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(e) });
       }
       return;
     } else if (impTesto === 'no' || impTesto === 'annulla') {
@@ -260,11 +302,27 @@ app.message(async function(args) {
   stats.messagesHandled++;
   var threadTs = message.thread_ts || null;
   try {
-    var reply = await route(message.user, message.text, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
+    var originalText = message.text || '';
+    var textForRoute = originalText;
+    var isCorrection = !!(
+      feedbackCorrections &&
+      typeof feedbackCorrections.isCorrectionFeedback === 'function' &&
+      feedbackCorrections.isCorrectionFeedback(originalText)
+    );
+    if (isCorrection) {
+      metricsService.increment('feedback_correction_total');
+      await saveCorrectionFeedback(message.user, originalText);
+      if (typeof feedbackCorrections.buildCorrectionPrompt === 'function') {
+        textForRoute = feedbackCorrections.buildCorrectionPrompt(originalText);
+      }
+    }
+
+    var reply = await route(message.user, textForRoute, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
-  } catch(err) { await app.client.chat.postMessage({ channel: message.channel, text: 'Errore: ' + err.message }); }
+  } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(err) }); }
+  });
 });
 
 // ─── /giuno command ────────────────────────────────────────────────────────────
@@ -273,6 +331,15 @@ app.command('/giuno', async function(args) {
   var command = args.command, ack = args.ack, respond = args.respond;
   await ack();
   var text = command.text.trim();
+
+  metricsService.increment('request_total');
+  metricsService.increment('request_slash_giuno_total');
+
+  return withRequestContext(createRequestContext({
+    userId: command.user_id,
+    channelId: command.channel_id,
+    source: 'slash_giuno',
+  }), async function() {
 
   if (text.startsWith('admin')) {
     await handleAdmin(command, respond);
@@ -290,7 +357,7 @@ app.command('/giuno', async function(args) {
         text: 'Ciao ' + myName + '!\n• Slack ID: `' + command.user_id + '`\n• Livello di accesso: *' + myRole.toUpperCase() + '*\n• ' + roleDesc,
         response_type: 'ephemeral',
       });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -300,7 +367,7 @@ app.command('/giuno', async function(args) {
       var canaliBriefing = await getSlackBriefingData();
       var parti = await buildBriefingUtente(command.user_id, canaliBriefing);
       await respond({ text: formatPerSlack(parti.join('\n\n')) || 'Niente di nuovo, mbare.', response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore recap: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -327,7 +394,7 @@ app.command('/giuno', async function(args) {
         pMsg += '\n_Nessun followup in scadenza oggi/domani._';
       }
       await respond({ text: pMsg, response_type: 'ephemeral' });
-    } catch(e) { await respond({ text: 'Errore: ' + e.message, response_type: 'ephemeral' }); }
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -352,7 +419,7 @@ app.command('/giuno', async function(args) {
       }
       var reply = await route(command.user_id, 'Fammi un preventivo per: ' + prevText);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -396,7 +463,7 @@ app.command('/giuno', async function(args) {
       var prompt = 'Mostrami gli slot liberi nel mio calendario' + (datePart ? ' per il giorno ' + datePart : ' oggi');
       var reply = await route(command.user_id, prompt);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -405,7 +472,7 @@ app.command('/giuno', async function(args) {
       var query = text.replace(/^email\s*/, '').trim() || 'is:unread is:important';
       var reply = await route(command.user_id, 'Mostrami le email: ' + query);
       await respond({ text: formatPerSlack(reply), response_type: 'ephemeral' });
-    } catch(err) { await respond({ text: 'Errore: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -419,14 +486,15 @@ app.command('/giuno', async function(args) {
       await respond({ text: 'Avvio scansione preventivi su Drive... dammi un momento.', response_type: 'ephemeral' });
       var { catalogaPreventivi } = require('./cronHandlers');
       await catalogaPreventivi(command.user_id, command.channel_id);
-    } catch(err) { await respond({ text: 'Errore cataloga: ' + err.message, response_type: 'ephemeral' }); }
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
   try {
     var reply = await route(command.user_id, text);
     await respond({ text: formatPerSlack(reply), response_type: 'in_channel' });
-  } catch(err) { await respond('Errore: ' + err.message); }
+  } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_slash_giuno_failed_total'); await respond(toUserErrorMessage(err)); }
+  });
 });
 
 // ─── team_join ────────────────────────────────────────────────────────────────
@@ -566,7 +634,7 @@ async function handleAdmin(command, respond) {
       // Auto-expire after 2 minutes
       setTimeout(function() { catalogaConfirm.delete(importKey); }, 120000);
     } catch(e) {
-      await respond({ text: 'Errore lettura CRM: ' + e.message, response_type: 'ephemeral' });
+      await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' });
     }
     return;
   }

@@ -5,6 +5,12 @@
 var logger = require('../utils/logger');
 var registry = require('../tools/registry');
 var dbClient = require('../services/db/client');
+var {
+  isInternalProjectText,
+  isLikelyStaleEvent,
+  extractExcludedPhrases,
+  shouldExcludeText,
+} = require('../utils/briefingFilters');
 
 var SYSTEM_PROMPT_ADMIN =
   'Sei Giuno, assistente di Katania Studio (agenzia creativa, 9 persone).\n' +
@@ -40,6 +46,7 @@ async function buildPersonalizedContext(ctx) {
   var parts = [];
   var supabase = dbClient.getClient();
   var now = new Date();
+  var excludedPhrases = [];
 
   parts.push('DATA: ' + now.toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Europe/Rome' }) +
     ' ore ' + now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' }));
@@ -63,6 +70,18 @@ async function buildPersonalizedContext(ctx) {
     }
   } catch(e) {
     logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
+  }
+
+  // User correction memories used as hard constraints for briefing generation
+  try {
+    var { data: corrections } = await supabase.from('memories')
+      .select('content')
+      .ilike('content', '%CORREZIONE_BRIEFING:%')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    excludedPhrases = extractExcludedPhrases(corrections || []);
+  } catch (e) {
+    logger.warn('[DAILY-DIGEST] fetch correzioni fallito:', e.message);
   }
 
   if (userName) parts.push('UTENTE: ' + userName + ' | Scope: ' + digestScope);
@@ -116,6 +135,12 @@ async function buildPersonalizedContext(ctx) {
 
     var { data: projects } = await projQuery;
     if (projects && projects.length > 0) {
+      projects = projects.filter(function(p) {
+        var text = [p.channel_name, p.cliente, p.progetto, p.description].filter(Boolean).join(' | ');
+        if (shouldExcludeText(text, excludedPhrases)) return false;
+        return true;
+      });
+
       // For team members: filter to their projects only
       if (!isAdmin && userName) {
         projects = projects.filter(function(p) {
@@ -128,18 +153,36 @@ async function buildPersonalizedContext(ctx) {
         });
       }
       if (projects.length > 0) {
-        var label = isAdmin ? 'TUTTI I PROGETTI ATTIVI' : 'I TUOI PROGETTI';
-        parts.push(label + ':\n' + projects.map(function(p) {
-          var line = '• #' + p.channel_name;
-          if (p.cliente) line += ' [' + p.cliente + ']';
-          if (p.project_phase) line += ' fase: ' + p.project_phase;
-          if (p.description) line += ' — ' + p.description;
-          if (isAdmin && p.team_members) {
-            var members = Array.isArray(p.team_members) ? p.team_members : [];
-            if (members.length > 0) line += ' (team: ' + members.slice(0, 3).join(', ') + ')';
-          }
-          return line;
-        }).join('\n'));
+        var clientProjects = projects.filter(function(p) {
+          var text = [p.cliente, p.progetto, p.channel_name, p.description].filter(Boolean).join(' | ');
+          return !isInternalProjectText(text);
+        });
+        var internalProjects = projects.filter(function(p) {
+          var text = [p.cliente, p.progetto, p.channel_name, p.description].filter(Boolean).join(' | ');
+          return isInternalProjectText(text);
+        });
+
+        function renderProjects(label, rows) {
+          if (!rows || rows.length === 0) return;
+          parts.push(label + ':\n' + rows.map(function(p) {
+            var line = '• #' + p.channel_name;
+            if (p.cliente) line += ' [' + p.cliente + ']';
+            if (p.project_phase) line += ' fase: ' + p.project_phase;
+            if (p.description && !isLikelyStaleEvent(p.description)) line += ' — ' + p.description;
+            if (isAdmin && p.team_members) {
+              var members = Array.isArray(p.team_members) ? p.team_members : [];
+              if (members.length > 0) line += ' (team: ' + members.slice(0, 3).join(', ') + ')';
+            }
+            return line;
+          }).join('\n'));
+        }
+
+        if (isAdmin) {
+          renderProjects('PROGETTI CLIENTE ATTIVI', clientProjects);
+          renderProjects('PROGETTI INTERNI ATTIVI', internalProjects);
+        } else {
+          renderProjects('I TUOI PROGETTI', clientProjects.concat(internalProjects));
+        }
       }
     }
   } catch(e) {
@@ -150,7 +193,15 @@ async function buildPersonalizedContext(ctx) {
   if (isAdmin) {
     try {
       var { data: pipeline } = await supabase.from('leads')
-        .select('status').not('status', 'in', '("won","lost")');
+        .select('status, company_name, source, notes')
+        .not('status', 'in', '("won","lost")');
+      if (pipeline && pipeline.length > 0) {
+        pipeline = pipeline.filter(function(l) {
+          var text = [l.company_name, l.source, l.notes].filter(Boolean).join(' | ');
+          if (shouldExcludeText(text, excludedPhrases)) return false;
+          return !isInternalProjectText(text);
+        });
+      }
       if (pipeline && pipeline.length > 0) {
         var byStatus = {};
         pipeline.forEach(function(l) { byStatus[l.status] = (byStatus[l.status] || 0) + 1; });
