@@ -47,17 +47,36 @@ var RULES = [
       'hanno firmato', 'ha firmato', 'hanno detto no', 'hanno rifiutato',
       'aggiungi al crm', 'inserisci nel crm', 'nuovo lead', 'metti nel crm',
       'prossimo followup', 'follow-up per', 'ricontattare',
+      // Fix: "modifica/aggiorna la quotazione/offerta/proposta di X" = CRM update, NOT quote generation
+      'modifica la quotazione', 'modifica la proposta', 'modifica la offerta',
+      'modifica l\'offerta', 'aggiorna la quotazione', 'aggiorna la proposta',
+      'aggiorna l\'offerta',
     ],
+    // Boost: if user provides exact amounts (€), it's a data update, not a quote request
+    validate: function(msg) {
+      // If message contains "modifica/aggiorna" + amount → definitely CRM update
+      if (/modifica|aggiorna|cambia/i.test(msg) && /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msg)) return true;
+      // If message says "sono X€" → user is giving data to save
+      if (/sono\s+\d|la proposta è|abbiamo offerto|abbiamo proposto/i.test(msg)) return true;
+      // Default: match on keywords alone
+      return true;
+    },
   },
   {
     intent: INTENTS.QUOTE_SUPPORT,
     keywords: [
       'quotare', 'quanto costerebbe', 'stima costi',
       'quanto costa fare', 'quanto quotare', 'prezzo per un',
-      'offerta per', 'budget per un',
+      'budget per un',
     ],
-    // Anti-noise: requires service type, deliverable, client, or duration
+    // Anti-noise: requires service type AND must NOT be a data update (modifica + amount)
     validate: function(msg) {
+      // If user says "modifica/aggiorna" + gives amounts → NOT a quote request, it's CRM update
+      if (/modifica|aggiorna|cambia|correggi/i.test(msg) && /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msg)) return false;
+      // If user says "sono X€" → giving data, not asking for estimate
+      if (/sono\s+\d+\s*€|sono\s+€?\s*\d+/i.test(msg)) return false;
+      // If user says "la proposta/offerta è di X€" → data, not request
+      if (/la (proposta|offerta|quotazione) è/i.test(msg)) return false;
       return /brand|video|social|web|sito|evento|campagna|foto|design|grafica|app|logo|content|copy|seo|adv|shoot|presentazion/i.test(msg) ||
         /settiman|mes[ei]|giorn|durata|consegna|timeline/i.test(msg) ||
         /per\s+[A-Z][a-z]/i.test(msg); // "per NomeCliente"
@@ -93,6 +112,18 @@ async function classifyIntent(message) {
   }
   var msgLow = message.toLowerCase();
 
+  // Fast guard: if user provides amounts + modification verbs → always CRM_UPDATE
+  // This catches "sono 1650€/mese", "la proposta è di 5000€", "abbiamo offerto 3000€"
+  var hasAmount = /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msgLow);
+  if (hasAmount) {
+    var isDataInput = /sono\s+\d|la (proposta|offerta|quotazione) è|abbiamo (offerto|proposto)|modifica|aggiorna|cambia|aggiung/i.test(msgLow);
+    var isAskingEstimate = /quanto (cost|dovremmo|chied)|stima|genera|crea un preventivo|fai un preventivo/i.test(msgLow);
+    if (isDataInput && !isAskingEstimate) {
+      logger.info('[INTENT] Fast guard → CRM_UPDATE (user provides data with amounts)');
+      return INTENTS.CRM_UPDATE;
+    }
+  }
+
   // Keyword matching pass
   for (var i = 0; i < RULES.length; i++) {
     var rule = RULES[i];
@@ -118,10 +149,11 @@ async function classifyIntent(message) {
         'THREAD_SUMMARY — recap/riassunto thread o canale Slack\n' +
         'DAILY_DIGEST — briefing giornaliero, agenda, mail, piano del giorno\n' +
         'CLIENT_RETRIEVAL — info su un cliente, progetto o preventivo specifico\n' +
-        'QUOTE_SUPPORT — richiesta di preventivo, quotazione, stima costi per un progetto\n' +
-        'CRM_UPDATE — aggiornamento CRM, cambio status lead, aggiunta servizi, followup\n' +
+        'QUOTE_SUPPORT — l\'utente CHIEDE di generare/stimare un preventivo nuovo (es. "quanto costerebbe fare X?"). NON usare se l\'utente fornisce già i numeri.\n' +
+        'CRM_UPDATE — aggiornamento CRM, modifica dati lead, cambio status. INCLUDE: "modifica la quotazione/offerta di X", "sono X€ al mese", "la proposta è di X€" (= l\'utente dà dati da salvare, non chiede una stima)\n' +
         'HISTORICAL_SCAN — scan storico Slack/Drive, indicizzazione, stato scan\n' +
-        'GENERAL — tutto il resto',
+        'GENERAL — tutto il resto\n' +
+        'ATTENZIONE: se l\'utente dice "modifica" + fornisce importi in €, è SEMPRE CRM_UPDATE, MAI QUOTE_SUPPORT.',
       messages: [{ role: 'user', content: message }],
     });
     var intent = (res.content[0].text || '').trim().toUpperCase();

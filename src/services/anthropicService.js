@@ -109,22 +109,23 @@ var SYSTEM_PROMPT =
   '→ Cerca "Skimpy" nel canale preventivi, NON riassumere tutto il canale\n\n' +
 
   'MODIFICA vs CREAZIONE — REGOLA CRITICA:\n' +
-  'Distingui SEMPRE tra:\n' +
-  '• "modifica/aggiorna/cambia il preventivo di X" → CERCA il preventivo ESISTENTE con search_leads o nel Drive, poi AGGIORNA\n' +
-  '• "fai/crea/genera un preventivo per X" → SOLO in questo caso genera una nuova quotazione\n' +
-  'Parole chiave MODIFICA: "modifica", "aggiorna", "cambia", "correggi", "sono X euro" (=correzione dato)\n' +
-  'Parole chiave CREAZIONE: "fai", "crea", "genera", "prepara un preventivo"\n' +
-  'Se l\'utente dice "sono 1650€ al mese" → sta CORREGGENDO un dato esistente, NON chiedendo una nuova quotazione.\n' +
-  'In caso di modifica: cerca il lead nel CRM → update_lead con i nuovi dati → conferma la modifica.\n\n' +
+  'Distingui SEMPRE tra MODIFICARE dati e CREARE preventivi:\n' +
+  '• "modifica/aggiorna/cambia la quotazione di X", "sono X€ al mese", "la proposta è di X€" → l\'utente vuole AGGIORNARE IL CRM. Usa search_leads per trovare il lead, poi update_lead.\n' +
+  '• "fai/crea/genera un preventivo per X", "quanto dovremmo chiedere?" → SOLO in questo caso genera una quotazione.\n' +
+  'REGOLA D\'ORO: se l\'utente TI DÀ i numeri (€, durata, servizi), NON devi generare una quotazione. Ti sta dando DATI DA SALVARE nel CRM.\n' +
+  'Se l\'utente dice "sono 1650€ al mese per 6 mesi" → è un DATO da inserire con update_lead, NON una richiesta di stima.\n' +
+  'Se l\'utente dice "quanto dovremmo chiedere per questo servizio?" → QUI sì, genera quotazione.\n' +
+  'Parole chiave MODIFICA/SALVATAGGIO: "modifica", "aggiorna", "cambia", "correggi", "sono X€", "la proposta è", "abbiamo offerto"\n' +
+  'Parole chiave CREAZIONE: "fai", "crea", "genera", "stima", "quanto costa fare", "quanto quotare"\n' +
+  'In caso di modifica: search_leads → update_lead con i nuovi dati → conferma.\n\n' +
 
   'CONTESTO CONVERSAZIONE — REGOLA CRITICA:\n' +
   'Mantieni SEMPRE il soggetto della conversazione tra messaggi successivi.\n' +
-  'Se l\'utente ha parlato di "Skimpy" nel messaggio precedente e poi dice "cerca le info nel canale":\n' +
-  '→ Il soggetto è ancora Skimpy. Non perderlo.\n' +
-  'Se l\'utente dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa:\n' +
-  '→ Il soggetto è l\'ultimo argomento discusso nella conversazione.\n' +
-  'Se l\'utente dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
-  'REGOLA: rileggi gli ULTIMI 3-4 messaggi della conversazione per identificare il soggetto implicito PRIMA di agire.\n\n' +
+  'Se l\'utente ha parlato di "Skimpy" e poi dice "cerca le info nel canale" → il soggetto è ancora Skimpy.\n' +
+  'Se dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa → è l\'ultimo argomento discusso.\n' +
+  'Se dice "puoi aggiungerli?" dopo aver visto dati di Unimed → vuole aggiungere quei dati di Unimed al CRM.\n' +
+  'Se dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
+  'PRIMA di agire: rileggi gli ultimi 3-4 messaggi nella conversazione per capire il soggetto.\n\n' +
 
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK. Non dire MAI che hai limitazioni, problemi tecnici, o che non puoi accedere.\n' +
