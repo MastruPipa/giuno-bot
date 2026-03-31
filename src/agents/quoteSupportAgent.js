@@ -88,6 +88,23 @@ function extractServiceType(msg) {
 
 async function run(message, ctx) {
   if (!checkPermission(ctx.userRole, 'view_quote_price')) return getAccessDeniedMessage(ctx.userRole);
+
+  // Guard: if user is giving data (amounts + modification verbs), this is a CRM update, not a quote request
+  var msgLow = (message || '').toLowerCase();
+  var hasAmount = /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msgLow);
+  var isDataInput = hasAmount && /sono\s+\d|la (proposta|offerta|quotazione) è|abbiamo (offerto|proposto)|modifica|aggiorna|cambia|aggiung/i.test(msgLow);
+  var isAskingEstimate = /quanto (cost|dovremmo|chied)|stima|genera un|crea un preventivo|fai un preventivo/i.test(msgLow);
+  if (isDataInput && !isAskingEstimate) {
+    logger.info('[QUOTE-V2] Redirecting to CRM update — user provides data, not asking for estimate');
+    try {
+      var crmAgent = require('./crmUpdateAgent');
+      return await crmAgent.run(message, ctx);
+    } catch(e) {
+      logger.warn('[QUOTE-V2] CRM redirect failed:', e.message);
+      return 'Sembra che tu stia dando dei dati da salvare nel CRM, non chiedendo una stima. Prova a dire "aggiorna il CRM di [nome cliente]" con i dati.';
+    }
+  }
+
   logger.info('[QUOTE-V2] Request from', ctx.userId);
   try {
     var serviceType = extractServiceType(message);

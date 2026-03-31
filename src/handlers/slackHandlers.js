@@ -230,7 +230,25 @@ app.message(async function(args) {
 
     stats.messagesHandled++;
     try {
-      var reply = await route(message.user, message.text, { threadTs: implicitThreadTs, channelId: message.channel, channelType: 'public' });
+      // Read thread context for implicit replies
+      var implicitRouteOpts = { threadTs: implicitThreadTs, channelId: message.channel, channelType: 'public' };
+      if (implicitThreadTs) {
+        try {
+          var implicitThreadHistory = await app.client.conversations.replies({
+            channel: message.channel, ts: implicitThreadTs, limit: 10,
+          });
+          if (implicitThreadHistory.messages && implicitThreadHistory.messages.length > 1) {
+            var prevImplicit = implicitThreadHistory.messages.slice(0, -1);
+            var implicitCtx = prevImplicit.map(function(m) {
+              var who = m.bot_id ? 'Giuno' : (m.user ? '<@' + m.user + '>' : '???');
+              return who + ': ' + (m.text || '').substring(0, 300);
+            }).join('\n');
+            implicitRouteOpts.preflightInstruction = '[MESSAGGI PRECEDENTI NEL THREAD:\n' + implicitCtx + ']\n' +
+              'IMPORTANTE: usa questi messaggi per capire il SOGGETTO della conversazione. Non perderlo.';
+          }
+        } catch(implErr) { /* non bloccante */ }
+      }
+      var reply = await route(message.user, message.text, implicitRouteOpts);
       var degradedImplicitReply = isDegradedReply(reply);
       var formatted = formatPerSlack(reply);
       if (!formatted) return;

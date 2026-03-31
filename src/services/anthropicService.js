@@ -121,12 +121,11 @@ var SYSTEM_PROMPT =
 
   'CONTESTO CONVERSAZIONE — REGOLA CRITICA:\n' +
   'Mantieni SEMPRE il soggetto della conversazione tra messaggi successivi.\n' +
-  'Se l\'utente ha parlato di "Skimpy" nel messaggio precedente e poi dice "cerca le info nel canale":\n' +
-  '→ Il soggetto è ancora Skimpy. Non perderlo.\n' +
-  'Se l\'utente dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa:\n' +
-  '→ Il soggetto è l\'ultimo argomento discusso nella conversazione.\n' +
-  'Se l\'utente dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
-  'REGOLA: rileggi gli ULTIMI 3-4 messaggi della conversazione per identificare il soggetto implicito PRIMA di agire.\n\n' +
+  'Se l\'utente ha parlato di "Skimpy" e poi dice "cerca le info nel canale" → il soggetto è ancora Skimpy.\n' +
+  'Se dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa → è l\'ultimo argomento discusso.\n' +
+  'Se dice "puoi aggiungerli?" dopo aver visto dati di Unimed → vuole aggiungere quei dati di Unimed al CRM.\n' +
+  'Se dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
+  'PRIMA di agire: rileggi gli ultimi 3-4 messaggi nella conversazione per capire il soggetto.\n\n' +
 
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK. Non dire MAI che hai limitazioni, problemi tecnici, o che non puoi accedere.\n' +

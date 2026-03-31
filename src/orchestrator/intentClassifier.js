@@ -112,6 +112,18 @@ async function classifyIntent(message) {
   }
   var msgLow = message.toLowerCase();
 
+  // Fast guard: if user provides amounts + modification verbs → always CRM_UPDATE
+  // This catches "sono 1650€/mese", "la proposta è di 5000€", "abbiamo offerto 3000€"
+  var hasAmount = /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msgLow);
+  if (hasAmount) {
+    var isDataInput = /sono\s+\d|la (proposta|offerta|quotazione) è|abbiamo (offerto|proposto)|modifica|aggiorna|cambia|aggiung/i.test(msgLow);
+    var isAskingEstimate = /quanto (cost|dovremmo|chied)|stima|genera|crea un preventivo|fai un preventivo/i.test(msgLow);
+    if (isDataInput && !isAskingEstimate) {
+      logger.info('[INTENT] Fast guard → CRM_UPDATE (user provides data with amounts)');
+      return INTENTS.CRM_UPDATE;
+    }
+  }
+
   // Keyword matching pass
   for (var i = 0; i < RULES.length; i++) {
     var rule = RULES[i];
