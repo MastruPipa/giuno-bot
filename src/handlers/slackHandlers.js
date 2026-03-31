@@ -21,6 +21,10 @@ var metricsService = require('../services/metricsService');
 var { toUserErrorMessage } = require('../utils/errorResponse');
 var feedbackCorrections = require('../utils/feedbackCorrections');
 var { isDegradedReply } = require('../utils/degradedReply');
+var appHome = require('./appHomeHandler');
+
+// Register App Home tab
+appHome.register();
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
