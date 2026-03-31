@@ -353,7 +353,9 @@ app.message(async function(args) {
 
     var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true };
     if (dmThreadContext) {
-      dmRouteOptions.preflightInstruction = '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]';
+      dmRouteOptions.preflightInstruction = '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
+        'USA QUESTI MESSAGGI per capire il contesto. Se l\'utente si riferisce a qualcosa detto "sopra", le info sono QUI.\n' +
+        'Il SOGGETTO della conversazione è determinato da questi messaggi precedenti. Non perderlo.';
     }
     var reply = await route(message.user, textForRoute, dmRouteOptions);
     var formatted = formatPerSlack(reply);
