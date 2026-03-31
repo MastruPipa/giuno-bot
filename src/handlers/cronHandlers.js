@@ -1066,8 +1066,9 @@ async function consolidaMemorie() {
 
 function scheduleCrons() {
   cron.schedule('45 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
-  cron.schedule('5 9 * * 1-5', inviaStandupDomande, { timezone: 'Europe/Rome' });
-  cron.schedule('0 10 * * 1-5', pubblicaRecapStandup, { timezone: 'Europe/Rome' });
+  // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
+  var dailyStandup = require('./dailyStandupV2');
+  dailyStandup.scheduleDailyJobs(cron);
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
   cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
