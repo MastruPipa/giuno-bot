@@ -79,6 +79,22 @@ function getTimeRange(config) {
   return { oldest: oldest, newest: newest };
 }
 
+// ─── Entity cache (TTL 5 min) ────────────────────────────────────────────────
+
+var _entityCache = null;
+var _entityCacheExpiry = 0;
+var ENTITY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function _getEntityCache() {
+  if (_entityCache && Date.now() < _entityCacheExpiry) return _entityCache;
+  return null;
+}
+
+function _setEntityCache(data) {
+  _entityCache = data;
+  _entityCacheExpiry = Date.now() + ENTITY_CACHE_TTL;
+}
+
 // ─── Cache & persistence ──────────────────────────────────────────────────────
 
 var _memCache = null;
@@ -128,11 +144,23 @@ async function addMemory(userId, content, tags, options) {
 
   var entityRefs = [];
   try {
-    var entRes = await c.getClient().from('kb_entities').select('canonical_name').limit(100);
-    if (entRes.data) {
+    var entData = _getEntityCache();
+    if (!entData) {
+      var entRes = await c.getClient().from('kb_entities').select('canonical_name, aliases').limit(500);
+      entData = entRes.data || [];
+      _setEntityCache(entData);
+    }
+    if (entData) {
       var contentLow = content.toLowerCase();
-      entityRefs = entRes.data.filter(function(e) {
-        return e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase());
+      entityRefs = entData.filter(function(e) {
+        if (e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase())) return true;
+        // Also match aliases
+        if (e.aliases && Array.isArray(e.aliases)) {
+          return e.aliases.some(function(alias) {
+            return alias.length > 3 && contentLow.includes(alias.toLowerCase());
+          });
+        }
+        return false;
       }).map(function(e) { return e.canonical_name; });
     }
   } catch(e) {

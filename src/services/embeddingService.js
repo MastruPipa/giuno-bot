@@ -10,8 +10,9 @@ var VOYAGE_KEY = process.env.VOYAGE_API_KEY;
 var OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 function getProvider() {
-  if (VOYAGE_KEY) return 'voyage';
+  // OpenAI preferred (text-embedding-3-small, 1536 dim, compatible with pgvector)
   if (OPENAI_KEY) return 'openai';
+  if (VOYAGE_KEY) return 'voyage';
   return null;
 }
 

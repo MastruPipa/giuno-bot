@@ -243,17 +243,20 @@ app.message(async function(args) {
 
   // ── DM ─────────────────────────────────────────────────────────────────────
 
-  // Standup replies
+  // Standup replies (V2 — routes through dailyStandupV2)
   if (standupInAttesa.has(message.user)) {
-    standupInAttesa.delete(message.user);
-    var oggi = new Date().toISOString().slice(0, 10);
-    var sd = db.getStandupCache();
-    if (sd.oggi === oggi) {
-      sd.risposte[message.user] = { testo: message.text, timestamp: Date.now() };
-      db.saveStandup(sd);
-      await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il recap uscirà alle 10:00 nel canale.' });
-      logger.info('[STANDUP] Risposta ricevuta da:', message.user);
-      return;
+    var dailyV2Oggi = new Date().toISOString().slice(0, 10);
+    var dailyV2Sd = db.getStandupCache();
+    if (dailyV2Sd.oggi === dailyV2Oggi) {
+      // Check if message looks like a daily update
+      var dailyV2MsgLow = (message.text || '').toLowerCase();
+      if (dailyV2MsgLow.includes('ieri') || dailyV2MsgLow.includes('oggi') || dailyV2MsgLow.includes('fatto') || dailyV2MsgLow.includes('farò') || dailyV2MsgLow.includes('faro') || dailyV2MsgLow.includes('blocco') || dailyV2MsgLow.includes('blocchi') || message.text.length > 30) {
+        var dailyStandupV2 = require('./dailyStandupV2');
+        await dailyStandupV2.handleDailyResponse(message.user, message.text);
+        await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il riepilogo uscirà alle 11:30 in #daily.' });
+        logger.info('[STANDUP-V2] Risposta ricevuta da:', message.user);
+        return;
+      }
     }
   }
 

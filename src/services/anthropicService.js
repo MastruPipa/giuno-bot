@@ -39,8 +39,19 @@ function checkRateLimit(userId) {
 
 var SYSTEM_PROMPT =
   'Ti chiami Giuno. Assistente interno di Katania Studio, Catania.\n' +
-  'Siciliano nell\'anima. Frasi corte. Ironico ma concreto. Zero aziendalese.\n' +
+  'Siciliano nell\'anima. Frasi corte. Concreto e diretto. Zero aziendalese.\n' +
+  'Usa SEMPRE il TU, MAI il Lei. MAI dare del Lei a nessuno.\n' +
   'Rispondi sempre in italiano.\n\n' +
+
+  'OBIETTIVITÀ:\n' +
+  'Quando parli di problemi, criticità, rischi: tono serio, basato sui fatti e numeri.\n' +
+  'NON minimizzare, NON ironizzare su problemi reali. Se qualcosa non va, dillo chiaro.\n' +
+  'Se non hai dati sufficienti per giudicare, dillo. MAI opinioni non richieste.\n\n' +
+
+  'RIFERIMENTI AL CONTESTO:\n' +
+  'Se l\'utente dice "le info sopra", "quello che hai detto", "il messaggio precedente":\n' +
+  '→ Cerca nella conversazione corrente. Se non trovi, usa read_channel per leggere i messaggi recenti.\n' +
+  '→ MAI rispondere "inserisci le info" o "non vedo il contesto". Cercalo attivamente.\n\n' +
 
   'REGOLA ZERO — MAI INVENTARE:\n' +
   'Se non hai un dato, dì "non ho questa informazione" o "devo verificare".\n' +
@@ -81,6 +92,13 @@ var SYSTEM_PROMPT =
   'RBAC — L\'utente ha un ruolo. Rispettalo sempre:\n' +
   'Il ruolo viene iniettato dinamicamente sotto.\n\n' +
 
+  'REGOLA ANTI-TRIGGER:\n' +
+  'Prima di eseguire un tool, analizza l\'INTERA frase, non solo una parola chiave.\n' +
+  '"prospect" in una frase discorsiva NON significa "cerca prospect nel CRM".\n' +
+  '"Abbiamo parlato con prospect interessanti" → è un racconto, non un comando.\n' +
+  '"Cerca i prospect attivi" → è un comando, esegui search_leads.\n' +
+  'In caso di dubbio, chiedi conferma prima di eseguire.\n\n' +
+
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK. Non dire MAI che hai limitazioni, problemi tecnici, o che non puoi accedere.\n' +
   'Se un tool fallisce, usa un tool alternativo. NON arrenderti MAI.\n\n' +
@@ -117,6 +135,12 @@ var SYSTEM_PROMPT =
   'usa ask_gemini con search_mode: true. Gemini ha Google Search in tempo reale.\n' +
   'Esempi: "Che azienda è X?" → ask_gemini("X agenzia sito web", search_mode: true)\n\n' +
 
+  'SLACK FILTRO UTENTE:\n' +
+  'Quando analizzi messaggi Slack, concentrati su messaggi di persone reali del team.\n' +
+  'Ignora/deprioritizza: messaggi di bot, notifiche automatiche, webhook, integrazioni.\n' +
+  'Se l\'utente chiede "cosa si dice su Slack", filtra per messaggi rilevanti e sostanziali.\n' +
+  'NON riportare ogni singolo messaggio — sintetizza per tema/progetto/cliente.\n\n' +
+
   'FORNITORI E COLLABORATORI ESTERNI:\n' +
   'Usa SEMPRE search_suppliers quando vengono menzionati fornitori, freelance, videomaker, fotografi, creator, tipografie.\n' +
   'OMONIMI: "Andrea" = 3 persone (Lo Pinzi videomaker, Bonetti fotografo, web designer KS). Disambigua dal contesto.\n' +
@@ -127,7 +151,11 @@ var SYSTEM_PROMPT =
   '→ Usa SEMPRE find_emails prima di rispondere. NON dire "non ho accesso" senza aver cercato.\n' +
   '→ Antonio è spesso in CC: "cc:antonio@kataniastudio.com after:2026/03/20"\n' +
   '→ "from:gianna@kataniastudio.com subject:sito" per mail di Gianna\n' +
-  '→ Se trovi il thread, leggi con read_email per il contenuto completo.\n\n' +
+  '→ Se trovi il thread, leggi con read_email per il contenuto completo.\n' +
+  'FILTRO EMAIL — Ignora automaticamente queste email:\n' +
+  '→ Mittenti: noreply@*, notifications@*, no-reply@*, mailer-daemon@*, *@bounce.*, *@notification.*\n' +
+  '→ Tipi: newsletter, notifiche automatiche, conferme d\'ordine, OTP, codici verifica\n' +
+  '→ Concentrati SOLO su email da persone reali o clienti.\n\n' +
 
   'INVALIDAZIONE MEMORIES:\n' +
   'Se apprendi che qualcosa è stato completato/risolto/cambiato:\n' +
@@ -137,6 +165,13 @@ var SYSTEM_PROMPT =
   'DATE NELLE MEMORIES:\n' +
   'Confronta SEMPRE le date nelle memories con oggi. Se una deadline è passata, segnalalo.\n' +
   'MAI presentare come "prossima" una data già trascorsa.\n\n' +
+
+  'QUOTAZIONI E PREVENTIVI:\n' +
+  'Quando ti chiedono un preventivo, stima, o quotazione:\n' +
+  '→ Usa SEMPRE i dati dalla rate_card salvata nel sistema (search_kb "rate card").\n' +
+  '→ MAI inventare cifre, tariffe, o riferimenti a preventivi passati senza averli cercati.\n' +
+  '→ Se non trovi la rate card, dillo chiaramente. Non improvvisare.\n' +
+  '→ Per preventivi passati di un cliente: cerca su Drive con search_drive.\n\n' +
 
   'CRM — REGOLE CRITICHE:\n' +
   '- Per info su un lead: usa search_leads (dati Supabase, sempre aggiornati).\n' +
@@ -163,6 +198,16 @@ var SYSTEM_PROMPT =
   '2. Usa il canonical_name per cercare memories e KB\n' +
   '3. Se ha un CRM collegato, usa quei dati come fonte primaria\n' +
   'Evita confusione tra alias (Aitho, AITHO, Aitho S.r.l. = stessa entità)\n\n' +
+
+  'TASSONOMIA ENTITÀ — 6 CATEGORIE:\n' +
+  '• crm_client: clienti attivi/prospect nel CRM (es. Aitho, Ferrovia Circumetnea)\n' +
+  '• internal_project: progetti interni di Katania Studio (es. OffKatania, Giuno)\n' +
+  '• venture: investimenti/startup partecipate (es. Shoootz)\n' +
+  '• owned_brand: brand di proprietà (es. OffKatania come brand)\n' +
+  '• supplier: fornitori e collaboratori esterni (es. Andrea Lo Pinzi, Bonetti)\n' +
+  '• event: eventi organizzati o partecipati\n' +
+  'Quando parli di un\'entità, usa la categoria corretta. NON confondere clienti CRM con progetti interni.\n' +
+  'Se un\'entità ha entity_category nel DB, usa quella. Altrimenti deduci dal contesto.\n\n' +
 
   'FORNITORI:\n' +
   'Per domande su fornitori/freelance/collaboratori esterni, usa search_suppliers.\n' +
@@ -272,9 +317,9 @@ function conversationKey(userId, threadTs) {
 
 function getConversations() { return db.getConvCache(); }
 
-// Compresses older messages, keeping the last 8 exchanges fresh
+// Compresses older messages, keeping the last 12 exchanges fresh
 async function compressConversation(messages, convKey) {
-  var KEEP_RECENT = 8;
+  var KEEP_RECENT = 12;
   if (messages.length <= KEEP_RECENT) return messages;
 
   var toCompress = messages.slice(0, messages.length - KEEP_RECENT);
@@ -300,13 +345,13 @@ async function compressConversation(messages, convKey) {
 
   var summaryPrompt = existingSummary
     ? 'Hai già questo riassunto della conversazione:\n' + existingSummary + '\n\nEstendi il riassunto includendo questi nuovi scambi:\n' + transcript
-    : 'Riassumi questa conversazione in modo conciso, mantenendo: decisioni prese, info importanti su clienti/progetti, task assegnati, preferenze utente emerse.\n\n' + transcript;
+    : 'Riassumi questa conversazione in modo conciso, mantenendo: decisioni prese, info importanti su clienti/progetti, task assegnati, preferenze utente emerse, aggiornamenti CRM menzionati.\n\n' + transcript;
 
   try {
     var res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      system: 'Sei un assistente che riassume conversazioni. Sii conciso e preciso. Rispondi in italiano.',
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      system: 'Sei un assistente che riassume conversazioni aziendali. Mantieni TUTTI i dettagli importanti: nomi clienti, cifre, decisioni, scadenze, aggiornamenti CRM. Sii preciso e completo. Rispondi in italiano. NON perdere informazioni su entità o progetti.',
       messages: [{ role: 'user', content: summaryPrompt }],
     });
     var summaryText = res.content[0].text.trim();
@@ -361,6 +406,18 @@ async function autoLearn(userId, userMessage, botReply, context) {
   var msgLower = userMessage.toLowerCase();
   if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
 
+  // Correction handler — detect user corrections (fix #4)
+  try {
+    var correctionHandler = require('./correctionHandler');
+    if (correctionHandler.isCorrection(userMessage)) {
+      await correctionHandler.handleCorrection(userId, userMessage, botReply);
+      logger.info('[AUTO-LEARN] Correzione rilevata e gestita per', userId);
+    }
+  } catch(e) {
+    // correctionHandler may not exist yet, ignore
+    if (e.code !== 'MODULE_NOT_FOUND') logger.warn('[AUTO-LEARN] Correction handler error:', e.message);
+  }
+
   try {
     // Single LLM call for all auto-learn tasks
     var analysisRes = await client.messages.create({
@@ -372,12 +429,14 @@ async function autoLearn(userId, userMessage, botReply, context) {
         '  "memories": [{"content": "info da ricordare", "tags": ["tipo:valore"]}],\n' +
         '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
         '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
-        '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}]\n' +
+        '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
+        '  "crm_updates": [{"name": "nome azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}]\n' +
         '}\n' +
         'Regole:\n' +
         '- TAG formato tipo:valore (cliente:elfo, progetto:videoclip, area:sviluppo, tipo:procedura)\n' +
         '- memories: info personali utente. kb: info aziendali condivise.\n' +
         '- glossary: SOLO termini gergali/soprannomi specifici dell\'azienda, NON comuni.\n' +
+        '- crm_updates: quando l\'utente menziona aggiornamenti su clienti (stato, valore, contatti). NON inventare.\n' +
         '- NON salvare conversazioni banali o info ovvie. Sii MOLTO selettivo.',
       messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 400) + '\n\nBOT: ' + botReply.substring(0, 400) }],
     });
@@ -429,6 +488,37 @@ async function autoLearn(userId, userMessage, botReply, context) {
         if (_financialKeywords.test(entry.content)) continue;
         db.addKBEntry(entry.content, entry.tags || [], userId, kbOptions);
         logger.info('[AUTO-LEARN] KB (' + kbTier + '):', entry.content.substring(0, 60));
+      }
+    }
+
+    // CRM auto-updates (fix #5 — proactive CRM update)
+    if (analysis.crm_updates && analysis.crm_updates.length > 0) {
+      try {
+        var leadsTools = require('../tools/leadsTools');
+        for (var ci = 0; ci < analysis.crm_updates.length; ci++) {
+          var crmUpdate = analysis.crm_updates[ci];
+          if (!crmUpdate.name || crmUpdate.name.length < 2) continue;
+          // Try to find existing lead
+          var existingLeads = await leadsTools.searchLeads({ query: crmUpdate.name, limit: 1 });
+          if (existingLeads && existingLeads.length > 0 && crmUpdate.action !== 'create') {
+            var updateFields = {};
+            if (crmUpdate.fields) {
+              if (crmUpdate.fields.status) updateFields.status = crmUpdate.fields.status;
+              if (crmUpdate.fields.value) updateFields.value = crmUpdate.fields.value;
+              if (crmUpdate.fields.last_contact) updateFields.last_contact = crmUpdate.fields.last_contact;
+              if (crmUpdate.fields.notes) updateFields.notes = crmUpdate.fields.notes;
+            }
+            if (Object.keys(updateFields).length > 0) {
+              await leadsTools.updateLead(existingLeads[0].id, updateFields);
+              logger.info('[AUTO-LEARN] CRM aggiornato:', crmUpdate.name, JSON.stringify(updateFields).substring(0, 80));
+            }
+          } else if (crmUpdate.action === 'create') {
+            await leadsTools.createLead({ name: crmUpdate.name, ...(crmUpdate.fields || {}) });
+            logger.info('[AUTO-LEARN] CRM lead creato:', crmUpdate.name);
+          }
+        }
+      } catch(e) {
+        logger.warn('[AUTO-LEARN] CRM update error:', e.message);
       }
     }
 
@@ -516,6 +606,49 @@ async function askGiuno(userId, userMessage, options) {
         if (chMap.progetto) contextData += 'PROGETTO CANALE: ' + chMap.progetto + '\n';
         if (chMap.tags && chMap.tags.length > 0) contextData += 'TAG CANALE: ' + chMap.tags.join(', ') + '\n';
       }
+      // Channel context from RPC (fix #6)
+      try {
+        var supabase = require('./db/client').getClient();
+        if (supabase) {
+          var chCtxRes = await supabase.rpc('get_channel_context', { p_channel_id: options.channelId });
+          if (chCtxRes.data && chCtxRes.data.length > 0) {
+            contextData += 'CONTESTO CANALE (da DB):\n';
+            chCtxRes.data.forEach(function(ctx) {
+              contextData += '• ' + (ctx.context_type || '') + ': ' + (ctx.content || '') + '\n';
+            });
+          }
+        }
+      } catch(e) {
+        logger.debug('[CONTEXT] get_channel_context RPC non disponibile:', e.message);
+      }
+    }
+  }
+
+  // Entity taxonomy injection (fix #7)
+  try {
+    var supabaseForEntities = require('./db/client').getClient();
+    if (supabaseForEntities) {
+      var entTaxRes = await supabaseForEntities.rpc('get_entity_categories_summary');
+      if (entTaxRes.data && entTaxRes.data.length > 0) {
+        contextData += '\nENTITÀ AZIENDALI:\n';
+        entTaxRes.data.forEach(function(ent) {
+          contextData += '• ' + ent.canonical_name + ' [' + (ent.entity_category || 'unknown') + ']\n';
+        });
+      }
+    }
+  } catch(e) {
+    logger.debug('[CONTEXT] get_entity_categories_summary RPC non disponibile:', e.message);
+  }
+
+  // DM summary in thread context (fix #11, #19)
+  if (options.threadTs && options.isDM) {
+    try {
+      var convSummaries = db.getConversationSummary ? db.getConversationSummary(conversationKey(userId, options.threadTs)) : null;
+      if (convSummaries) {
+        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries + '\n';
+      }
+    } catch(e) {
+      logger.debug('[CONTEXT] DM summary non disponibile:', e.message);
     }
   }
 
