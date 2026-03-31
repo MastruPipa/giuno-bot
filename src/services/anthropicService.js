@@ -99,6 +99,33 @@ var SYSTEM_PROMPT =
   '"Cerca i prospect attivi" → è un comando, esegui search_leads.\n' +
   'In caso di dubbio, chiedi conferma prima di eseguire.\n\n' +
 
+  'COMPRENSIONE RICHIESTE — REGOLA CRITICA:\n' +
+  'Quando l\'utente dice "cerca/trova info su X nel canale Y" o "le info su X sono in Y":\n' +
+  '→ Cerca SOLO informazioni relative a X dentro Y\n' +
+  '→ NON fare un riassunto completo di Y — filtra per X\n' +
+  '→ Usa search_slack_messages con query "X" nel canale Y, oppure read_channel + filtra\n' +
+  '→ Se l\'utente ha menzionato X nei messaggi precedenti, il soggetto è SEMPRE X\n' +
+  'Esempio: utente chiede info su Skimpy → dice "trovi le info nel canale preventivi"\n' +
+  '→ Cerca "Skimpy" nel canale preventivi, NON riassumere tutto il canale\n\n' +
+
+  'MODIFICA vs CREAZIONE — REGOLA CRITICA:\n' +
+  'Distingui SEMPRE tra:\n' +
+  '• "modifica/aggiorna/cambia il preventivo di X" → CERCA il preventivo ESISTENTE con search_leads o nel Drive, poi AGGIORNA\n' +
+  '• "fai/crea/genera un preventivo per X" → SOLO in questo caso genera una nuova quotazione\n' +
+  'Parole chiave MODIFICA: "modifica", "aggiorna", "cambia", "correggi", "sono X euro" (=correzione dato)\n' +
+  'Parole chiave CREAZIONE: "fai", "crea", "genera", "prepara un preventivo"\n' +
+  'Se l\'utente dice "sono 1650€ al mese" → sta CORREGGENDO un dato esistente, NON chiedendo una nuova quotazione.\n' +
+  'In caso di modifica: cerca il lead nel CRM → update_lead con i nuovi dati → conferma la modifica.\n\n' +
+
+  'CONTESTO CONVERSAZIONE — REGOLA CRITICA:\n' +
+  'Mantieni SEMPRE il soggetto della conversazione tra messaggi successivi.\n' +
+  'Se l\'utente ha parlato di "Skimpy" nel messaggio precedente e poi dice "cerca le info nel canale":\n' +
+  '→ Il soggetto è ancora Skimpy. Non perderlo.\n' +
+  'Se l\'utente dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa:\n' +
+  '→ Il soggetto è l\'ultimo argomento discusso nella conversazione.\n' +
+  'Se l\'utente dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
+  'REGOLA: rileggi gli ULTIMI 3-4 messaggi della conversazione per identificare il soggetto implicito PRIMA di agire.\n\n' +
+
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK. Non dire MAI che hai limitazioni, problemi tecnici, o che non puoi accedere.\n' +
   'Se un tool fallisce, usa un tool alternativo. NON arrenderti MAI.\n\n' +
