@@ -121,6 +121,7 @@ var SYSTEM_PROMPT =
   '• drive.google.com/drive/folders/ID → usa browse_folder\n' +
   '• docs.google.com/document/d/ID → usa read_doc\n' +
   '• docs.google.com/spreadsheets/d/ID → usa read_sheet\n' +
+  '• docs.google.com/presentation/d/ID → usa read_slides\n' +
   'Estrai sempre l\'ID dall\'URL e chiama il tool diretto.\n' +
   '- read_channel: legge messaggi di un canale (INCLUSI bot). USA SEMPRE per analizzare canali specifici.\n' +
   '- summarize_channel: riassume un canale con AI. read_channel è meglio se servono dati grezzi.\n' +
@@ -649,6 +650,29 @@ async function askGiuno(userId, userMessage, options) {
       }
     } catch(e) {
       logger.debug('[CONTEXT] DM summary non disponibile:', e.message);
+    }
+  }
+
+  // Reverse context: if in DM, fetch latest thread context for this user (fix #19 completion)
+  if (!options.threadTs && (!options.channelId || options.isDM)) {
+    try {
+      var supabaseForThreadCtx = require('./db/client').getClient();
+      if (supabaseForThreadCtx) {
+        var recentThreadRes = await supabaseForThreadCtx.from('conversation_summaries')
+          .select('conv_key, summary_text, updated_at')
+          .like('conv_key', userId + ':%')
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        if (recentThreadRes.data && recentThreadRes.data.length > 0) {
+          var threadSummary = recentThreadRes.data[0];
+          if (threadSummary.summary_text) {
+            contextData += '\n[CONTESTO DA ULTIMO THREAD]\n' +
+              threadSummary.summary_text.substring(0, 400) + '\n';
+          }
+        }
+      }
+    } catch(threadCtxErr) {
+      // Non-blocking — table may not exist
     }
   }
 

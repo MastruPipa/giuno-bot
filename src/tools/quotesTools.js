@@ -89,6 +89,21 @@ var definitions = [
     },
   },
   {
+    name: 'evaluate_supplier_quote',
+    description: 'Valuta un preventivo ricevuto da un fornitore confrontandolo con la rate card interna e preventivi simili passati. Solo admin e finance. Restituisce analisi comparativa con delta % e giudizio.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        supplier_name:   { type: 'string', description: 'Nome del fornitore' },
+        service_type:    { type: 'string', description: 'Tipo di servizio (video, foto, grafica, sviluppo, social, stampa, copywriting, advertising)' },
+        amount:          { type: 'number', description: 'Importo del preventivo in €' },
+        description:     { type: 'string', description: 'Descrizione di cosa include il preventivo' },
+        hours_estimated: { type: 'number', description: 'Ore stimate dal fornitore (opzionale)' },
+      },
+      required: ['supplier_name', 'service_type', 'amount'],
+    },
+  },
+  {
     name: 'search_everywhere',
     description: 'Cerca contemporaneamente su Drive, Slack, Gmail e nella memoria. Usalo quando l\'utente chiede informazioni generiche su un cliente, progetto o argomento.',
     input_schema: {
@@ -130,6 +145,105 @@ async function execute(toolName, input, userId, userRole) {
       var card = await db.getRateCard(input.version);
       return card ? { rate_card: card } : { error: 'Nessuna rate card trovata.' };
     } catch(e) { return { error: e.message }; }
+  }
+
+  if (toolName === 'evaluate_supplier_quote') {
+    if (userRole !== 'admin' && userRole !== 'finance') {
+      return { error: getAccessDeniedMessage(userRole) + ' Solo admin e finance possono valutare preventivi fornitori.' };
+    }
+    var results = [];
+    var supabase = db.getClient ? db.getClient() : null;
+
+    // 1. Rate card comparison
+    try {
+      var rateCard = await db.getRateCard();
+      if (rateCard && rateCard.resources && rateCard.resources.length > 0) {
+        var serviceTypeLow = (input.service_type || '').toLowerCase();
+        var matchingRates = rateCard.resources.filter(function(r) {
+          return (r.role || '').toLowerCase().includes(serviceTypeLow) ||
+                 (r.notes || '').toLowerCase().includes(serviceTypeLow);
+        });
+        if (matchingRates.length > 0) {
+          results.push('RATE CARD INTERNA:');
+          matchingRates.forEach(function(r) {
+            results.push('- ' + (r.role || r.person || 'N/A') + ': ' +
+              (r.hour_rate ? '€' + r.hour_rate + '/h' : '') +
+              (r.day_rate ? ' (€' + r.day_rate + '/giorno)' : ''));
+          });
+          if (input.hours_estimated && matchingRates[0].hour_rate) {
+            var internalCost = input.hours_estimated * matchingRates[0].hour_rate;
+            var diff = input.amount - internalCost;
+            var diffPerc = Math.round((diff / internalCost) * 100);
+            results.push('');
+            results.push('CONFRONTO CON RATE INTERNA:');
+            results.push('Costo interno stimato (' + input.hours_estimated + 'h × €' + matchingRates[0].hour_rate + '/h): €' + internalCost.toFixed(2));
+            results.push('Preventivo fornitore: €' + input.amount.toFixed(2));
+            results.push('Delta: €' + diff.toFixed(2) + ' (' + (diff > 0 ? '+' : '') + diffPerc + '%)');
+            if (diffPerc > 30) results.push('⚠️ SOPRA MERCATO — il preventivo è significativamente più alto della rate interna');
+            else if (diffPerc > 10) results.push('🟡 LEGGERMENTE SOPRA — margine accettabile ma negoziabile');
+            else if (diffPerc >= -10) results.push('✅ IN LINEA — allineato con la rate interna');
+            else results.push('🟢 SOTTO MERCATO — prezzo vantaggioso');
+          }
+        } else {
+          results.push('⚠️ Nessun match nella rate card per "' + input.service_type + '".');
+        }
+      } else {
+        results.push('⚠️ Nessuna rate card trovata nel sistema.');
+      }
+    } catch(e) { results.push('Errore lettura rate card: ' + e.message); }
+
+    // 2. Similar past quotes
+    try {
+      var pastQuotes = await db.searchQuotes({ service_category: input.service_type, limit: 5 });
+      if (pastQuotes && pastQuotes.length > 0) {
+        results.push('');
+        results.push('PREVENTIVI SIMILI PASSATI:');
+        pastQuotes.forEach(function(q) {
+          results.push('- ' + (q.client_name || 'N/A') + ': €' + (q.total_amount || q.amount || 'N/A') +
+            ' per ' + (q.description || q.service_category || 'N/A') +
+            ' (' + (q.created_at || '').split('T')[0] + ')' +
+            (q.status ? ' [' + q.status + ']' : ''));
+        });
+        var amounts = pastQuotes.map(function(q) { return q.total_amount || q.amount || 0; }).filter(function(a) { return a > 0; });
+        if (amounts.length > 0) {
+          var avg = amounts.reduce(function(a, b) { return a + b; }, 0) / amounts.length;
+          var diffFromAvg = input.amount - avg;
+          var diffFromAvgPerc = Math.round((diffFromAvg / avg) * 100);
+          results.push('Media preventivi passati: €' + avg.toFixed(2));
+          results.push('Questo preventivo: ' + (diffFromAvg > 0 ? '+' : '') + diffFromAvgPerc + '% rispetto alla media');
+        }
+      }
+    } catch(e) { results.push('Errore lettura preventivi: ' + e.message); }
+
+    // 3. Supplier info
+    if (supabase) {
+      try {
+        var supplierRes = await supabase.from('kb_entities')
+          .select('canonical_name, entity_type, metadata')
+          .ilike('canonical_name', '%' + input.supplier_name + '%')
+          .limit(1);
+        if (supplierRes.data && supplierRes.data.length > 0) {
+          var sup = supplierRes.data[0];
+          results.push('');
+          results.push('FORNITORE: ' + sup.canonical_name);
+          if (sup.metadata) {
+            if (sup.metadata.specialization) results.push('Specializzazione: ' + sup.metadata.specialization);
+            if (sup.metadata.rating) results.push('Rating: ' + sup.metadata.rating);
+          }
+        }
+      } catch(e) { /* non bloccante */ }
+    }
+
+    // 4. Summary
+    results.push('');
+    results.push('RIEPILOGO:');
+    results.push('Fornitore: ' + input.supplier_name);
+    results.push('Servizio: ' + input.service_type);
+    results.push('Importo: €' + input.amount.toFixed(2));
+    if (input.description) results.push('Include: ' + input.description);
+    if (input.hours_estimated) results.push('Ore stimate: ' + input.hours_estimated + 'h (€' + (input.amount / input.hours_estimated).toFixed(2) + '/h)');
+
+    return { analysis: results.join('\n') };
   }
 
   if (toolName === 'ask_gemini') {

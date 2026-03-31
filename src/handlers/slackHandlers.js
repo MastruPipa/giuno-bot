@@ -326,7 +326,32 @@ app.message(async function(args) {
       }
     }
 
-    var reply = await route(message.user, textForRoute, { threadTs: threadTs, channelType: 'dm', channelId: message.channel });
+    // If in a DM thread, read previous messages for context (fix #12)
+    var dmThreadContext = '';
+    if (threadTs) {
+      try {
+        var threadHistory = await app.client.conversations.replies({
+          channel: message.channel,
+          ts: threadTs,
+          limit: 10,
+        });
+        if (threadHistory.messages && threadHistory.messages.length > 1) {
+          var previousMessages = threadHistory.messages.slice(0, -1);
+          dmThreadContext = previousMessages.map(function(m) {
+            var author = m.user ? '<@' + m.user + '>' : 'bot';
+            return author + ': ' + (m.text || '').substring(0, 300);
+          }).join('\n');
+        }
+      } catch(threadErr) {
+        logger.debug('[DM-THREAD] Lettura thread fallita:', threadErr.message);
+      }
+    }
+
+    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true };
+    if (dmThreadContext) {
+      dmRouteOptions.preflightInstruction = '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]';
+    }
+    var reply = await route(message.user, textForRoute, dmRouteOptions);
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });

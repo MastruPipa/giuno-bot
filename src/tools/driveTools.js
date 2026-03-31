@@ -92,11 +92,12 @@ var definitions = [
   },
   {
     name: 'read_slides',
-    description: 'Legge il contenuto di una presentazione Google Slides.',
+    description: 'Legge il contenuto testuale di una presentazione Google Slides. Input: presentation_id (string) — ID della presentazione (dall\'URL: docs.google.com/presentation/d/{ID}/edit). Opzionale: slide_numbers (array di numeri, 1-based) per leggere solo slide specifiche, oppure slide_index (indice 0-based) per una sola slide.',
     input_schema: {
       type: 'object',
       properties: {
         presentation_id: { type: 'string', description: 'ID della presentazione Google Slides' },
+        slide_numbers:   { type: 'array', items: { type: 'number' }, description: 'Numeri slide specifiche da leggere, 1-based (opzionale, default: tutte)' },
         slide_index:     { type: 'integer', description: 'Indice della slide specifica da leggere (0-based, opzionale)' },
       },
       required: ['presentation_id'],
@@ -344,30 +345,68 @@ async function execute(toolName, input, userId) {
       if (!slides) return { error: 'Google Slides non collegato. Scrivi "collega il mio Google".' };
       var pres = await slides.presentations.get({ presentationId: input.presentation_id });
       var presData = pres.data;
+
+      // Helper: extract text from textContent
+      function extractTextRuns(textContent) {
+        if (!textContent || !textContent.textElements) return '';
+        return textContent.textElements
+          .filter(function(te) { return te.textRun && te.textRun.content; })
+          .map(function(te) { return te.textRun.content; })
+          .join('')
+          .trim();
+      }
+
+      // Helper: extract text recursively from a pageElement (shapes, tables, groups)
+      function extractTextFromElement(element) {
+        if (!element) return '';
+        if (element.shape && element.shape.text) {
+          return extractTextRuns(element.shape.text);
+        }
+        if (element.table) {
+          var rows = [];
+          for (var r = 0; r < (element.table.tableRows || []).length; r++) {
+            var cells = [];
+            var row = element.table.tableRows[r];
+            for (var c2 = 0; c2 < (row.tableCells || []).length; c2++) {
+              var cellText = extractTextRuns(row.tableCells[c2].text);
+              cells.push(cellText || '');
+            }
+            rows.push(cells.join(' | '));
+          }
+          return rows.join('\n');
+        }
+        if (element.elementGroup && element.elementGroup.children) {
+          return element.elementGroup.children.map(extractTextFromElement).filter(Boolean).join('\n');
+        }
+        return '';
+      }
+
       var slidesList = (presData.slides || []).map(function(slide, idx) {
         var texts = [];
         var notes = '';
         (slide.pageElements || []).forEach(function(el) {
-          if (el.shape && el.shape.text) {
-            var t = el.shape.text.textElements.map(function(te) {
-              return te.textRun ? te.textRun.content : '';
-            }).join('').trim();
-            if (t) texts.push(t);
-          }
+          var extracted = extractTextFromElement(el);
+          if (extracted) texts.push(extracted);
         });
         if (slide.slideProperties && slide.slideProperties.notesPage) {
           var notesPage = slide.slideProperties.notesPage;
           (notesPage.pageElements || []).forEach(function(el) {
-            if (el.shape && el.shape.text) {
-              var n = el.shape.text.textElements.map(function(te) {
-                return te.textRun ? te.textRun.content : '';
-              }).join('').trim();
-              if (n) notes += n + '\n';
-            }
+            var n = extractTextFromElement(el);
+            if (n) notes += n + '\n';
           });
         }
         return { index: idx, texts: texts, notes: notes.trim() || null };
       });
+
+      // Filter by slide_numbers (1-based) if provided
+      if (input.slide_numbers && input.slide_numbers.length > 0) {
+        var filteredSlides = input.slide_numbers.map(function(n) {
+          var sl = slidesList[n - 1];
+          return sl || null;
+        }).filter(Boolean);
+        if (filteredSlides.length === 0) return { error: 'Nessuna delle slide richieste trovata. La presentazione ha ' + slidesList.length + ' slide (1-' + slidesList.length + ').' };
+        return { title: presData.title, total_slides: slidesList.length, slides: filteredSlides };
+      }
 
       if (input.slide_index !== undefined && input.slide_index !== null) {
         var target = slidesList[input.slide_index];
