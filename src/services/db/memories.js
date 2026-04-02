@@ -167,8 +167,17 @@ async function addMemory(userId, content, tags, options) {
     logger.warn('[DB-MEMORIES] operazione fallita:', e.message);
   }
 
+  // Generate embedding for semantic search (fire-and-forget)
+  var embedding = null;
   try {
-    await c.getClient().from('memories').insert({
+    var embService = require('../../services/embeddingService');
+    if (embService.getProvider() && content.length > 20) {
+      embedding = await embService.generateEmbedding(content);
+    }
+  } catch(e) { /* embedding not available */ }
+
+  try {
+    var insertData = {
       id: entry.id,
       slack_user_id: slackUserId,
       content: content,
@@ -180,7 +189,9 @@ async function addMemory(userId, content, tags, options) {
       source_channel_id: options.channelId || null,
       entity_refs: entityRefs.length > 0 ? entityRefs : null,
       expires_at: expiresAt,
-    });
+    };
+    if (embedding) insertData.embedding = embedding;
+    await c.getClient().from('memories').insert(insertData);
 
     if (entityRefs.length > 0) {
       var graphRows = entityRefs.map(function(name) {
@@ -297,23 +308,34 @@ async function searchMemories(userId, query) {
     return temporalResults.slice(0, 20);
   }
 
-  // KEYWORD SEARCH — try Supabase RPC first (await results), fallback to cache
+  // KEYWORD + SEMANTIC SEARCH — try multiple strategies
   if (c.useSupabase) {
     try {
       var rpcResults = [];
 
-      // Entity recall
+      // 1. Entity recall (fast, exact match)
       var entityRes = await c.getClient().rpc('recall_by_entity', { p_entity_name: query || '', p_limit: 5 });
       if (entityRes.data && entityRes.data.length > 0) {
         rpcResults = rpcResults.concat(entityRes.data);
       }
 
-      // Weighted recall
+      // 2. Weighted recall (keyword-based)
       var weightedRes = await c.getClient().rpc('recall_memories_weighted', {
         p_query: query || '', p_user_id: userId || null, p_limit: 10, p_include_expired: false,
       });
       if (weightedRes.data && weightedRes.data.length > 0) {
         rpcResults = rpcResults.concat(weightedRes.data);
+      }
+
+      // 3. Semantic search via embeddings (finds related memories even without exact keywords)
+      if (rpcResults.length < 5 && query.length > 10) {
+        try {
+          var embeddingService = require('../../services/embeddingService');
+          var semanticResults = await embeddingService.semanticSearchMemories(query, userId, { limit: 5, threshold: 0.35 });
+          if (semanticResults && semanticResults.length > 0) {
+            rpcResults = rpcResults.concat(semanticResults);
+          }
+        } catch(e) { /* embeddings not available */ }
       }
 
       // Deduplicate by id

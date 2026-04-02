@@ -1110,6 +1110,55 @@ function scheduleCrons() {
     var { runProactiveScan } = require('../agents/proactiveMonitor');
     runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
+  // Memory decay — ogni notte alle 4:00, abbassa confidence memorie vecchie non usate
+  cron.schedule('0 4 * * *', async function() {
+    try {
+      var supabase = db.getClient ? db.getClient() : null;
+      if (!supabase) return;
+
+      // Decay: memorie episodiche >14 giorni non usate → -0.05 confidence
+      var twoWeeksAgo = new Date(Date.now() - 14 * 86400000).toISOString();
+      var { data: stale } = await supabase.from('memories')
+        .select('id, confidence_score, usage_count')
+        .eq('memory_type', 'episodic')
+        .is('superseded_by', null)
+        .lt('created_at', twoWeeksAgo)
+        .lt('confidence_score', 0.7)
+        .limit(100);
+
+      var decayed = 0;
+      if (stale) {
+        for (var si = 0; si < stale.length; si++) {
+          var m = stale[si];
+          if ((m.usage_count || 0) > 2) continue; // Skip frequently used
+          var newScore = Math.max(0.1, (parseFloat(m.confidence_score) || 0.5) - 0.05);
+          await supabase.from('memories').update({ confidence_score: newScore }).eq('id', m.id);
+          decayed++;
+        }
+      }
+
+      // Boost: memorie con usage_count > 5 → +0.05 confidence (cap 0.95)
+      var { data: popular } = await supabase.from('memories')
+        .select('id, confidence_score, usage_count')
+        .is('superseded_by', null)
+        .gt('usage_count', 5)
+        .lt('confidence_score', 0.95)
+        .limit(50);
+
+      var boosted = 0;
+      if (popular) {
+        for (var pi = 0; pi < popular.length; pi++) {
+          var pm = popular[pi];
+          var boostedScore = Math.min(0.95, (parseFloat(pm.confidence_score) || 0.5) + 0.05);
+          await supabase.from('memories').update({ confidence_score: boostedScore }).eq('id', pm.id);
+          boosted++;
+        }
+      }
+
+      if (decayed > 0 || boosted > 0) logger.info('[MEMORY-DECAY] Decayed:', decayed, '| Boosted:', boosted);
+    } catch(e) { logger.error('[MEMORY-DECAY] Errore:', e.message); }
+  }, { timezone: 'Europe/Rome' });
+
   // Behavior tracker flush — ogni 5 minuti
   cron.schedule('*/5 * * * *', function() {
     var behaviorTracker = require('../services/behaviorTracker');

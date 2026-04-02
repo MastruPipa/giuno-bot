@@ -675,14 +675,56 @@ app.event('team_join', async function(args) {
 
 app.event('reaction_added', async function(args) {
   var event = args.event;
-  if (event.reaction !== '+1' && event.reaction !== '-1') return;
   if (!event.item || event.item.type !== 'message') return;
+
+  // Classify reaction as positive, negative, or neutral
+  var positiveReactions = ['+1', 'white_check_mark', 'heavy_check_mark', 'ok', 'thumbsup', 'clap', 'raised_hands', 'fire', '100', 'star', 'heart'];
+  var negativeReactions = ['-1', 'thumbsdown', 'x', 'no_entry', 'disappointed', 'angry', 'rage', 'face_with_rolling_eyes', 'confused'];
+  var isPositive = positiveReactions.indexOf(event.reaction) !== -1;
+  var isNegative = negativeReactions.indexOf(event.reaction) !== -1;
+  if (!isPositive && !isNegative) return;
+
   var botMsg = botMessages.get(event.item.ts);
   if (!botMsg) return;
-  var feedback = event.reaction === '+1' ? 'positivo' : 'negativo';
-  logger.info('[FEEDBACK]', feedback, '| user:', event.user, '| text:', (botMsg.text || '').substring(0, 80));
+
+  var feedback = isPositive ? 'positivo' : 'negativo';
+  logger.info('[FEEDBACK]', feedback, '(' + event.reaction + ') | user:', event.user, '| text:', (botMsg.text || '').substring(0, 80));
+
   try {
+    // Save to feedback table
     db.saveFeedback(event.item.ts, event.user, feedback, (botMsg.text || '').substring(0, 200));
+
+    // Adjust memory confidence based on feedback
+    var supabase = db.getClient ? db.getClient() : null;
+    if (supabase) {
+      // Find memories created around the same time as this bot message (±2 minutes)
+      var msgTime = new Date(parseFloat(event.item.ts) * 1000);
+      var timeStart = new Date(msgTime.getTime() - 2 * 60 * 1000).toISOString();
+      var timeEnd = new Date(msgTime.getTime() + 2 * 60 * 1000).toISOString();
+      var relatedMems = await supabase.from('memories')
+        .select('id, confidence_score')
+        .eq('slack_user_id', botMsg.userId)
+        .gte('created_at', timeStart)
+        .lte('created_at', timeEnd)
+        .limit(5);
+
+      if (relatedMems.data && relatedMems.data.length > 0) {
+        var adjustment = isPositive ? 0.1 : -0.15; // Negative feedback weighs more
+        for (var ri = 0; ri < relatedMems.data.length; ri++) {
+          var mem = relatedMems.data[ri];
+          var newScore = Math.max(0.1, Math.min(1.0, (parseFloat(mem.confidence_score) || 0.5) + adjustment));
+          await supabase.from('memories').update({ confidence_score: newScore }).eq('id', mem.id);
+        }
+        logger.info('[FEEDBACK] Adjusted', relatedMems.data.length, 'memories by', adjustment, 'for', feedback);
+      }
+    }
+
+    // If negative, save as correction memory
+    if (isNegative) {
+      db.addMemory(event.user, 'FEEDBACK_NEGATIVO su risposta Giuno: "' + (botMsg.text || '').substring(0, 150) + '"', ['feedback', 'negativo'], {
+        memory_type: 'episodic', confidence_score: 0.8,
+      });
+    }
   } catch(e) { logger.error('[FEEDBACK]', e.message); }
 });
 
