@@ -328,7 +328,7 @@ async function execute(toolName, input, userId, userRole) {
         var nome = u.name.split(' ')[0];
         await app.client.chat.postMessage({
           channel: u.id,
-          text: 'Ciao ' + nome + '! Momento feedback mensile. ' + questions.length + ' domande veloci, rispondi quando vuoi.\n\n*1/' + questions.length + ':* ' + questions[0],
+          text: 'Ciao ' + nome + '! È il momento del check-in mensile — ' + questions.length + ' domande per capire come migliorare il nostro modo di lavorare e come posso esserti più utile.\n\nRispondi con calma, anche in momenti diversi della giornata. Ogni risposta viene salvata.\n\n*1/' + questions.length + ':* ' + questions[0],
         });
         sent++;
       }
