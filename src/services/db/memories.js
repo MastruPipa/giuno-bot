@@ -24,15 +24,43 @@ var MEMORY_CLASSIFIERS = [
       /da inviare a|da mandare a|reminder per|da aggiornare/i] },
 ];
 
+// Business importance boosters — high-value content gets higher confidence
+var IMPORTANCE_BOOSTERS = [
+  { pattern: /budget|€\s*\d|\d+\s*€|costo|fattura|pagamento|margine|profitto/i, boost: 0.1 },
+  { pattern: /deadline|scadenza|entro il|consegna|urgente/i, boost: 0.1 },
+  { pattern: /contratto|firmato|accordo|partnership/i, boost: 0.15 },
+  { pattern: /decisione|deciso|approvato|confermato/i, boost: 0.1 },
+  { pattern: /problema|blocco|rischio|criticità|escalation/i, boost: 0.1 },
+  { pattern: /cliente|lead|prospect|contatto/i, boost: 0.05 },
+  { pattern: /CORREZIONE|feedback.*negativo/i, boost: 0.15 },
+];
+
 function classifyMemoryType(content) {
   var c2 = (content || '').toLowerCase();
+  var result = { type: 'episodic', confidence: 0.5, expiresIn: 30 * 86400000, shared: false };
+
   for (var i = 0; i < MEMORY_CLASSIFIERS.length; i++) {
     var cls = MEMORY_CLASSIFIERS[i];
     if (cls.patterns.some(function(p) { return p.test(c2); })) {
-      return { type: cls.type, confidence: cls.confidence, expiresIn: cls.expiresIn, shared: cls.shared };
+      result = { type: cls.type, confidence: cls.confidence, expiresIn: cls.expiresIn, shared: cls.shared };
+      break;
     }
   }
-  return { type: 'episodic', confidence: 0.5, expiresIn: 30 * 86400000, shared: false };
+
+  // Apply importance boosters
+  var totalBoost = 0;
+  IMPORTANCE_BOOSTERS.forEach(function(b) {
+    if (b.pattern.test(c2)) totalBoost += b.boost;
+  });
+  if (totalBoost > 0) {
+    result.confidence = Math.min(0.95, result.confidence + totalBoost);
+    // Business-critical content should live longer
+    if (totalBoost >= 0.15 && result.expiresIn) {
+      result.expiresIn = Math.max(result.expiresIn, 90 * 86400000); // At least 90 days
+    }
+  }
+
+  return result;
 }
 
 // ─── Temporal reference detection ────────────────────────────────────────────
@@ -336,6 +364,21 @@ async function searchMemories(userId, query) {
             rpcResults = rpcResults.concat(semanticResults);
           }
         } catch(e) { /* embeddings not available */ }
+      }
+
+      // 4. Entity refs search — find ALL memories linked to the same entity
+      if (rpcResults.length < 8) {
+        try {
+          var entityRes2 = await c.getClient().from('memories')
+            .select('id, content, memory_type, tags, created_at, confidence_score, entity_refs')
+            .is('superseded_by', null)
+            .contains('entity_refs', [query])
+            .order('created_at', { ascending: false })
+            .limit(5);
+          if (entityRes2.data && entityRes2.data.length > 0) {
+            rpcResults = rpcResults.concat(entityRes2.data);
+          }
+        } catch(e) { /* entity_refs search not available */ }
       }
 
       // Deduplicate by id

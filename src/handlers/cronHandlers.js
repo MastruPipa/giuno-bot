@@ -1305,6 +1305,14 @@ function scheduleCrons() {
     catch(e) { logger.error('[ENTITY-BACKFILL]', e.message); }
     finally { await releaseCronLock('entity_backfill'); }
   }, { timezone: 'Europe/Rome' });
+  // Embedding backfill — ogni notte alle 4:30, genera embeddings per memorie/KB che non li hanno
+  cron.schedule('30 4 * * *', async function() {
+    try {
+      var embService = require('../services/embeddingService');
+      var processed = await embService.backfillEmbeddings();
+      if (processed > 0) logger.info('[EMBEDDING-BACKFILL] Processed:', processed);
+    } catch(e) { logger.error('[EMBEDDING-BACKFILL] Errore:', e.message); }
+  }, { timezone: 'Europe/Rome' });
   cron.schedule('0 5 1-7 * 1', async function() {
     var locked = await acquireCronLock('kb_quality_sweep', 60);
     if (!locked) return;
