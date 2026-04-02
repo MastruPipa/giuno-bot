@@ -119,6 +119,22 @@ async function buildContext(params) {
     } catch(e) {
       logger.warn('[CTX-V2] Unified search error, using fallback:', e.message);
     }
+
+    // Post-filter: boost recent results, penalize old ones
+    if (unifiedWorked) {
+      var nowMs = Date.now();
+      var boostRecent = function(items) {
+        return items.sort(function(a, b) {
+          var aDate = a.created || a.created_at || '';
+          var bDate = b.created || b.created_at || '';
+          var aAge = aDate ? (nowMs - new Date(aDate).getTime()) / 86400000 : 999;
+          var bAge = bDate ? (nowMs - new Date(bDate).getTime()) / 86400000 : 999;
+          return aAge - bAge; // Recent first
+        });
+      };
+      if (relevantMemories.length > 1) relevantMemories = boostRecent(relevantMemories);
+      if (kbResults.length > 1) kbResults = boostRecent(kbResults);
+    }
   }
 
   // Fallback to cache-based search if unified didn't work
