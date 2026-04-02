@@ -201,8 +201,8 @@ var SKILLS = [
   {
     id: 'quote_support_skill',
     name: 'Quote Support',
-    keywords: ['preventivo per', 'quotare', 'quanto costa fare', 'stima costi'],
-    regex: [/quanto\s+(cost|quot)/i, /preventivo\s+(per|di)/i],
+    keywords: ['quotare', 'quanto costa fare', 'stima costi', 'quanto quotare'],
+    regex: [/quanto\s+(cost|quot)/i, /(?:fai|crea|genera|prepara)\s+(?:un\s+)?preventivo/i],
     channels: ['preventivi'],
     minRole: 'manager',
     prompt: null, // Delegates to quoteSupportAgent

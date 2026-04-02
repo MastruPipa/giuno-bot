@@ -34,6 +34,17 @@ var lastBotMessageByChannel = new Map(); // channelId -> { ts, userId, timestamp
 var stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
 var standupInAttesa = new Set();
 
+// Restore standup state from DB on startup
+try {
+  var _sd = db.getStandupCache();
+  var _oggi = new Date().toISOString().slice(0, 10);
+  if (_sd.oggi === _oggi && _sd.risposte) {
+    // Re-populate standupInAttesa from utenti who haven't responded yet
+    // (actual population happens in dailyStandupV2.sendDailyRequests)
+    logger.info('[STARTUP] Standup state restored for', _oggi);
+  }
+} catch(e) { /* ignore — first boot */ }
+
 // Periodic cleanup
 setInterval(function() {
   var cutoff = Date.now() - 30 * 60 * 1000;

@@ -635,38 +635,36 @@ async function askGiuno(userId, userMessage, options) {
         if (chMap.progetto) contextData += 'PROGETTO CANALE: ' + chMap.progetto + '\n';
         if (chMap.tags && chMap.tags.length > 0) contextData += 'TAG CANALE: ' + chMap.tags.join(', ') + '\n';
       }
-      // Channel context from RPC (fix #6)
-      try {
-        var supabase = require('./db/client').getClient();
-        if (supabase) {
-          var chCtxRes = await supabase.rpc('get_channel_context', { p_channel_id: options.channelId });
-          if (chCtxRes.data && chCtxRes.data.length > 0) {
-            contextData += 'CONTESTO CANALE (da DB):\n';
-            chCtxRes.data.forEach(function(ctx) {
-              contextData += '• ' + (ctx.context_type || '') + ': ' + (ctx.content || '') + '\n';
-            });
-          }
-        }
-      } catch(e) {
-        logger.debug('[CONTEXT] get_channel_context RPC non disponibile:', e.message);
-      }
     }
   }
 
-  // Entity taxonomy injection (fix #7)
+  // Entity injection — only entities relevant to the message (not ALL entities)
   try {
     var supabaseForEntities = require('./db/client').getClient();
-    if (supabaseForEntities) {
-      var entTaxRes = await supabaseForEntities.rpc('get_entity_categories_summary');
-      if (entTaxRes.data && entTaxRes.data.length > 0) {
-        contextData += '\nENTITÀ AZIENDALI:\n';
-        entTaxRes.data.forEach(function(ent) {
-          contextData += '• ' + ent.canonical_name + ' [' + (ent.entity_category || 'unknown') + ']\n';
+    if (supabaseForEntities && resolvedMessage.length > 5) {
+      // Extract potential entity names from the message (words > 3 chars, capitalized or known)
+      var entSearchRes = await supabaseForEntities.from('kb_entities')
+        .select('canonical_name, entity_category, aliases')
+        .limit(500);
+      if (entSearchRes.data && entSearchRes.data.length > 0) {
+        var msgLower = resolvedMessage.toLowerCase();
+        var matchedEntities = entSearchRes.data.filter(function(ent) {
+          if (ent.canonical_name.length > 3 && msgLower.includes(ent.canonical_name.toLowerCase())) return true;
+          if (ent.aliases && Array.isArray(ent.aliases)) {
+            return ent.aliases.some(function(a) { return a.length > 3 && msgLower.includes(a.toLowerCase()); });
+          }
+          return false;
         });
+        if (matchedEntities.length > 0) {
+          contextData += '\nENTITÀ MENZIONATE:\n';
+          matchedEntities.slice(0, 10).forEach(function(ent) {
+            contextData += '• ' + ent.canonical_name + ' [' + (ent.entity_category || 'unknown') + ']\n';
+          });
+        }
       }
     }
   } catch(e) {
-    logger.debug('[CONTEXT] get_entity_categories_summary RPC non disponibile:', e.message);
+    logger.debug('[CONTEXT] Entity matching non disponibile:', e.message);
   }
 
   // DM summary in thread context (fix #11, #19)

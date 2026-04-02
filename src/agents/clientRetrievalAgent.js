@@ -15,9 +15,14 @@ var SYSTEM_PROMPT =
   'Cerca SEMPRE in questo ordine senza saltare nessun passaggio:\n' +
   '1. recall_memory — memoria personale\n' +
   '2. search_kb — knowledge base aziendale\n' +
-  '3. search_drive — documenti Drive\n' +
-  '4. search_slack_messages — conversazioni Slack (OBBLIGATORIO, non saltare mai questo step)\n' +
-  '5. search_everywhere — se i risultati precedenti sono insufficienti\n\n' +
+  '3. search_leads / query_leads_db — OBBLIGATORIO per clienti/aziende: cerca SEMPRE nel CRM\n' +
+  '4. search_drive — documenti Drive\n' +
+  '5. search_slack_messages — conversazioni Slack (OBBLIGATORIO, non saltare mai)\n' +
+  '6. search_everywhere — se i risultati precedenti sono insufficienti\n\n' +
+  'CRM — REGOLA CRITICA:\n' +
+  'Per QUALSIASI richiesta su un cliente o azienda, chiama SEMPRE search_leads.\n' +
+  'Il CRM contiene: stato lead, valore, servizi, ultimo contatto, note, followup.\n' +
+  'NON limitarti a memoria e KB — i dati CRM sono la fonte primaria per i clienti.\n\n' +
   'Presenta tutto quello che trovi, anche se parziale.\n' +
   'Se non trovi nulla in nessuna fonte, dillo chiaramente con le fonti consultate.\n' +
   'MAI chiedere "cosa stai cercando?" se la domanda contiene già un soggetto chiaro.\n' +

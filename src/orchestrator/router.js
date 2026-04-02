@@ -70,13 +70,35 @@ async function route(userId, message, options) {
       // If skill returned null, fall through to normal routing
     }
 
-    // 1. Classify intent (fast, keyword-based)
-    var intent = await classifyIntent(message);
+    // 1. Classify intent — pass last messages for disambiguation
+    var db2 = require('../../supabase');
+    var convKey = options.threadTs ? userId + ':' + options.threadTs : userId;
+    var convCache = db2.getConvCache();
+    var recentConv = (convCache[convKey] || []).slice(-6); // last 3 exchanges
+
+    // If we have conversation history, give classifier the subject context
+    var classifierMessage = message;
+    if (recentConv.length > 0) {
+      var lastSubjects = recentConv
+        .filter(function(m) { return m.role === 'user' && typeof m.content === 'string'; })
+        .slice(-2)
+        .map(function(m) { return m.content.substring(0, 150); });
+      if (lastSubjects.length > 0) {
+        classifierMessage = '[CONTESTO: ' + lastSubjects.join(' | ') + '] ' + message;
+      }
+    }
+
+    var intent = await classifyIntent(classifierMessage);
     logger.info('[ROUTER] User:', userId, '| Intent:', intent);
 
     // 2. Build context with intent hint for lazy loading
     var ctx = await buildContext({ userId: userId, message: message, options: options, intent: intent });
     ctx = preflight(message, ctx);
+
+    // Inject conversation history into context for agents
+    if (recentConv.length > 0) {
+      ctx.conversationHistory = recentConv;
+    }
 
     // 3. Select and call agent
     var reply;
