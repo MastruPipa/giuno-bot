@@ -507,9 +507,11 @@ var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale
 
 async function autoLearn(userId, userMessage, botReply, context) {
   context = context || {};
-  if (!userMessage || userMessage.length < 20) return;
+  if (!userMessage || userMessage.length < 10) return;
   var msgLower = userMessage.toLowerCase();
   if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
+  // Skip trivial confirmations
+  if (/^(ok|sì|si|no|grazie|perfetto|capito|certo|esatto|giusto|bene|fatto|ricevuto|👍|👀)$/i.test(userMessage.trim())) return;
 
   // Correction handler — detect user corrections (fix #4)
   try {
@@ -527,23 +529,28 @@ async function autoLearn(userId, userMessage, botReply, context) {
     // Single LLM call for all auto-learn tasks
     var analysisRes = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 600,
-      system: 'Analizzi conversazioni per estrarre informazioni utili da ricordare.\n' +
-        'Rispondi SOLO in formato JSON valido. Se non c\'e\' nulla di utile rispondi: {"skip": true}\n' +
+      max_tokens: 800,
+      system: 'Sei il modulo di apprendimento di un assistente aziendale per un\'agenzia di marketing (Katania Studio, 9 persone).\n' +
+        'Analizza questa conversazione ed estrai TUTTO ciò che è utile. Preferisci salvare troppo piuttosto che perdere info.\n' +
+        'Rispondi SOLO in JSON valido. Se il messaggio è davvero inutile (saluto generico, "ok", "grazie"): {"skip": true}\n' +
         '{\n' +
-        '  "memories": [{"content": "info da ricordare", "tags": ["tipo:valore"]}],\n' +
+        '  "memories": [{"content": "info precisa e contestualizzata", "tags": ["tipo:valore"]}],\n' +
         '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
         '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
         '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
-        '  "crm_updates": [{"name": "nome azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}]\n' +
+        '  "crm_updates": [{"name": "nome azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}],\n' +
+        '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}]\n' +
         '}\n' +
-        'Regole:\n' +
-        '- TAG formato tipo:valore (cliente:elfo, progetto:videoclip, area:sviluppo, tipo:procedura)\n' +
-        '- memories: info personali utente. kb: info aziendali condivise.\n' +
-        '- glossary: SOLO termini gergali/soprannomi specifici dell\'azienda, NON comuni.\n' +
-        '- crm_updates: quando l\'utente menziona aggiornamenti su clienti (stato, valore, contatti). NON inventare.\n' +
-        '- NON salvare conversazioni banali o info ovvie. Sii MOLTO selettivo.',
-      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 400) + '\n\nBOT: ' + botReply.substring(0, 400) }],
+        'COSA SALVARE (sii generoso, non perderti nulla):\n' +
+        '- memories: preferenze utente, abitudini lavorative, opinioni su colleghi/clienti/tool, decisioni prese, task assegnati, deadline menzionate, feedback dati, problemi segnalati, relazioni tra persone\n' +
+        '- kb: procedure, decisioni aziendali, info su clienti/fornitori, cambiamenti organizzativi, nuove regole\n' +
+        '- profile: qualsiasi info su ruolo, progetti, clienti seguiti, competenze, stile di lavoro\n' +
+        '- crm_updates: aggiornamenti su lead/clienti (stato, valore, servizi, contatti)\n' +
+        '- project_updates: aggiornamenti su progetti (stato, blocchi, progressi, cambiamenti scope)\n' +
+        '- glossary: soprannomi, abbreviazioni interne, gergo di team\n' +
+        'TAG: formato tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
+        'NON salvare: conferme banali ("ok fatto"), ripetizioni di info già note, errori tecnici di sistema.',
+      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 800) + '\n\nBOT: ' + botReply.substring(0, 600) }],
     });
 
     var analysisText = analysisRes.content[0].text.trim();
@@ -574,8 +581,8 @@ async function autoLearn(userId, userMessage, botReply, context) {
       }
     }
 
-    // KB entries — context-aware: DM never goes to KB
-    if (analysis.kb && analysis.kb.length > 0 && !context.isDM) {
+    // KB entries — admin/finance DMs go to KB as official, other DMs as auto_learn
+    if (analysis.kb && analysis.kb.length > 0) {
       var userRole = await getUserRole(userId);
       var isPrivileged = userRole === 'admin' || userRole === 'finance';
       var kbTier = isPrivileged ? 'official' : (context.channelType === 'public' ? 'slack_public' : (context.channelType === 'private' ? 'slack_private' : 'auto_learn'));
@@ -625,6 +632,30 @@ async function autoLearn(userId, userMessage, botReply, context) {
       } catch(e) {
         logger.warn('[AUTO-LEARN] CRM update error:', e.message);
       }
+    }
+
+    // Project updates — link to projects table
+    if (analysis.project_updates && analysis.project_updates.length > 0) {
+      try {
+        for (var pi = 0; pi < analysis.project_updates.length; pi++) {
+          var pu = analysis.project_updates[pi];
+          if (!pu.project_name || !pu.update) continue;
+          // Search for existing project
+          var projects = await db.searchProjects({ name: pu.project_name, limit: 1 });
+          if (!projects || projects.length === 0) {
+            projects = await db.searchProjects({ client_name: pu.project_name, limit: 1 });
+          }
+          if (projects && projects.length > 0) {
+            // Save update as memory linked to project
+            var projMemContent = '[Progetto: ' + projects[0].name + '] ' + pu.update;
+            db.addMemory(userId, projMemContent, ['progetto:' + projects[0].name.toLowerCase(), 'tipo:update']);
+            logger.info('[AUTO-LEARN] Project update:', projMemContent.substring(0, 60));
+          } else {
+            // No project found — save as generic memory
+            db.addMemory(userId, 'Progetto ' + pu.project_name + ': ' + pu.update, ['progetto:' + pu.project_name.toLowerCase(), 'tipo:update']);
+          }
+        }
+      } catch(e) { logger.warn('[AUTO-LEARN] Project update error:', e.message); }
     }
 
     // Glossary terms
