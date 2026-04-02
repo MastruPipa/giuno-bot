@@ -113,6 +113,13 @@ async function processSlackMessage(message, channelId) {
       sourceChannelId: channelId,
       sourceChannelType: 'public',
     });
+
+    // React with 📝 to show Giuno read and learned from this message
+    try {
+      var { app } = require('./slackService');
+      await app.client.reactions.add({ channel: channelId, timestamp: message.ts, name: 'memo' });
+    } catch(e) { /* ignore — may not have permission or already reacted */ }
+
     logger.debug('[MEM-WATCHER] Saved from #' + channelName + ':', text.substring(0, 50));
   } catch(e) { logger.debug('[MEM-WATCHER] Save error:', e.message); }
 }

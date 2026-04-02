@@ -32,7 +32,7 @@ function classifyDocument(title, content) {
 var _processed = {};
 var DEDUP_TTL = 60 * 60 * 1000;
 
-async function processSlackFile(file, userId, channelId, threadTs) {
+async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
   if (!file || !file.id) return;
   if (_processed[file.id] && Date.now() - _processed[file.id] < DEDUP_TTL) return;
   _processed[file.id] = Date.now();
@@ -177,6 +177,14 @@ async function processSlackFile(file, userId, channelId, threadTs) {
       } catch(e) { /* Don't reply if we can't — non-blocking */ }
     }
 
+    // React 📝 to show Giuno processed this file
+    if (channelId && messageTs) {
+      try {
+        var { app: slackApp } = require('../services/slackService');
+        await slackApp.client.reactions.add({ channel: channelId, timestamp: messageTs, name: 'memo' });
+      } catch(e2) { /* ignore */ }
+    }
+
     logger.info('[FILE-ANALYZER] Processed:', fileName, '| category:', category, '| channel:', chMapping.channel_name || channelId);
   } catch(e) {
     logger.error('[FILE-ANALYZER] Error:', e.message);
@@ -188,7 +196,7 @@ async function processMessageFiles(message, channelId) {
   if (!message || !message.files || message.files.length === 0) return;
   var threadTs = message.thread_ts || message.ts;
   for (var i = 0; i < message.files.length; i++) {
-    processSlackFile(message.files[i], message.user, channelId, threadTs).catch(function(e) {
+    processSlackFile(message.files[i], message.user, channelId, threadTs, message.ts).catch(function(e) {
       logger.debug('[FILE-ANALYZER] Process error:', e.message);
     });
   }

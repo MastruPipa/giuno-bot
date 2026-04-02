@@ -721,6 +721,12 @@ app.event('reaction_added', async function(args) {
 
     // If negative, save as correction memory
     if (isNegative) {
+      // Track error pattern for repeated mistakes
+      try {
+        var errorTracker = require('../services/errorTracker');
+        errorTracker.recordError(botMsg.text, 'negative_feedback', event.user);
+      } catch(e3) { /* ignore */ }
+
       db.addMemory(event.user, 'FEEDBACK_NEGATIVO su risposta Giuno: "' + (botMsg.text || '').substring(0, 150) + '"', ['feedback', 'negativo'], {
         memory_type: 'episodic', confidence_score: 0.8,
       });
