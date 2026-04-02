@@ -119,19 +119,41 @@ var SKILLS = [
     channels: ['operation', 'management'],
     minRole: 'member',
     prompt: 'Sei il PM di Katania Studio.\n' +
-      'Genera un report stato progetti con semaforo: 🟢 on track, 🟡 attenzione, 🔴 critico.\n' +
-      'Per ogni progetto: fase, team, prossima milestone, rischi.\n' +
-      'Max 20 righe. Formato tabellare.\n',
+      'Genera un report stato progetti BASATO SUI DATI REALI.\n' +
+      'Per ogni progetto calcola e mostra:\n' +
+      '• Semaforo: 🟢 budget ±10% e on time | 🟡 budget +10-25% o ritardo 1-2 sett | 🔴 budget >+25% o ritardo >2 sett | ⚫ dati mancanti\n' +
+      '• Budget: €quotato vs €actual (delta € e %)\n' +
+      '• Ore: allocate vs lavorate (% completamento)\n' +
+      '• Timeline: start_date → end_date, giorni rimanenti\n' +
+      '• Team: chi è assegnato e con che ruolo\n' +
+      'Se mancano dati (budget, ore, date), segnala ⚫ e suggerisci cosa inserire.\n' +
+      'Max 25 righe. Formato tabellare.\n',
     loadContext: async function(db) {
       var supabase = db.getClient();
       if (!supabase) return {};
-      var { data: profiles } = await supabase.from('channel_profiles')
-        .select('channel_name, cliente, progetto, project_phase, team_members, description')
-        .not('cliente', 'is', null).not('project_phase', 'eq', 'chiuso').limit(20);
-      var { data: signals } = await supabase.from('pm_signals')
-        .select('channel_id, signal_type, message_excerpt, urgency_score')
-        .eq('status', 'open').gte('urgency_score', 3).limit(10);
-      return { projects: profiles || [], signals: signals || [] };
+      var projects = await db.searchProjects({ status: 'active', limit: 30 });
+      // Get allocations for each project
+      var projectDetails = [];
+      for (var i = 0; i < Math.min(projects.length, 15); i++) {
+        var allocs = await db.getProjectAllocations(projects[i].id);
+        projectDetails.push({ project: projects[i], allocations: allocs });
+      }
+      // Also get channel profiles for additional context
+      var profiles = [];
+      try {
+        var { data } = await supabase.from('channel_profiles')
+          .select('channel_name, cliente, progetto, project_phase, team_members')
+          .not('cliente', 'is', null).not('project_phase', 'eq', 'chiuso').limit(20);
+        profiles = data || [];
+      } catch(e) { /* ignore */ }
+      var signals = [];
+      try {
+        var { data: sigs } = await supabase.from('pm_signals')
+          .select('channel_id, signal_type, message_excerpt, urgency_score')
+          .eq('status', 'open').gte('urgency_score', 3).limit(10);
+        signals = sigs || [];
+      } catch(e) { /* ignore */ }
+      return { projectDetails: projectDetails, channelProfiles: profiles, signals: signals };
     },
   },
   {
@@ -143,33 +165,73 @@ var SKILLS = [
     minRole: 'manager',
     prompt: 'Sei il resource planner di Katania Studio (9 persone).\n' +
       'Analizza il carico del team: chi lavora su cosa, chi è sovraccarico, chi è libero.\n' +
-      'Basa l\'analisi sui channel_profiles (team_members) e sulle scadenze.\n',
+      'Usa i dati dalla tabella projects + resource_allocations come fonte primaria.\n' +
+      'Confronta ore allocate vs ore lavorate per ogni persona.\n' +
+      'SCALA: 🟢 <70% carico, 🟡 70-90% carico, 🔴 >90% carico.\n' +
+      'Suggerisci ribilanciamenti se trovi bottleneck.\n',
     loadContext: async function(db) {
       var supabase = db.getClient();
       if (!supabase) return {};
-      var { data: profiles } = await supabase.from('channel_profiles')
-        .select('channel_name, cliente, team_members, project_phase')
-        .not('cliente', 'is', null).not('project_phase', 'eq', 'chiuso').limit(20);
+      var projects = await db.searchProjects({ status: 'active', limit: 30 });
+      var workload = await db.getTeamWorkload();
       var { data: users } = await supabase.from('user_profiles')
-        .select('nome, ruolo, progetti').limit(15);
-      return { projects: profiles || [], team: users || [] };
+        .select('nome, ruolo, progetti, slack_user_id').limit(15);
+      return { activeProjects: projects || [], teamWorkload: workload || [], team: users || [] };
     },
   },
   {
     id: 'finance_overview',
     name: 'Finance Overview',
-    keywords: ['fatturato', 'costi', 'overview finanziaria', 'revenue', 'budget'],
-    regex: [/fatturato\s+(q\d|mensile|annuale)/i, /overview\s+finanz/i],
+    keywords: ['fatturato', 'costi', 'overview finanziaria', 'revenue', 'budget', 'margini'],
+    regex: [/fatturato\s+(q\d|mensile|annuale)/i, /overview\s+finanz/i, /margini?\s+(progett|client)/i],
     channels: ['amministrazione', 'finance'],
     minRole: 'admin',
     prompt: 'Sei il CFO assistant di Katania Studio.\n' +
-      'Analizza: fatturato (lead won), pipeline value, costi noti.\n' +
+      'Analizza con NUMERI PRECISI:\n' +
+      '• Revenue: somma valori lead won (dal CRM)\n' +
+      '• Pipeline: valore totale lead attivi per stato\n' +
+      '• Progetti: budget_quoted vs budget_actual per ogni progetto attivo. Calcola margine.\n' +
+      '• Burn rate: quanto stiamo spendendo vs quanto abbiamo preventivato\n' +
+      'Mostra SEMPRE: delta €, delta %, trend rispetto al trimestre precedente se disponibile.\n' +
+      'Se un progetto sfora il budget >10%: segnala come 🔴.\n' +
       'ATTENZIONE: dati finanziari sono sensibili — verifica il ruolo dell\'utente.\n',
     loadContext: async function(db) {
       var leads = await db.searchLeads({ status: 'won', limit: 50 });
       var pipeline = await db.getLeadsPipeline();
+      var projects = await db.searchProjects({ status: 'active', limit: 30 });
       var kbFinance = db.searchKB('fatturato costi budget finanziario');
-      return { wonLeads: leads, pipeline: pipeline, financeKB: (kbFinance || []).slice(0, 5) };
+      return { wonLeads: leads, pipeline: pipeline, activeProjects: projects, financeKB: (kbFinance || []).slice(0, 5) };
+    },
+  },
+  {
+    id: 'project_health',
+    name: 'Project Health Check',
+    keywords: ['salute progetto', 'health check', 'come va il progetto', 'stato progetto'],
+    regex: [/com[e']?\s+(va|sta|messo)\s+(il\s+)?progett/i, /health\s+check/i, /progetto\s+.+\s+(stato|come va)/i],
+    channels: ['operation', 'management'],
+    minRole: 'member',
+    prompt: 'Sei l\'analista operativo di Katania Studio.\n' +
+      'Fai un HEALTH CHECK del progetto richiesto con dati misurabili.\n' +
+      'CALCOLA e mostra:\n' +
+      '• BUDGET: €quotato vs €speso. Delta € e %. Burn rate (€speso / giorni trascorsi × giorni totali).\n' +
+      '• TEMPO: data inizio → data fine. Giorni trascorsi vs totali. % timeline consumata.\n' +
+      '• RISORSE: ore allocate vs lavorate per persona. Chi è on track, chi sfora.\n' +
+      '• DELIVERABLE: se presenti, quanti completati vs totali.\n' +
+      '• SEMAFORO FINALE: 🟢 🟡 🔴 ⚫ con motivazione basata sui numeri.\n\n' +
+      'Se NON ci sono dati sufficienti per una sezione, mostra ⚫ e specifica cosa manca.\n' +
+      'NON dire "sembra andare bene" — mostra i numeri e lascia che parlino.\n',
+    loadContext: async function(db, ctx, message) {
+      var match = (message || '').match(/progett[oi]?\s+(?:di\s+)?(.+?)(?:\s*\?|$)/i);
+      var name = match ? match[1].trim() : null;
+      if (!name) return {};
+      var projects = await db.searchProjects({ name: name, limit: 3 });
+      if (!projects || projects.length === 0) {
+        projects = await db.searchProjects({ client_name: name, limit: 3 });
+      }
+      if (!projects || projects.length === 0) return { noProject: true, searchedName: name };
+      var project = projects[0];
+      var allocations = await db.getProjectAllocations(project.id);
+      return { project: project, allocations: allocations };
     },
   },
   {
