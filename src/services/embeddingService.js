@@ -40,6 +40,11 @@ async function generateEmbedding(text) {
         body: JSON.stringify({ model: 'text-embedding-3-small', input: text.substring(0, 2000) }),
       });
       var data = await res.json();
+      // Track embedding cost
+      try {
+        var costTracker = require('./costTracker');
+        costTracker.trackCall('openai', 'text-embedding-3-small', data.usage ? data.usage.total_tokens : 500, 0);
+      } catch(e) { /* ignore */ }
       return data.data && data.data[0] ? data.data[0].embedding : null;
     }
   } catch(e) {
