@@ -190,7 +190,8 @@ function searchKB(query, options) {
       recencyScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
     }
     var normalizedKeyword = Math.min(keywordScore / 20, 1.0);
-    var finalScore = (normalizedKeyword * 0.5) + (confidenceScore * 0.35) + (recencyScore * 0.15);
+    // Recency weighs 30% — recent info strongly preferred over old
+    var finalScore = (normalizedKeyword * 0.4) + (confidenceScore * 0.3) + (recencyScore * 0.3);
     scored.push({ entry: entry, score: finalScore });
   }
 
