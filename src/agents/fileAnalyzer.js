@@ -66,15 +66,54 @@ async function processSlackFile(file, userId, channelId, threadTs) {
       }
     }
 
-    // ─── Images (jpg, png, gif, webp) — describe via AI ─────────────
-    if (/^image\//i.test(mimeType)) {
-      // We can't process images directly with Haiku text-only
-      // But we can save metadata and the file reference
-      contentText = 'Immagine: ' + fileName +
-        (file.title && file.title !== fileName ? ' — ' + file.title : '') +
-        (file.initial_comment ? '\nCommento: ' + file.initial_comment.comment : '');
-      summary = '🖼 *' + fileName + '* caricata' +
-        (file.title && file.title !== fileName ? ' — ' + file.title : '');
+    // ─── Images (jpg, png, gif, webp) — Vision AI analysis ────────────
+    if (/^image\/(jpeg|jpg|png|gif|webp)/i.test(mimeType)) {
+      try {
+        var fetch = require('node-fetch');
+        var imgRes = await fetch(file.url_private, {
+          headers: { 'Authorization': 'Bearer ' + process.env.SLACK_BOT_TOKEN },
+        });
+        var imgBuffer = await imgRes.buffer();
+        var base64Image = imgBuffer.toString('base64');
+        var mediaType = mimeType.replace('image/jpg', 'image/jpeg'); // normalize
+
+        // Only process images < 5MB for vision
+        if (imgBuffer.length < 5 * 1024 * 1024) {
+          var Anthropic = require('@anthropic-ai/sdk');
+          var visionClient = new Anthropic();
+          var visionRes = await visionClient.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 500,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: base64Image },
+                },
+                {
+                  type: 'text',
+                  text: 'Analizza questa immagine condivisa nel canale Slack di un\'agenzia di marketing.\n' +
+                    'Descrivi:\n' +
+                    '1. Cosa mostra l\'immagine (mockup, screenshot, foto, grafica, documento?)\n' +
+                    '2. Se c\'è testo leggibile, trascrivilo (OCR)\n' +
+                    '3. Se è un design/mockup: colori, layout, font, brand elements\n' +
+                    '4. Se è una foto: soggetto, contesto, qualità\n' +
+                    '5. Se è uno screenshot: di quale app/sito, cosa mostra\n' +
+                    'Rispondi in italiano, max 8 righe. Formato: *grassetto* per punti chiave.',
+                },
+              ],
+            }],
+          });
+          contentText = visionRes.content[0].text.trim();
+          summary = '🖼 *' + fileName + '*\n' + contentText;
+          logger.info('[FILE-ANALYZER] Vision analysis done for:', fileName);
+        }
+      } catch(e) {
+        logger.warn('[FILE-ANALYZER] Vision error:', e.message);
+        contentText = 'Immagine: ' + fileName;
+        summary = '🖼 *' + fileName + '* caricata (analisi visiva non disponibile)';
+      }
     }
 
     // ─── PDF ────────────────────────────────────────────────────────

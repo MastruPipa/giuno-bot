@@ -55,6 +55,38 @@ var definitions = [
     },
   },
   {
+    name: 'edit_doc',
+    description: 'Modifica un Google Doc esistente. Può aggiungere testo alla fine, sostituire testo, o inserire testo in una posizione. Usa read_doc prima per vedere il contenuto attuale.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_id:        { type: 'string', description: 'ID del documento Google' },
+        action:        { type: 'string', description: '"append" (aggiungi alla fine), "replace" (sostituisci testo), "insert" (inserisci all\'inizio)' },
+        text:          { type: 'string', description: 'Testo da aggiungere/inserire' },
+        find_text:     { type: 'string', description: 'Testo da cercare (solo per action "replace")' },
+        replace_text:  { type: 'string', description: 'Testo sostitutivo (solo per action "replace")' },
+      },
+      required: ['doc_id', 'action'],
+    },
+  },
+  {
+    name: 'edit_slides',
+    description: 'Modifica una presentazione Google Slides esistente. Può aggiungere una nuova slide, modificare testo in una slide esistente, o aggiungere note speaker.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string', description: 'ID della presentazione Google Slides' },
+        action:          { type: 'string', description: '"add_slide" (nuova slide), "replace_text" (sostituisci testo), "add_notes" (aggiungi note speaker)' },
+        slide_number:    { type: 'number', description: 'Numero slide (1-based, per replace_text e add_notes)' },
+        text:            { type: 'string', description: 'Testo da inserire (per add_slide/add_notes)' },
+        title:           { type: 'string', description: 'Titolo della nuova slide (per add_slide)' },
+        find_text:       { type: 'string', description: 'Testo da cercare (per replace_text)' },
+        replace_text:    { type: 'string', description: 'Testo sostitutivo (per replace_text)' },
+      },
+      required: ['presentation_id', 'action'],
+    },
+  },
+  {
     name: 'share_file',
     description: 'Condivide un file Google Drive con un utente.',
     input_schema: {
@@ -279,6 +311,107 @@ async function execute(toolName, input, userId) {
         await docsApi.documents.batchUpdate({ documentId: docId, requestBody: { requests: [{ insertText: { location: { index: 1 }, text: input.content } }] } });
       }
       return { success: true, doc_id: docId, link: 'https://docs.google.com/document/d/' + docId + '/edit' };
+    }
+
+    if (toolName === 'edit_doc') {
+      var docsEdit = getDocsPerUtente(userId);
+      if (!docsEdit) return { error: 'Google Docs non collegato. Scrivi "collega il mio Google".' };
+      try {
+        var requests = [];
+        if (input.action === 'append') {
+          // Get document length first
+          var docMeta = await docsEdit.documents.get({ documentId: input.doc_id });
+          var endIndex = 1;
+          if (docMeta.data.body && docMeta.data.body.content) {
+            var lastEl = docMeta.data.body.content[docMeta.data.body.content.length - 1];
+            endIndex = lastEl.endIndex ? lastEl.endIndex - 1 : 1;
+          }
+          requests.push({ insertText: { location: { index: Math.max(endIndex, 1) }, text: '\n' + (input.text || '') } });
+        } else if (input.action === 'insert') {
+          requests.push({ insertText: { location: { index: 1 }, text: (input.text || '') + '\n' } });
+        } else if (input.action === 'replace') {
+          if (!input.find_text) return { error: 'find_text obbligatorio per action "replace".' };
+          requests.push({ replaceAllText: { containsText: { text: input.find_text, matchCase: false }, replaceText: input.replace_text || '' } });
+        } else {
+          return { error: 'Action non valida. Usa: append, insert, replace.' };
+        }
+        var result = await docsEdit.documents.batchUpdate({ documentId: input.doc_id, requestBody: { requests: requests } });
+        return { success: true, action: input.action, replies: (result.data.replies || []).length };
+      } catch(e) {
+        if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Scrivi "collega il mio Google".' };
+        return { error: 'Errore modifica doc: ' + e.message };
+      }
+    }
+
+    if (toolName === 'edit_slides') {
+      var slidesEdit = getSlidesPerUtente(userId);
+      if (!slidesEdit) return { error: 'Google Slides non collegato. Scrivi "collega il mio Google".' };
+      try {
+        var presData = await slidesEdit.presentations.get({ presentationId: input.presentation_id });
+        var allSlides = presData.data.slides || [];
+        var requests = [];
+
+        if (input.action === 'add_slide') {
+          // Add a new blank slide at the end with title and body
+          requests.push({ createSlide: { insertionIndex: allSlides.length, slideLayoutReference: { predefinedLayout: 'TITLE_AND_BODY' } } });
+          // We'll need to get the new slide ID after creation to insert text
+          var addResult = await slidesEdit.presentations.batchUpdate({
+            presentationId: input.presentation_id,
+            requestBody: { requests: requests },
+          });
+          var newSlideId = addResult.data.replies && addResult.data.replies[0] && addResult.data.replies[0].createSlide ? addResult.data.replies[0].createSlide.objectId : null;
+          if (newSlideId && (input.title || input.text)) {
+            // Re-fetch to get the new slide's elements
+            var updatedPres = await slidesEdit.presentations.get({ presentationId: input.presentation_id });
+            var newSlide = updatedPres.data.slides.find(function(s) { return s.objectId === newSlideId; });
+            if (newSlide && newSlide.pageElements) {
+              var textRequests = [];
+              for (var eli = 0; eli < newSlide.pageElements.length; eli++) {
+                var el = newSlide.pageElements[eli];
+                if (el.shape && el.shape.placeholder) {
+                  if (el.shape.placeholder.type === 'TITLE' && input.title) {
+                    textRequests.push({ insertText: { objectId: el.objectId, text: input.title, insertionIndex: 0 } });
+                  } else if (el.shape.placeholder.type === 'BODY' && input.text) {
+                    textRequests.push({ insertText: { objectId: el.objectId, text: input.text, insertionIndex: 0 } });
+                  }
+                }
+              }
+              if (textRequests.length > 0) {
+                await slidesEdit.presentations.batchUpdate({ presentationId: input.presentation_id, requestBody: { requests: textRequests } });
+              }
+            }
+          }
+          return { success: true, action: 'add_slide', new_slide_id: newSlideId, total_slides: allSlides.length + 1 };
+
+        } else if (input.action === 'replace_text') {
+          if (!input.find_text) return { error: 'find_text obbligatorio per replace_text.' };
+          requests.push({ replaceAllText: { containsText: { text: input.find_text, matchCase: false }, replaceText: input.replace_text || '' } });
+
+        } else if (input.action === 'add_notes') {
+          var slideIdx = (input.slide_number || 1) - 1;
+          if (slideIdx < 0 || slideIdx >= allSlides.length) return { error: 'Slide ' + input.slide_number + ' non trovata.' };
+          var targetSlide = allSlides[slideIdx];
+          if (targetSlide.slideProperties && targetSlide.slideProperties.notesPage) {
+            var notesPage = targetSlide.slideProperties.notesPage;
+            var notesShape = (notesPage.pageElements || []).find(function(pe) {
+              return pe.shape && pe.shape.placeholder && pe.shape.placeholder.type === 'BODY';
+            });
+            if (notesShape) {
+              requests.push({ insertText: { objectId: notesShape.objectId, text: input.text || '', insertionIndex: 0 } });
+            }
+          }
+        } else {
+          return { error: 'Action non valida. Usa: add_slide, replace_text, add_notes.' };
+        }
+
+        if (requests.length > 0) {
+          await slidesEdit.presentations.batchUpdate({ presentationId: input.presentation_id, requestBody: { requests: requests } });
+        }
+        return { success: true, action: input.action };
+      } catch(e) {
+        if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto. Scrivi "collega il mio Google".' };
+        return { error: 'Errore modifica slides: ' + e.message };
+      }
     }
 
     if (toolName === 'share_file') {
