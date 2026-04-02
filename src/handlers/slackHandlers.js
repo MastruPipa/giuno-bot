@@ -258,8 +258,8 @@ app.message(async function(args) {
     source: 'app_message',
   }), async function() {
 
-  // Passive memory watcher (fire-and-forget)
-  if (message.text && message.channel_type !== 'im') {
+  // Passive memory watcher (fire-and-forget) — now also in DMs
+  if (message.text) {
     watchMemory(message, message.channel).catch(function() {});
     // Auto-read Drive links shared in channels (not just mentions)
     if (message.text && /docs\.google\.com|drive\.google\.com/i.test(message.text)) {

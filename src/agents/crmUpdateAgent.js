@@ -87,6 +87,12 @@ async function run(message, ctx) {
     messages.push({ role: 'user', content: toolResults });
   }
 
+  // Auto-learn from CRM interactions
+  var { autoLearn } = require('../services/anthropicService');
+  if (finalReply && finalReply.length > 20) {
+    autoLearn(ctx.userId, message, finalReply, { channelId: ctx.channelId, channelType: ctx.channelType, isDM: ctx.isDM }).catch(function(e) {});
+  }
+
   return finalReply;
 }
 

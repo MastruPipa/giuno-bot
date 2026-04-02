@@ -65,6 +65,15 @@ async function route(userId, message, options) {
       var skillReply = await executeSkill(skillMatch.skill, message, skillCtx);
       if (skillReply) {
         logger.info('[ROUTER] Skill handled:', skillMatch.skill.id);
+        // Learn from skill interaction
+        try {
+          var { autoLearn } = require('../services/anthropicService');
+          autoLearn(userId, message, skillReply, {
+            channelId: options.channelId || null,
+            channelType: options.channelType || 'dm',
+            isDM: options.isDM || !options.channelId,
+          }).catch(function() {});
+        } catch(e) { /* ignore */ }
         return skillReply;
       }
       // If skill returned null, fall through to normal routing

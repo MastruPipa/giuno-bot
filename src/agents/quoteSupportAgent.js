@@ -156,6 +156,13 @@ async function run(message, ctx) {
     msg += '\n*Confidence:* ' + cEmoji + ' ' + confidence + '\n';
     warnings.forEach(function(w) { msg += '⚠️ ' + w + '\n'; });
     msg += '\n_Richiede approvazione prima dell\'invio al cliente._';
+
+    // Auto-learn from quote interactions
+    try {
+      var { autoLearn } = require('../services/anthropicService');
+      autoLearn(ctx.userId, message, msg, { channelId: ctx.channelId, channelType: ctx.channelType, isDM: ctx.isDM }).catch(function() {});
+    } catch(e2) { /* ignore */ }
+
     return msg;
   } catch(e) {
     logger.error('[QUOTE-V2]', e.message);
