@@ -89,8 +89,14 @@ function extractServiceType(msg) {
 async function run(message, ctx) {
   if (!checkPermission(ctx.userRole, 'view_quote_price')) return getAccessDeniedMessage(ctx.userRole);
 
-  // Guard: if user is giving data (amounts + modification verbs), this is a CRM update, not a quote request
+  // Guard: self-referential cost questions → use get_api_costs, not generate quote
   var msgLow = (message || '').toLowerCase();
+  if (/quanto cost[ia]?\s*(tu|il tuo|giuno|l'api|le api|al giorno|al mese|utilizzo)|costo di giuno|spesa api/i.test(msgLow)) {
+    logger.info('[QUOTE-V2] Self-cost question → redirect to general');
+    return null; // Fall through to general assistant which knows about get_api_costs
+  }
+
+  // Guard: if user is giving data (amounts + modification verbs), this is a CRM update
   var hasAmount = /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msgLow);
   var isDataInput = hasAmount && /sono\s+\d|la (proposta|offerta|quotazione) è|abbiamo (offerto|proposto)|modifica|aggiorna|cambia|aggiung/i.test(msgLow);
   var isAskingEstimate = /quanto (cost|dovremmo|chied)|stima|genera un|crea un preventivo|fai un preventivo/i.test(msgLow);

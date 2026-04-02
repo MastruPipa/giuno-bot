@@ -114,6 +114,12 @@ async function classifyIntent(message) {
   }
   var msgLow = message.toLowerCase();
 
+  // Fast guard: self-referential cost questions → GENERAL (not QUOTE_SUPPORT)
+  if (/quanto cost[ia]?\s*(tu|il tuo|giuno|l.api|le api|al giorno|al mese|utilizzo)|costo di giuno|spesa api|quanto mi cost/i.test(msgLow)) {
+    logger.info('[INTENT] Fast guard → GENERAL (self-cost question)');
+    return INTENTS.GENERAL;
+  }
+
   // Fast guard: if user provides amounts + modification verbs → always CRM_UPDATE
   // This catches "sono 1650€/mese", "la proposta è di 5000€", "abbiamo offerto 3000€"
   var hasAmount = /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msgLow);
