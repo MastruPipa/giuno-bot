@@ -100,6 +100,23 @@ app.event('app_mention', async function(args) {
   try {
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
+    // Detect CC/presa visione: if message mentions other users AND Giuno is at the end
+    var isCCMention = false;
+    var rawText = event.text || '';
+    var mentionMatches = rawText.match(/<@[A-Z0-9]+>/g) || [];
+    if (mentionMatches.length >= 2) {
+      // Giuno's mention is among several — likely CC
+      var botUserId = (app.client && app.client.token) ? null : null; // We'll detect by position
+      var giunoMentionIdx = rawText.lastIndexOf('<@');
+      var textAfterGiuno = rawText.substring(giunoMentionIdx).replace(/<@[^>]+>/, '').trim();
+      // If Giuno is the last mention and nothing meaningful follows → CC
+      if (textAfterGiuno.length < 10) isCCMention = true;
+    }
+    // Also detect patterns like "message to someone. @Giuno"
+    if (!isCCMention && mentionMatches.length >= 2 && text.length < 15) {
+      isCCMention = true; // Very little text directed at Giuno specifically
+    }
+
     // Collect channel context
     var channelContext = '';
     var ch = {};
@@ -146,12 +163,24 @@ app.event('app_mention', async function(args) {
     }
 
     var mentionChannelType = ch.is_private ? 'private' : 'public';
+
+    // If CC mention: add instruction to not respond unless necessary
+    var ccInstruction = '';
+    if (isCCMention) {
+      ccInstruction = '\n[SEI IN CC/PRESA VISIONE su questo messaggio. NON rispondere a meno che:\n' +
+        '1. Ti venga fatta una domanda diretta\n' +
+        '2. Ci sia un errore grave da segnalare\n' +
+        '3. Puoi aggiungere info critiche che nessuno ha\n' +
+        'Se nessuna di queste condizioni è vera, rispondi con un brevissimo "👀 Visto." o non rispondere.]\n';
+    }
+
     var reply = await route(event.user, text, {
       mentionedBy: event.user,
       threadTs: threadTs,
       channelContext: channelContext,
       channelId: ch.id || null,
       channelType: mentionChannelType,
+      preflightInstruction: ccInstruction || undefined,
     });
 
     var degradedMentionReply = isDegradedReply(reply);
