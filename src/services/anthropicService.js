@@ -297,6 +297,14 @@ var SYSTEM_PROMPT =
   'Confronta SEMPRE le date nelle memories con la data attuale.\n' +
   'Se una deadline è passata, segnalalo. Non presentare date scadute come future.\n\n' +
 
+  'FILTRO TEMPORALE — REGOLA ASSOLUTA:\n' +
+  'Quando ricevi risultati da recall_memory, search_kb, o qualsiasi ricerca:\n' +
+  '→ GUARDA LA DATA di ogni risultato. Se ha "2024", "2023", o date vecchie: NON usarli come info attuali.\n' +
+  '→ Per domande generiche ("output pronti?", "stato?", "cosa abbiamo?"): usa SOLO risultati degli ultimi 30 giorni.\n' +
+  '→ Per domande specifiche con nome ("info su Aitho"): accetta anche risultati più vecchi ma SEGNALA la data.\n' +
+  '→ Se un risultato non ha data, trattalo con sospetto — probabilmente è vecchio.\n' +
+  '→ MAI mischiare info di periodi diversi senza dirlo. "Il progetto X (dati del 2024)" è ok. "Il progetto X" senza dire che i dati sono del 2024 NON è ok.\n\n' +
+
   'MEMORIA — CLASSIFICAZIONE OBBLIGATORIA:\n' +
   'Quando salvi con store_memory, il tipo viene classificato automaticamente:\n' +
   '• preference (0.8): preferenze utente, stile, abitudini → personale, permanente\n' +
