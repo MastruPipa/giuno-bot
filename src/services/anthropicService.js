@@ -417,9 +417,17 @@ function buildSystemPrompt(userRolePrompt, isDM) {
     : 'MODALITÀ CANALE:\n' +
       'Strutturato se complesso. Conciso se semplice.\n\n';
 
-  var lengthRule = 'LUNGHEZZA:\n' +
-    'Semplice → 1-3 frasi. Media → 3-8 frasi. Complessa → strutturata, no ripetizioni.\n' +
-    'MAI ripetere lo stesso concetto. MAI aggiungere info non richieste.\n\n';
+  var lengthRule = 'LUNGHEZZA E COMUNICAZIONE:\n' +
+    'Domanda semplice → 1-3 frasi. Punto. Non aggiungere altro.\n' +
+    'Domanda media → 3-8 frasi. Vai dritto al punto.\n' +
+    'Domanda complessa → strutturata ma senza ripetizioni.\n' +
+    'REGOLE FERRO:\n' +
+    '• MAI ripetere lo stesso concetto con parole diverse.\n' +
+    '• MAI aggiungere info non richieste.\n' +
+    '• MAI dire "SKIP", "knowledge base", "tool", "RPC", "query" — sono termini interni.\n' +
+    '• MAI mostrare ragionamento tecnico all\'utente. Se non hai info, dì semplicemente "non lo so".\n' +
+    '• MAI chiedere "Serve altro?" o "Posso aiutarti con altro?" — se servono ti scrivono.\n' +
+    '• Parla come un collega, non come un sistema. Niente linguaggio da chatbot.\n\n';
 
   return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
     'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
@@ -555,7 +563,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
         'Analizza questa conversazione ed estrai TUTTO ciò che è utile. Preferisci salvare troppo piuttosto che perdere info.\n' +
         'Rispondi SOLO in JSON valido. Se il messaggio è davvero inutile (saluto generico, "ok", "grazie"): {"skip": true}\n' +
         '{\n' +
-        '  "memories": [{"content": "info precisa e contestualizzata", "tags": ["tipo:valore"]}],\n' +
+        '  "memories": [{"content": "FRASE COMPLETA con contesto: chi ha detto cosa, a chi, quando, perché", "tags": ["tipo:valore"]}],\n' +
         '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
         '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
         '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
@@ -563,15 +571,21 @@ async function autoLearn(userId, userMessage, botReply, context) {
         '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}],\n' +
         '  "contacts": [{"name": "nome persona esterna", "role": null, "company": "azienda", "email": null, "phone": null}]\n' +
         '}\n' +
-        'COSA SALVARE (sii generoso, non perderti nulla):\n' +
-        '- memories: preferenze utente, abitudini lavorative, opinioni su colleghi/clienti/tool, decisioni prese, task assegnati, deadline menzionate, feedback dati, problemi segnalati, relazioni tra persone\n' +
-        '- kb: procedure, decisioni aziendali, info su clienti/fornitori, cambiamenti organizzativi, nuove regole\n' +
-        '- profile: qualsiasi info su ruolo, progetti, clienti seguiti, competenze, stile di lavoro\n' +
-        '- contacts: persone ESTERNE menzionate (es. "Marco di Aitho", "la referente Chiara"). Solo persone fuori dal team KS.\n' +
-        '- crm_updates: aggiornamenti su lead/clienti (stato, valore, servizi, contatti)\n' +
-        '- project_updates: aggiornamenti su progetti (stato, blocchi, progressi, cambiamenti scope)\n' +
-        '- glossary: soprannomi, abbreviazioni interne, gergo di team\n' +
-        'TAG: formato tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
+        'COME SALVARE LE MEMORIE — REGOLA FONDAMENTALE:\n' +
+        'Ogni memoria DEVE essere una frase completa e comprensibile da sola, come se la leggessi tra 3 mesi.\n' +
+        'SBAGLIATO: "Budget 15k" → tra 3 mesi non sai di chi, di cosa, detto da chi.\n' +
+        'GIUSTO: "Antonio ha detto (02/04/2026, DM) che il budget del progetto Aitho branding è 15k€"\n' +
+        'SBAGLIATO: "Call domani" → inutile senza contesto.\n' +
+        'GIUSTO: "Corrado ha organizzato una call con il cliente 869 per il 03/04/2026 alle 15:30 per presentazione branding"\n\n' +
+        'COSA SALVARE:\n' +
+        '- memories: preferenze, abitudini, opinioni, decisioni, task, deadline, feedback, problemi, relazioni tra persone. Sempre con CHI+COSA+QUANDO+DOVE.\n' +
+        '- kb: procedure, decisioni aziendali condivise, info clienti/fornitori, nuove regole\n' +
+        '- profile: ruolo, progetti, clienti seguiti, competenze, stile di lavoro\n' +
+        '- contacts: persone ESTERNE (es. "Marco di Aitho", "Chiara della 869"). Solo fuori dal team KS.\n' +
+        '- crm_updates: aggiornamenti lead/clienti (stato, valore, servizi)\n' +
+        '- project_updates: aggiornamenti progetti (stato, blocchi, progressi)\n' +
+        '- glossary: soprannomi, abbreviazioni, gergo interno\n' +
+        'TAG: tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
         'NON salvare: conferme banali ("ok fatto"), ripetizioni di info già note, errori tecnici di sistema.',
       messages: [{ role: 'user', content:
         (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1200) + '\n\n---\n' : '') +
@@ -587,11 +601,19 @@ async function autoLearn(userId, userMessage, botReply, context) {
 
     // Memories
     if (analysis.memories && analysis.memories.length > 0) {
+      var dateTag = new Date().toISOString().slice(0, 10);
+      var sourceTag = context.isDM ? 'DM' : (context.channelId ? '#canale' : 'conversazione');
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
         if (m.content && m.content.length > 5 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
-          db.addMemory(userId, m.content, m.tags || []);
-          logger.info('[AUTO-LEARN] Memoria:', m.content.substring(0, 60));
+          // Append date/source if not already in content
+          var enrichedContent = m.content;
+          if (!m.content.includes('202') && !m.content.includes(dateTag)) {
+            enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
+          }
+          var tags = (m.tags || []).concat(['data:' + dateTag]);
+          db.addMemory(userId, enrichedContent, tags);
+          logger.info('[AUTO-LEARN] Memoria:', enrichedContent.substring(0, 60));
         }
       }
     }
