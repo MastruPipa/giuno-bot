@@ -15,6 +15,7 @@ var { route } = require('../orchestrator/router');
 var { catalogaConfirm } = require('../tools/registry');
 var { detectAndSaveDeadlines } = require('../agents/deadlineDetector');
 var { autoSummarizeDriveLinks } = require('../agents/driveLinkSummarizer');
+var { processMessageFiles } = require('../agents/fileAnalyzer');
 var { processSlackMessage: watchMemory } = require('../services/slackMemoryWatcher');
 var { createRequestContext, withRequestContext } = require('../utils/requestContext');
 var metricsService = require('../services/metricsService');
@@ -260,6 +261,14 @@ app.message(async function(args) {
   // Passive memory watcher (fire-and-forget)
   if (message.text && message.channel_type !== 'im') {
     watchMemory(message, message.channel).catch(function() {});
+    // Auto-read Drive links shared in channels (not just mentions)
+    if (message.text && /docs\.google\.com|drive\.google\.com/i.test(message.text)) {
+      autoSummarizeDriveLinks(message.user, message.text, message.channel, message.thread_ts || message.ts).catch(function() {});
+    }
+  }
+  // Auto-analyze uploaded files (channel and DM)
+  if (message.files && message.files.length > 0) {
+    processMessageFiles(message, message.channel).catch(function() {});
   }
 
   // Implicit channel replies
