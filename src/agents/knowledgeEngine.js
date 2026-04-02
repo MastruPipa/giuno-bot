@@ -51,14 +51,16 @@ async function indexDrive(userId, report) {
     return;
   }
 
-  var ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  var lookbackDays = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
 
   var res = await withTimeout(drv.files.list({
-    q: "modifiedTime > '" + ninetyDaysAgo + "' and trashed = false and (" +
+    q: "modifiedTime > '" + lookbackDays + "' and trashed = false and (" +
        "mimeType = 'application/vnd.google-apps.document' or " +
-       "mimeType = 'application/vnd.google-apps.spreadsheet')",
+       "mimeType = 'application/vnd.google-apps.spreadsheet' or " +
+       "mimeType = 'application/vnd.google-apps.presentation' or " +
+       "mimeType = 'application/pdf')",
     fields: 'files(id, name, mimeType, modifiedTime)',
-    pageSize: 100,
+    pageSize: 150,
     orderBy: 'modifiedTime desc',
   }), 15000, 'drive_list');
 
@@ -80,7 +82,7 @@ async function indexDrive(userId, report) {
           docs.documents.get({ documentId: file.id }),
           10000, 'read_doc'
         );
-        content = extractDocText(doc.data.body.content).substring(0, 3000);
+        content = extractDocText(doc.data.body.content).substring(0, 4000);
       } else if (file.mimeType.includes('spreadsheet')) {
         var sheets = getSheetPerUtente(userId);
         if (!sheets) continue;
@@ -88,10 +90,33 @@ async function indexDrive(userId, report) {
           sheets.spreadsheets.values.get({ spreadsheetId: file.id, range: 'A1:Z50' }),
           10000, 'read_sheet'
         );
-        content = JSON.stringify(sheet.data.values || []).substring(0, 3000);
+        content = JSON.stringify(sheet.data.values || []).substring(0, 4000);
+      } else if (file.mimeType.includes('presentation')) {
+        var { getSlidesPerUtente } = require('../services/googleAuthService');
+        var slides = getSlidesPerUtente(userId);
+        if (!slides) continue;
+        var pres = await withTimeout(
+          slides.presentations.get({ presentationId: file.id }),
+          10000, 'read_slides'
+        );
+        var slideTexts = [];
+        (pres.data.slides || []).forEach(function(slide, idx) {
+          var texts = [];
+          (slide.pageElements || []).forEach(function(el) {
+            if (el.shape && el.shape.text && el.shape.text.textElements) {
+              var t = el.shape.text.textElements.map(function(te) { return te.textRun ? te.textRun.content : ''; }).join('').trim();
+              if (t) texts.push(t);
+            }
+          });
+          if (texts.length > 0) slideTexts.push('Slide ' + (idx + 1) + ': ' + texts.join(' '));
+        });
+        content = slideTexts.join('\n').substring(0, 4000);
+      } else if (file.mimeType === 'application/pdf') {
+        // PDF: save metadata + name (can't read content directly)
+        content = 'PDF: ' + file.name + ' (modificato: ' + file.modifiedTime + ')';
       }
 
-      if (!content || content.length < 200) continue;
+      if (!content || content.length < 50) continue;
 
       var classification = await classifyDocument(file.name, content);
       if (!classification || classification.relevance === 'bassa') continue;
@@ -184,8 +209,11 @@ async function indexSlack(report) {
         oldest: sevenDaysAgo,
         limit: 100,
       });
+      // Include bot messages (Gemini recaps, summaries) — skip only Giuno's own SKIP messages
       var msgs = (hist.messages || []).filter(function(m) {
-        return !m.bot_id && m.type === 'message' && m.text && m.text.length >= 20;
+        if (m.type !== 'message' || !m.text || m.text.length < 20) return false;
+        if (m.text.startsWith('SKIP')) return false;
+        return true;
       });
 
       // Group by thread

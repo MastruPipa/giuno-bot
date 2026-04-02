@@ -490,15 +490,35 @@ async function digerisciCanali() {
       try {
         await autoMapChannel(ch.id);
         var digests = db.getChannelDigestCache();
-        var lastTs = (digests[ch.id] && digests[ch.id].last_ts) || String(Math.floor((Date.now() - 4 * 60 * 60 * 1000) / 1000));
-        var hist = await app.client.conversations.history({ channel: ch.id, oldest: lastTs, limit: 50 });
-        var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
-        if (msgs.length < 3) continue;
+        var lastTs = (digests[ch.id] && digests[ch.id].last_ts) || String(Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000));
+        var hist = await app.client.conversations.history({ channel: ch.id, oldest: lastTs, limit: 80 });
+        // Include bot messages (Gemini recaps, automated summaries) — only skip Giuno's own
+        var botUserId = null;
+        try { var authTest = await app.client.auth.test(); botUserId = authTest.user_id; } catch(e) { /* ignore */ }
+        var msgs = (hist.messages || []).filter(function(m) {
+          if (!m.type || m.type !== 'message') return false;
+          if (!m.text && !m.attachments) return false;
+          // Skip Giuno's own messages
+          if (botUserId && m.user === botUserId) return false;
+          if (m.bot_id && m.text && /^(SKIP|👀)/.test(m.text)) return false;
+          return true;
+        });
+        if (msgs.length < 2) continue;
 
         var newestTs = msgs[0].ts;
         var msgText = msgs.reverse().map(function(m) {
           return (m.user ? '<@' + m.user + '>' : 'unknown') + ': ' + (m.text || '').substring(0, 200);
         }).join('\n');
+
+        // Also read pinned messages for context (source of truth docs)
+        var pinnedText = '';
+        try {
+          var pinnedRes = await app.client.pins.list({ channel: ch.id });
+          var pinnedMsgs = (pinnedRes.items || []).filter(function(p) { return p.message && p.message.text; }).slice(0, 3);
+          if (pinnedMsgs.length > 0) {
+            pinnedText = '\n\nMESSAGGI PINNATI:\n' + pinnedMsgs.map(function(p) { return '📌 ' + p.message.text.substring(0, 200); }).join('\n');
+          }
+        } catch(e) { /* pins not accessible */ }
 
         var channelMapping = db.getChannelMapCache()[ch.id] || {};
         var analysisRes = await client.messages.create({
@@ -519,7 +539,7 @@ async function digerisciCanali() {
             '- kb: solo decisioni, scadenze, info clienti, procedure — NON chiacchiere\n' +
             '- Tags strutturati: cliente:nome, progetto:nome, area:dev/design/marketing, tipo:decisione/scadenza/procedura\n' +
             '- channel_update: aggiorna solo se hai info più precise sul cliente/progetto del canale',
-          messages: [{ role: 'user', content: msgText }],
+          messages: [{ role: 'user', content: msgText + pinnedText }],
         });
 
         var analysisText = analysisRes.content[0].text.trim();
@@ -1142,7 +1162,7 @@ function scheduleCrons() {
   // Legacy weekly recap (kept as fallback)
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
-  cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
+  cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
   cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
   // Proactive monitor — ogni 3 ore durante orario lavorativo

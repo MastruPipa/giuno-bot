@@ -21,18 +21,26 @@ var COMPLETION_SIGNALS = [
 // Patterns that indicate something worth remembering from channels
 var IMPORTANT_PATTERNS = [
   { pattern: /entro (il |domani|luned|marted|mercoled|gioved|venerd|\d)/i, type: 'deadline', tag: 'tipo:deadline' },
-  { pattern: /deciso|abbiamo deciso|si fa|approvato|confermato che/i, type: 'decision', tag: 'tipo:decisione' },
-  { pattern: /bloccat[oi]|bloccato da|serve aiuto|non riesco|problema con/i, type: 'blocker', tag: 'tipo:blocco' },
-  { pattern: /cliente (ha detto|vuole|chiede|ha chiesto|preferisce)/i, type: 'client_feedback', tag: 'tipo:feedback_cliente' },
-  { pattern: /budget|preventivo|€\s*\d|\d+\s*€/i, type: 'financial', tag: 'tipo:finanziario' },
-  { pattern: /meeting|call|riunione|brainstorm/i, type: 'meeting', tag: 'tipo:meeting' },
-  { pattern: /nuovo (cliente|progetto|fornitore|collaboratore)/i, type: 'new_entity', tag: 'tipo:nuovo' },
-  { pattern: /cambiamento|cambio|modifica|aggiornamento importante/i, type: 'change', tag: 'tipo:cambiamento' },
+  { pattern: /deciso|abbiamo deciso|si fa|approvato|confermato che|si procede|andiamo con/i, type: 'decision', tag: 'tipo:decisione' },
+  { pattern: /bloccat[oi]|bloccato da|serve aiuto|non riesco|problema con|non funziona|urgente/i, type: 'blocker', tag: 'tipo:blocco' },
+  { pattern: /cliente (ha detto|vuole|chiede|ha chiesto|preferisce|ha confermato|ha approvato)/i, type: 'client_feedback', tag: 'tipo:feedback_cliente' },
+  { pattern: /budget|preventivo|€\s*\d|\d+\s*€|costo|fattura|pagamento/i, type: 'financial', tag: 'tipo:finanziario' },
+  { pattern: /meeting|call|riunione|brainstorm|presentazione|demo/i, type: 'meeting', tag: 'tipo:meeting' },
+  { pattern: /nuovo (cliente|progetto|fornitore|collaboratore|membro)/i, type: 'new_entity', tag: 'tipo:nuovo' },
+  { pattern: /cambiamento|cambio|modifica|aggiornamento|spostato|rinviato|posticipato/i, type: 'change', tag: 'tipo:cambiamento' },
+  // New patterns — strategic discussions and assignments
+  { pattern: /assegnato a|responsabile|si occupa|prende in carico|gestisce/i, type: 'assignment', tag: 'tipo:assegnazione' },
+  { pattern: /strategia|obiettivo|target|kpi|risultato|performance/i, type: 'strategy', tag: 'tipo:strategia' },
+  { pattern: /consegnato|spedito|live|pubblicato|lanciato|online/i, type: 'delivery', tag: 'tipo:consegna' },
+  { pattern: /feedback|revisione|correzione|da rifare|non va bene/i, type: 'feedback', tag: 'tipo:feedback' },
+  { pattern: /contratto|firmato|accordo|partnership|collaborazione/i, type: 'contract', tag: 'tipo:contratto' },
+  // Long messages (>100 chars) in client channels are likely substantive
+  { pattern: /.{100,}/i, type: 'substantive', tag: 'tipo:discussione' },
 ];
 
 // Rate limiting: don't save more than 3 items per channel per hour
 var _rateLimits = {}; // channelId -> { count, resetAt }
-var RATE_LIMIT = 10;
+var RATE_LIMIT = 15;
 var RATE_WINDOW = 60 * 60 * 1000;
 
 function checkRateLimit(channelId) {
