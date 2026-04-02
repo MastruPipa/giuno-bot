@@ -100,7 +100,7 @@ async function backfillEmbeddings() {
 
   // KB entries without embeddings
   var { data: kbEntries } = await supabase.from('knowledge_base')
-    .select('id, content').is('embedding', null).limit(100);
+    .select('id, content').is('embedding', null).limit(200);
 
   for (var i = 0; i < (kbEntries || []).length; i++) {
     var emb = await generateEmbedding(kbEntries[i].content);
@@ -113,7 +113,7 @@ async function backfillEmbeddings() {
 
   // Memories without embeddings
   var { data: memEntries } = await supabase.from('memories')
-    .select('id, content').is('embedding', null).is('superseded_by', null).limit(100);
+    .select('id, content').is('embedding', null).is('superseded_by', null).limit(200);
 
   for (var j = 0; j < (memEntries || []).length; j++) {
     var emb2 = await generateEmbedding(memEntries[j].content);

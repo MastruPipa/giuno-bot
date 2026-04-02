@@ -569,7 +569,9 @@ async function autoLearn(userId, userMessage, botReply, context) {
         '- glossary: soprannomi, abbreviazioni interne, gergo di team\n' +
         'TAG: formato tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
         'NON salvare: conferme banali ("ok fatto"), ripetizioni di info già note, errori tecnici di sistema.',
-      messages: [{ role: 'user', content: 'UTENTE: ' + userMessage.substring(0, 800) + '\n\nBOT: ' + botReply.substring(0, 600) }],
+      messages: [{ role: 'user', content:
+        (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1200) + '\n\n---\n' : '') +
+        'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 800) + '\n\nBOT: ' + botReply.substring(0, 600) }],
     });
 
     var analysisText = analysisRes.content[0].text.trim();
@@ -1028,6 +1030,16 @@ async function askGiuno(userId, userMessage, options) {
   };
   if (options.channelType) learnContext.channelType = options.channelType;
   if (options.isDM != null) learnContext.isDM = options.isDM;
+  // Pass recent conversation history so autoLearn has full context
+  var recentConv = convCache[convKey] || [];
+  if (recentConv.length > 2) {
+    var convSummary = recentConv.slice(-8).map(function(m) {
+      var role = m.role === 'user' ? 'Utente' : 'Giuno';
+      var text = typeof m.content === 'string' ? m.content : '';
+      return role + ': ' + text.substring(0, 200);
+    }).join('\n');
+    learnContext.conversationSummary = convSummary;
+  }
   autoLearn(userId, resolvedMessage, finalReply, learnContext).catch(function(e) {
     logger.error('Auto-learn error:', e.message);
   });

@@ -40,7 +40,7 @@ function isDuplicate(newContent, newTags) {
   var newClient = getTagValue(newTags || [], 'cliente:');
   var newProject = getTagValue(newTags || [], 'progetto:');
   var newTipo = getTagValue(newTags || [], 'tipo:');
-  var startIdx = Math.max(0, _kbCache.length - 200);
+  var startIdx = _kbCache.length > 1000 ? Math.max(0, _kbCache.length - 500) : 0;
   for (var i = startIdx; i < _kbCache.length; i++) {
     var existing = _kbCache[i];
     if ((existing.tags || []).some(function(t) { return t === 'fonte:ufficiale'; })) continue;
