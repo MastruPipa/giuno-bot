@@ -320,9 +320,26 @@ var SYSTEM_PROMPT =
   'Per domande su chi ha collegato Google, usa SEMPRE get_connected_users. Mai dalla memoria.\n\n' +
   'SCRITTURA MEMORIA:\n' +
   'save_memory: salva PROATTIVAMENTE info importanti senza chiedere.\n' +
+  'remember_this: quando l\'utente dice "ricordati che...", "segna che...", "tieni a mente" → usa QUESTO tool. Conferma il salvataggio.\n' +
   'NON salvare MAI in memoria: importi €, stati contratto, pipeline, fatturato.\n' +
   'update_user_profile: aggiorna profilo quando scopri ruolo/progetti/clienti.\n' +
   'add_to_kb: per info che valgono per TUTTI (procedure, decisioni aziendali).\n\n' +
+
+  'CONTATTI ESTERNI:\n' +
+  'Quando scopri il nome di una persona esterna (contatto cliente, fornitore, collaboratore):\n' +
+  '→ Usa save_contact per salvarlo: nome, ruolo, azienda, email/telefono se disponibili.\n' +
+  'Quando qualcuno chiede "chi è X di Y?" → cerca prima con search_contacts.\n' +
+  '"Marco di Aitho", "Chiara della 869", "il referente di Elfo" → tutti contatti da tracciare.\n\n' +
+
+  'SCHEDA ENTITÀ:\n' +
+  'Quando l\'utente chiede "tutto su X", "scheda di X", "dossier su X" → usa entity_card.\n' +
+  'Questo tool raccoglie da TUTTE le fonti in un colpo solo: CRM, contatti, progetti, memorie, KB, canali, Drive.\n\n' +
+
+  'PRIORITÀ SETTIMANALI:\n' +
+  'Le priorità della settimana vengono iniettate nel contesto automaticamente.\n' +
+  'Se la richiesta riguarda una priorità, trattala come urgente.\n' +
+  '"Imposta le priorità della settimana" → set_priorities.\n' +
+  '"Quali sono le priorità?" → get_priorities.\n\n' +
 
   'TAGGING — SOLO QUANDO SERVE:\n' +
   'Tagga (<@USERID>) una persona SOLO quando:\n' +
@@ -539,12 +556,14 @@ async function autoLearn(userId, userMessage, botReply, context) {
         '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
         '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
         '  "crm_updates": [{"name": "nome azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}],\n' +
-        '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}]\n' +
+        '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}],\n' +
+        '  "contacts": [{"name": "nome persona esterna", "role": null, "company": "azienda", "email": null, "phone": null}]\n' +
         '}\n' +
         'COSA SALVARE (sii generoso, non perderti nulla):\n' +
         '- memories: preferenze utente, abitudini lavorative, opinioni su colleghi/clienti/tool, decisioni prese, task assegnati, deadline menzionate, feedback dati, problemi segnalati, relazioni tra persone\n' +
         '- kb: procedure, decisioni aziendali, info su clienti/fornitori, cambiamenti organizzativi, nuove regole\n' +
         '- profile: qualsiasi info su ruolo, progetti, clienti seguiti, competenze, stile di lavoro\n' +
+        '- contacts: persone ESTERNE menzionate (es. "Marco di Aitho", "la referente Chiara"). Solo persone fuori dal team KS.\n' +
         '- crm_updates: aggiornamenti su lead/clienti (stato, valore, servizi, contatti)\n' +
         '- project_updates: aggiornamenti su progetti (stato, blocchi, progressi, cambiamenti scope)\n' +
         '- glossary: soprannomi, abbreviazioni interne, gergo di team\n' +
@@ -656,6 +675,34 @@ async function autoLearn(userId, userMessage, botReply, context) {
           }
         }
       } catch(e) { logger.warn('[AUTO-LEARN] Project update error:', e.message); }
+    }
+
+    // External contacts — auto-save people mentioned
+    if (analysis.contacts && analysis.contacts.length > 0) {
+      try {
+        var supabaseContacts = require('./db/client').getClient();
+        if (supabaseContacts) {
+          for (var cti = 0; cti < analysis.contacts.length; cti++) {
+            var ct = analysis.contacts[cti];
+            if (!ct.name || ct.name.length < 2) continue;
+            // Check if contact already exists
+            var existing = await supabaseContacts.from('contacts')
+              .select('id').ilike('name', '%' + ct.name + '%').limit(1);
+            if (existing.data && existing.data.length > 0) continue; // Already exists
+            // Find linked lead
+            var ctLeadId = null;
+            if (ct.company) {
+              var ctLeads = await db.searchLeads({ company_name: ct.company, limit: 1 });
+              if (ctLeads && ctLeads.length > 0) ctLeadId = ctLeads[0].id;
+            }
+            await supabaseContacts.from('contacts').insert({
+              name: ct.name, role: ct.role || null, company: ct.company || null,
+              email: ct.email || null, phone: ct.phone || null, lead_id: ctLeadId, created_by: userId,
+            });
+            logger.info('[AUTO-LEARN] Contatto salvato:', ct.name, ct.company || '');
+          }
+        }
+      } catch(e) { logger.warn('[AUTO-LEARN] Contact save error:', e.message); }
     }
 
     // Glossary terms
@@ -861,6 +908,40 @@ async function askGiuno(userId, userMessage, options) {
   if (options.preflightInstruction) {
     contextData += '\n' + options.preflightInstruction + '\n';
   }
+
+  // Error pattern warnings — if this topic has known mistakes, warn the LLM
+  try {
+    var errorTracker = require('./errorTracker');
+    var errorWarnings = errorTracker.getErrorWarnings(resolvedMessage);
+    if (errorWarnings.length > 0) {
+      contextData += '\n⚠️ ATTENZIONE — ERRORI PASSATI SU QUESTO ARGOMENTO:\n';
+      errorWarnings.forEach(function(w) {
+        contextData += '• Errore ripetuto ' + w.count + 'x: ' + (w.lastError || '').substring(0, 150) + '\n';
+      });
+      contextData += 'PRIMA di rispondere, verifica i dati con un tool. Se non sei sicuro, chiedi conferma.\n';
+    }
+  } catch(e) { /* errorTracker not available */ }
+
+  // Weekly priorities injection
+  try {
+    var supabaseForPrio = require('./db/client').getClient();
+    if (supabaseForPrio) {
+      var prioRes = await supabaseForPrio.from('weekly_priorities')
+        .select('priorities')
+        .order('week_start', { ascending: false })
+        .limit(1);
+      if (prioRes.data && prioRes.data.length > 0 && prioRes.data[0].priorities) {
+        var prios = prioRes.data[0].priorities;
+        if (Array.isArray(prios) && prios.length > 0) {
+          contextData += '\n🎯 PRIORITÀ SETTIMANA:\n';
+          prios.forEach(function(p) {
+            contextData += '• ' + (p.rank || '') + '. ' + (p.text || p) + '\n';
+          });
+          contextData += 'Queste sono le priorità correnti. Se la richiesta riguarda una di queste, trattala come urgente.\n';
+        }
+      }
+    }
+  } catch(e) { /* ignore */ }
 
   var messageWithContext = contextData
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
