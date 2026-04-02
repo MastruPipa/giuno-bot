@@ -152,7 +152,11 @@ var SYSTEM_PROMPT =
   'Se dice "aggiungili", "modificalo", "aggiornalo" senza specificare cosa → è l\'ultimo argomento discusso.\n' +
   'Se dice "puoi aggiungerli?" dopo aver visto dati di Unimed → vuole aggiungere quei dati di Unimed al CRM.\n' +
   'Se dice "manca X" e poi dà istruzioni → le istruzioni riguardano X.\n' +
-  'PRIMA di agire: rileggi gli ultimi 3-4 messaggi nella conversazione per capire il soggetto.\n\n' +
+  'PRIMA di agire: rileggi gli ultimi 3-4 messaggi nella conversazione per capire il soggetto.\n' +
+  'QUANDO CORRETTO: se l\'utente ti dice "in realtà vedo X", "no, ci sono messaggi", "non è così":\n' +
+  '→ RIPROVA la stessa azione con parametri diversi (es. read_channel con include_bots=true)\n' +
+  '→ NON cambiare argomento. NON lanciare un briefing generico.\n' +
+  '→ Rispondi alla STESSA domanda con dati corretti.\n\n' +
 
   'TOOL USAGE:\n' +
   'HAI PIENO ACCESSO A SLACK. Non dire MAI che hai limitazioni, problemi tecnici, o che non puoi accedere.\n' +
@@ -181,7 +185,7 @@ var SYSTEM_PROMPT =
   '- read_channel: legge messaggi di un canale (INCLUSI bot). USA SEMPRE per analizzare canali specifici.\n' +
   '- summarize_channel: riassume un canale con AI. read_channel è meglio se servono dati grezzi.\n' +
   'CANALI PRINCIPALI (ID diretti — non cercarli):\n' +
-  '• #daily → C05846AEV6D (USA read_channel, contiene SOLO messaggi bot)\n' +
+  '• #daily → C05846AEV6D — ATTENZIONE: i daily sono messaggi BOT. Usa SOLO read_channel con include_bots=true. MAI summarize_channel su #daily.\n' +
   'Per filtrare per data: passa oldest come timestamp Unix a read_channel.\n' +
   '- review_email_draft: usalo prima di send_email su contenuti importanti.\n' +
   '- find_free_slots: per trovare slot comuni tra più persone.\n' +

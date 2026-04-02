@@ -139,6 +139,17 @@ async function execute(toolName, input, userId, userRole) {
     if (input.deliverables) updates.deliverables = input.deliverables;
     var updated = await db.updateProject(input.project_id, updates);
     if (!updated) return { error: 'Progetto non trovato o errore aggiornamento.' };
+
+    // Trigger post-mortem when project is completed
+    if (input.status === 'completed') {
+      try {
+        var { generatePostMortem } = require('../agents/projectPostMortem');
+        generatePostMortem(input.project_id).catch(function(e) {
+          logger.warn('[PROJECT] Post-mortem error:', e.message);
+        });
+      } catch(e) { /* ignore */ }
+    }
+
     return { success: true, project: updated };
   }
 
