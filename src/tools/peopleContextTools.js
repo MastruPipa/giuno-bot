@@ -70,6 +70,16 @@ var definitions = [
     },
   },
   {
+    name: 'get_api_costs',
+    description: 'Mostra i costi API di Giuno: chiamate, token, costo stimato per provider. Solo admin.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        days: { type: 'number', description: 'Quanti giorni mostrare (default 30)' },
+      },
+    },
+  },
+  {
     name: 'get_priorities',
     description: 'Mostra le priorità della settimana corrente.',
     input_schema: { type: 'object', properties: {} },
@@ -245,6 +255,14 @@ async function execute(toolName, input, userId, userRole) {
         .limit(1);
       if (data && data.length > 0) return { week: data[0].week_start, priorities: data[0].priorities, set_by: data[0].set_by };
       return { message: 'Nessuna priorità impostata. Usa set_priorities per impostarle.' };
+    } catch(e) { return { error: e.message }; }
+  }
+
+  if (toolName === 'get_api_costs') {
+    if (userRole !== 'admin' && userRole !== 'finance') return { error: 'Solo admin/finance.' };
+    try {
+      var costTracker = require('../services/costTracker');
+      return await costTracker.getCostSummary(input.days || 30);
     } catch(e) { return { error: e.message }; }
   }
 

@@ -733,7 +733,14 @@ async function callAnthropicWithRetry(params) {
   var lastError = null;
   for (var attempt = 0; attempt <= 3; attempt++) {
     try {
-      return await client.messages.create(params);
+      var result = await client.messages.create(params);
+      // Track API cost
+      try {
+        var costTracker = require('./costTracker');
+        var usage = result.usage || {};
+        costTracker.trackCall('anthropic', params.model || 'unknown', usage.input_tokens || 0, usage.output_tokens || 0);
+      } catch(e) { /* ignore */ }
+      return result;
     } catch(err) {
       lastError = err;
       var isOverloaded = (err.status === 529) || (err.message && err.message.includes('overloaded'));
