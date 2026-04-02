@@ -934,11 +934,14 @@ async function monitoraDomandeInSospeso() {
           limit: 20,
         });
         var msgs = (hist.messages || []).filter(function(m) {
-          return !m.bot_id && m.type === 'message' && m.text &&
-            (m.text.includes('?') ||
-             m.text.toLowerCase().includes('qualcuno sa') ||
-             m.text.toLowerCase().includes('come si fa') ||
-             m.text.toLowerCase().includes('qualcuno può'));
+          if (m.bot_id || m.type !== 'message' || !m.text) return false;
+          var t = m.text.toLowerCase();
+          // Must be an actual question — not announcements, greetings, or status updates
+          var isQuestion = t.includes('?') && t.length > 20;
+          var isHelpRequest = /qualcuno (sa|può|conosce)|come si fa|dove trovo|chi (sa|ha)|avete|sapete/i.test(t);
+          // Exclude greetings, announcements, casual messages
+          var isExcluded = /buon(giorno|asera|a pasqua|e feste)|auguri|ci vediamo|invito|rinnovo|felice|spero/i.test(t);
+          return (isQuestion || isHelpRequest) && !isExcluded;
         });
 
         for (var mi = 0; mi < msgs.length; mi++) {
@@ -967,7 +970,9 @@ async function monitoraDomandeInSospeso() {
             });
 
             var reply = res.content[0].text.trim();
-            if (reply !== 'SKIP' && reply.length > 10) {
+            // Robust SKIP detection — any response containing "SKIP" or explaining why it skips
+            var isSkip = /^SKIP/i.test(reply) || /non pertinent|non rilevant|non riguarda|comunicazione informale|saluto/i.test(reply);
+            if (!isSkip && reply.length > 15 && !/knowledge base|KB aziendale/i.test(reply)) {
               await app.client.chat.postMessage({
                 channel: ch.id,
                 thread_ts: msg.ts,
