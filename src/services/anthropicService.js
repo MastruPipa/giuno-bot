@@ -786,6 +786,29 @@ async function askGiuno(userId, userMessage, options) {
     if (profile.stile_comunicativo) contextData += 'Stile: ' + profile.stile_comunicativo + '\n';
   }
 
+  // Behavioral profile injection — user patterns
+  try {
+    var behaviorTracker = require('./behaviorTracker');
+    var behavior = await behaviorTracker.getBehaviorContext(userId);
+    if (behavior) {
+      contextData += '\nPATTERN UTENTE:\n';
+      if (behavior.communication_style) contextData += 'Stile comunicativo: ' + behavior.communication_style + ' — adatta le tue risposte.\n';
+      if (behavior.peak_hour) contextData += 'Orario di picco: ' + behavior.peak_hour + ':00\n';
+      if (behavior.topics_of_interest && behavior.topics_of_interest.length > 0) contextData += 'Interessi: ' + behavior.topics_of_interest.join(', ') + '\n';
+      if (behavior.messages_per_day) contextData += 'Attività media: ~' + Math.round(behavior.messages_per_day) + ' msg/giorno\n';
+    }
+  } catch(e) {
+    // behaviorTracker may not be ready
+  }
+
+  // Sentiment/urgency injection (from handler)
+  if (options.sentiment) {
+    var s = options.sentiment;
+    if (s.urgency !== 'normal' || s.sentiment !== 'neutral') {
+      contextData += '\n[TONO MESSAGGIO: urgenza=' + s.urgency + ', sentiment=' + s.sentiment + '. ' + s.responseStyle + ']\n';
+    }
+  }
+
   // Glossary injection
   var glossaryMatches = db.searchGlossary(resolvedMessage);
   if (glossaryMatches.length > 0) {

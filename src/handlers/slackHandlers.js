@@ -22,6 +22,8 @@ var { toUserErrorMessage } = require('../utils/errorResponse');
 var feedbackCorrections = require('../utils/feedbackCorrections');
 var { isDegradedReply } = require('../utils/degradedReply');
 var appHome = require('./appHomeHandler');
+var behaviorTracker = require('../services/behaviorTracker');
+var sentimentClassifier = require('../services/sentimentClassifier');
 
 // Register App Home tab
 appHome.register();
@@ -99,6 +101,10 @@ app.event('app_mention', async function(args) {
   }), async function() {
   try {
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
+
+    // Track behavior + classify sentiment for channel mentions
+    behaviorTracker.trackInteraction(event.user, text, { channelId: event.channel, isDM: false });
+    var mentionSentiment = sentimentClassifier.classify(text);
 
     // Detect CC/presa visione: if message mentions other users AND Giuno is at the end
     var isCCMention = false;
@@ -180,6 +186,7 @@ app.event('app_mention', async function(args) {
       channelContext: channelContext,
       channelId: ch.id || null,
       channelType: mentionChannelType,
+      sentiment: mentionSentiment,
       preflightInstruction: ccInstruction || undefined,
     });
 
@@ -375,6 +382,11 @@ app.message(async function(args) {
   try {
     var originalText = message.text || '';
     var textForRoute = originalText;
+
+    // Track behavior + classify sentiment
+    behaviorTracker.trackInteraction(message.user, originalText, { channelId: message.channel, isDM: true });
+    var msgSentiment = sentimentClassifier.classify(originalText);
+
     var isCorrection = !!(
       feedbackCorrections &&
       typeof feedbackCorrections.isCorrectionFeedback === 'function' &&
@@ -409,11 +421,18 @@ app.message(async function(args) {
       }
     }
 
-    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true };
+    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true, sentiment: msgSentiment };
+    // Inject sentiment instruction
+    var sentimentInstruction = '';
+    if (msgSentiment.urgency !== 'normal' || msgSentiment.sentiment !== 'neutral') {
+      sentimentInstruction = '\n[TONO MESSAGGIO: urgenza=' + msgSentiment.urgency + ', sentiment=' + msgSentiment.sentiment + '. Stile risposta: ' + msgSentiment.responseStyle + ']\n';
+    }
     if (dmThreadContext) {
-      dmRouteOptions.preflightInstruction = '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
+      dmRouteOptions.preflightInstruction = sentimentInstruction + '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
         'USA QUESTI MESSAGGI per capire il contesto. Se l\'utente si riferisce a qualcosa detto "sopra", le info sono QUI.\n' +
         'Il SOGGETTO della conversazione è determinato da questi messaggi precedenti. Non perderlo.';
+    } else if (sentimentInstruction) {
+      dmRouteOptions.preflightInstruction = sentimentInstruction;
     }
     var reply = await route(message.user, textForRoute, dmRouteOptions);
     var formatted = formatPerSlack(reply);
