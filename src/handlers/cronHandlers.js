@@ -1104,6 +1104,41 @@ function scheduleCrons() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
     checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
+  // Daily priorities DM — 9:05 lun-ven, after standup send
+  cron.schedule('5 9 * * 1-5', async function() {
+    try {
+      var workflowTools = require('../tools/workflowTools');
+      var { getUtenti } = require('../services/slackService');
+      var utenti = await getUtenti();
+      for (var ui = 0; ui < utenti.length; ui++) {
+        var u = utenti[ui];
+        var prefs = Object.assign({ routine_enabled: true }, db.getPrefsCache()[u.id] || {});
+        if (!prefs.routine_enabled) continue;
+        try {
+          var plan = await workflowTools.execute('get_my_day', { user_id: u.id }, u.id, 'member');
+          if (plan && plan.plan && plan.plan.length > 0) {
+            var msg = '*Le tue priorità per oggi:*\n\n';
+            plan.plan.forEach(function(item, idx) {
+              if (item.urgency) msg += (idx + 1) + '. ' + item.urgency + ' ' + item.task + (item.daysLeft !== null ? ' — ' + item.daysLeft + 'gg rimasti' : '') + '\n';
+              else if (item.type === 'deadline') msg += '⏰ ' + item.text + '\n';
+              else if (item.type === 'info') msg += '_' + item.text + '_\n';
+              else if (item.type === 'priorities') msg += '\n🎯 *Priorità settimana:* ' + item.items.join(' | ') + '\n';
+            });
+            msg += '\n_Chiedimi "cosa devo fare oggi?" per aggiornamenti._';
+            await app.client.chat.postMessage({ channel: u.id, text: formatPerSlack(msg), unfurl_links: false });
+          }
+        } catch(e) { logger.debug('[DAILY-PRIO] Errore per', u.id + ':', e.message); }
+      }
+    } catch(e) { logger.error('[DAILY-PRIO] Errore generale:', e.message); }
+  }, { timezone: 'Europe/Rome' });
+  // Monthly feedback — primo lunedì del mese alle 10:00
+  cron.schedule('0 10 1-7 * 1', async function() {
+    try {
+      var workflowTools = require('../tools/workflowTools');
+      await workflowTools.execute('start_feedback', {}, 'system', 'admin');
+      logger.info('[FEEDBACK-CRON] Questionario mensile avviato.');
+    } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message); }
+  }, { timezone: 'Europe/Rome' });
   // Legacy weekly recap (kept as fallback)
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
