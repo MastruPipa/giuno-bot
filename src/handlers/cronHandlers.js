@@ -1000,49 +1000,61 @@ async function consolidaMemorie() {
   for (var u = 0; u < userIds.length; u++) {
     var userId = userIds[u];
     var memories = memCache[userId];
-    if (!memories || memories.length < 10) continue; // skip users with few memories
+    if (!memories || memories.length < 5) continue;
 
-    // Group by tags for better consolidation
-    var tagGroups = {};
+    // Group by ENTITY (not just tags) — more effective consolidation
+    var entityGroups = {};
     memories.forEach(function(m) {
-      var key = (m.tags || []).sort().join(',') || '_untagged';
-      if (!tagGroups[key]) tagGroups[key] = [];
-      tagGroups[key].push(m);
+      // Extract entity from content or tags
+      var entityKey = '_general';
+      var tags = m.tags || [];
+      for (var ti = 0; ti < tags.length; ti++) {
+        if (tags[ti].startsWith('cliente:') || tags[ti].startsWith('progetto:') || tags[ti].startsWith('persona:')) {
+          entityKey = tags[ti];
+          break;
+        }
+      }
+      // Also group by entity_refs if available
+      if (m.entity_refs && m.entity_refs.length > 0) {
+        entityKey = 'entity:' + m.entity_refs[0];
+      }
+      if (!entityGroups[entityKey]) entityGroups[entityKey] = [];
+      entityGroups[entityKey].push(m);
     });
 
-    var keys = Object.keys(tagGroups);
+    var keys = Object.keys(entityGroups);
     for (var k = 0; k < keys.length; k++) {
-      var group = tagGroups[keys[k]];
-      if (group.length < 3) continue; // only consolidate groups with 3+ memories
+      var group = entityGroups[keys[k]];
+      if (group.length < 3) continue;
 
-      var memList = group.map(function(m) {
-        return '- [' + (m.created || '?') + '] ' + m.content;
-      }).join('\n');
+      // Sort by date, newest first
+      group.sort(function(a, b) { return new Date(b.created || 0) - new Date(a.created || 0); });
 
       try {
         var res = await client.messages.create({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 600,
-          system: 'Sei un assistente che consolida memorie. Analizza le memorie e:\n' +
-            '1. Identifica duplicati o memorie molto simili\n' +
-            '2. Identifica informazioni contraddittorie (tieni la più recente)\n' +
-            '3. Rispondi SOLO in JSON con questo formato:\n' +
-            '{"delete_ids": ["id1", "id2"], "new_memories": [{"content": "testo consolidato", "tags": ["tag1"]}]}\n' +
-            'Se non serve consolidare, rispondi: {"delete_ids": [], "new_memories": []}\n' +
-            'Conserva SEMPRE le informazioni importanti. Elimina solo veri duplicati.',
+          max_tokens: 800,
+          system: 'Consolida queste memorie di un\'agenzia di marketing. Per ogni gruppo:\n' +
+            '1. ELIMINA duplicati e info superate (tieni la più recente)\n' +
+            '2. FONDI memorie episodiche simili in UNA memoria semantica completa\n' +
+            '3. Esempio: 5 frammenti su "Aitho" → 1 memoria: "Aitho: cliente dal 2025, branding+social, budget €15k, contatto Marco, canale #aitho, ultimo progetto logo Q1 2026"\n' +
+            '4. Per tool_result e search_pattern: elimina se >7 giorni e non utili\n\n' +
+            'JSON: {"delete_ids": ["id1"], "new_memories": [{"content": "testo consolidato", "tags": ["tipo:valore"], "memory_type": "semantic"}]}\n' +
+            'Se non serve: {"delete_ids": [], "new_memories": []}',
           messages: [{
             role: 'user',
-            content: 'Memorie da analizzare (tag: ' + keys[k] + '):\n\n' +
-              group.map(function(m) { return '- [ID: ' + m.id + '] [' + (m.created || '?') + '] ' + m.content; }).join('\n'),
+            content: 'Entità/gruppo: ' + keys[k] + ' (' + group.length + ' memorie)\n\n' +
+              group.slice(0, 20).map(function(m) {
+                return '- [ID:' + m.id + '] [' + (m.memory_type || '?') + '] [' + (m.created || '?').substring(0, 10) + '] ' + (m.content || '').substring(0, 200);
+              }).join('\n'),
           }],
         });
 
         var text = res.content[0].text.trim();
-        // Extract JSON from response
         var jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
 
-        var result = safeParse('CRON.1020', jsonMatch[0], null);
+        var result = safeParse('CRON.consolidate', jsonMatch[0], null);
         if (result.delete_ids && result.delete_ids.length > 0) {
           for (var d = 0; d < result.delete_ids.length; d++) {
             await db.deleteMemory(userId, result.delete_ids[d]);
@@ -1052,7 +1064,10 @@ async function consolidaMemorie() {
         if (result.new_memories && result.new_memories.length > 0) {
           for (var n = 0; n < result.new_memories.length; n++) {
             var nm = result.new_memories[n];
-            await db.addMemory(userId, nm.content, nm.tags || []);
+            await db.addMemory(userId, nm.content, nm.tags || [], {
+              memory_type: nm.memory_type || 'semantic',
+              confidence_score: 0.85,
+            });
           }
         }
       } catch(e) {
@@ -1100,7 +1115,7 @@ function scheduleCrons() {
     var behaviorTracker = require('../services/behaviorTracker');
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
   });
-  cron.schedule('0 3 * * 0', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica alle 3:00
+  cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();

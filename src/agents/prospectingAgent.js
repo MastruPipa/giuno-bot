@@ -142,6 +142,13 @@ async function run(companyInput, ctx) {
   out += '*Chi:* ' + (analysis.who_contacts || '—') + ' | *Canale:* ' + (analysis.channel || '—') + '\n\n';
   out += '---\n*BOZZA:*\n' + (analysis.first_message_draft || '—') + '\n---\n';
   if (!alreadyInCRM && cls !== 'SKIP') out += '\n_💾 "aggiungi al crm ' + (analysis.company_name || companyName) + '" per salvare._';
+
+  // Auto-learn from prospecting
+  try {
+    var { autoLearn } = require('../services/anthropicService');
+    autoLearn(ctx.userId, message, out, { channelId: ctx.channelId, channelType: ctx.channelType, isDM: ctx.isDM }).catch(function() {});
+  } catch(e2) { /* ignore */ }
+
   return out;
 }
 

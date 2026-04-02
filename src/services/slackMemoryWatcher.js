@@ -32,7 +32,7 @@ var IMPORTANT_PATTERNS = [
 
 // Rate limiting: don't save more than 3 items per channel per hour
 var _rateLimits = {}; // channelId -> { count, resetAt }
-var RATE_LIMIT = 3;
+var RATE_LIMIT = 10;
 var RATE_WINDOW = 60 * 60 * 1000;
 
 function checkRateLimit(channelId) {
@@ -49,7 +49,7 @@ function checkRateLimit(channelId) {
 
 async function processSlackMessage(message, channelId) {
   var text = (message.text || '').trim();
-  if (text.length < 15) return;
+  if (text.length < 10) return;
   var userId = message.user;
 
   // Track behavior (fire-and-forget)
@@ -93,8 +93,8 @@ async function processSlackMessage(message, channelId) {
   var matchedPatterns = IMPORTANT_PATTERNS.filter(function(p) { return p.pattern.test(text); });
   if (matchedPatterns.length === 0) return;
 
-  // Only save if it has substance (not just a keyword match on a short message)
-  if (text.length < 30) return;
+  // Only save if it has substance
+  if (text.length < 15) return;
 
   try {
     var channelMap = db.getChannelMapCache();
