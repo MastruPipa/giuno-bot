@@ -501,7 +501,11 @@ async function execute(toolName, input, userId) {
 
       // Paginated history
       var allMsgs = await getChannelHistory(app, target.id, oldest, 300);
-      var msgs = allMsgs.filter(function(m) { return !m.bot_id && m.type === 'message' && m.text; });
+      var includeBots = input.include_bots !== false; // default true
+      var msgs = allMsgs.filter(function(m) {
+        if (!includeBots && m.bot_id) return false;
+        return m.type === 'message' && m.text;
+      });
       if (msgs.length === 0) return { summary: 'Nessun messaggio nelle ultime ' + hours + ' ore in #' + input.channel_name + '.' };
 
       var userCache = {};

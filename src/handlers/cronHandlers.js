@@ -1069,6 +1069,22 @@ function scheduleCrons() {
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
   var dailyStandup = require('./dailyStandupV2');
   dailyStandup.scheduleDailyJobs(cron);
+  // Weekly report V2 — venerdì 17:00
+  cron.schedule('0 17 * * 5', function() {
+    var { sendWeeklyReports } = require('../agents/weeklyReport');
+    sendWeeklyReports().catch(function(e) { logger.error('[WEEKLY-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome' });
+  // Follow-up agent — ogni 4 ore lun-ven durante orario lavorativo
+  cron.schedule('0 9,13,17 * * 1-5', function() {
+    var { runFollowups } = require('../agents/followUpAgent');
+    runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome' });
+  // Pre-call briefing — ogni 30 min durante orario lavorativo
+  cron.schedule('*/30 8-18 * * 1-5', function() {
+    var { checkUpcomingCalls } = require('../agents/preCallBriefing');
+    checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome' });
+  // Legacy weekly recap (kept as fallback)
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
   cron.schedule('0 */4 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
