@@ -44,7 +44,7 @@ var ALL_MODULES = [
 
 // ─── Critical action confirmation ─────────────────────────────────────────────
 
-var AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet'];
+var AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet', 'edit_doc', 'edit_slides'];
 var confermeInAttesa = new Map(); // actionId -> { toolName, input, userId, created }
 var catalogaConfirm  = new Map(); // cataloga_confirm_userId -> { files, userId, channelId, rateCard }
 
@@ -136,6 +136,15 @@ async function executeToolCall(toolName, input, userId, userRole) {
       // Gemini review on data to be written
       var geminiNote = await sheetsTools.reviewWriteSheet(input);
       if (geminiNote) preview.gemini_note = geminiNote;
+    } else if (toolName === 'edit_doc') {
+      preview.preview = 'MODIFICA GOOGLE DOC:\nDoc: ' + input.doc_id + '\nAzione: ' + input.action +
+        (input.text ? '\nTesto: ' + input.text.substring(0, 200) : '') +
+        (input.find_text ? '\nCerca: ' + input.find_text + '\nSostituisci: ' + (input.replace_text || '(vuoto)') : '');
+    } else if (toolName === 'edit_slides') {
+      preview.preview = 'MODIFICA GOOGLE SLIDES:\nPresentazione: ' + input.presentation_id + '\nAzione: ' + input.action +
+        (input.title ? '\nTitolo: ' + input.title : '') +
+        (input.text ? '\nTesto: ' + input.text.substring(0, 200) : '') +
+        (input.find_text ? '\nCerca: ' + input.find_text + '\nSostituisci: ' + (input.replace_text || '(vuoto)') : '');
     }
     return preview;
   }
