@@ -103,9 +103,9 @@ async function backfillEmbeddings() {
   logger.info('[EMBEDDING] Starting backfill...');
   var processed = 0;
 
-  // KB entries without embeddings
+  // KB entries without embeddings — process all in batches
   var { data: kbEntries } = await supabase.from('knowledge_base')
-    .select('id, content').is('embedding', null).limit(200);
+    .select('id, content').is('embedding', null).limit(500);
 
   for (var i = 0; i < (kbEntries || []).length; i++) {
     var emb = await generateEmbedding(kbEntries[i].content);
@@ -118,7 +118,7 @@ async function backfillEmbeddings() {
 
   // Memories without embeddings
   var { data: memEntries } = await supabase.from('memories')
-    .select('id, content').is('embedding', null).is('superseded_by', null).limit(200);
+    .select('id, content').is('embedding', null).is('superseded_by', null).limit(500);
 
   for (var j = 0; j < (memEntries || []).length; j++) {
     var emb2 = await generateEmbedding(memEntries[j].content);
