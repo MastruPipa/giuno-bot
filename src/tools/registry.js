@@ -26,6 +26,7 @@ var webTools      = require('./webTools');
 var suppliersTools = require('./suppliersTools');
 var projectTools  = require('./projectTools');
 var peopleContextTools = require('./peopleContextTools');
+var workflowTools     = require('./workflowTools');
 
 var ALL_MODULES = [
   slackTools,
@@ -42,6 +43,7 @@ var ALL_MODULES = [
   suppliersTools,
   projectTools,
   peopleContextTools,
+  workflowTools,
 ];
 
 // ─── Critical action confirmation ─────────────────────────────────────────────

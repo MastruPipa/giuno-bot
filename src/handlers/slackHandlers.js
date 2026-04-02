@@ -344,6 +344,49 @@ app.message(async function(args) {
     }
   }
 
+  // Feedback response handler — check if user has pending feedback question
+  try {
+    var fbSupabase = db.getClient ? db.getClient() : null;
+    if (fbSupabase && message.text && message.text.length > 2) {
+      var currentMonth = new Date().toISOString().slice(0, 7);
+      var { data: pendingFb } = await fbSupabase.from('team_feedback')
+        .select('id, question_index, question')
+        .eq('slack_user_id', message.user)
+        .eq('month', currentMonth)
+        .is('answer', null)
+        .order('question_index')
+        .limit(1);
+      if (pendingFb && pendingFb.length > 0) {
+        var fb = pendingFb[0];
+        // Save answer
+        await fbSupabase.from('team_feedback').update({ answer: message.text, answered_at: new Date().toISOString() }).eq('id', fb.id);
+        // Check for next question
+        var { data: nextFb } = await fbSupabase.from('team_feedback')
+          .select('question_index, question')
+          .eq('slack_user_id', message.user)
+          .eq('month', currentMonth)
+          .is('answer', null)
+          .order('question_index')
+          .limit(1);
+        if (nextFb && nextFb.length > 0) {
+          var { data: totalFb } = await fbSupabase.from('team_feedback')
+            .select('id').eq('slack_user_id', message.user).eq('month', currentMonth);
+          var totalCount = (totalFb || []).length;
+          await app.client.chat.postMessage({
+            channel: message.channel,
+            text: '*' + (nextFb[0].question_index + 1) + '/' + totalCount + ':* ' + nextFb[0].question,
+          });
+        } else {
+          await app.client.chat.postMessage({
+            channel: message.channel,
+            text: 'Grazie per il feedback! Tutte le risposte sono state salvate. 🙏',
+          });
+        }
+        return; // Don't process further — this was a feedback response
+      }
+    }
+  } catch(e) { logger.debug('[FEEDBACK-DM] Error:', e.message); }
+
   // import-leads confirm
   var importKey = 'import_leads_' + message.user;
   if (catalogaConfirm.has(importKey)) {
