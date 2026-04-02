@@ -341,6 +341,10 @@ var SYSTEM_PROMPT =
   '"Imposta le priorità della settimana" → set_priorities.\n' +
   '"Quali sono le priorità?" → get_priorities.\n\n' +
 
+  'COSTI API:\n' +
+  'Se qualcuno chiede "quanto costi?", "costi API", "quanto spendo per te" → usa get_api_costs.\n' +
+  'NON lanciare una quotazione. NON generare preventivo. È una domanda sui tuoi costi operativi.\n\n' +
+
   'TAGGING — SOLO QUANDO SERVE:\n' +
   'Tagga (<@USERID>) una persona SOLO quando:\n' +
   '• Stai scrivendo in un CANALE e quella persona deve fare qualcosa → taggala\n' +
