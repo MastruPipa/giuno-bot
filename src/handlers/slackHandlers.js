@@ -347,7 +347,7 @@ app.message(async function(args) {
   // Feedback response handler — check if user has pending feedback question
   try {
     var fbSupabase = db.getClient ? db.getClient() : null;
-    if (fbSupabase && message.text && message.text.length > 2) {
+    if (fbSupabase && message.text && message.text.length > 0) {
       var currentMonth = new Date().toISOString().slice(0, 7);
       var { data: pendingFb } = await fbSupabase.from('team_feedback')
         .select('id, question_index, question')
@@ -360,12 +360,24 @@ app.message(async function(args) {
         var fb = pendingFb[0];
         var fbText = (message.text || '').trim();
 
-        // If user is asking a clarification question, don't save — let Giuno answer naturally
+        // If user is asking a clarification question, don't save — respond instead
         var isAskingClarification = /\?$/.test(fbText) && fbText.length < 80;
         var isComplaining = /ma ti ho|non mi rispon|aspetta|fermati|stop/i.test(fbText);
+        // "Ok", "continua", "vai" = user wants to proceed, re-show the question
+        var isJustConfirming = /^(ok|sì|si|vai|continua|avanti|prosegui)$/i.test(fbText);
+
+        if (isJustConfirming) {
+          // Re-show the current question
+          var { data: totalFbConf } = await fbSupabase.from('team_feedback')
+            .select('id').eq('slack_user_id', message.user).eq('month', currentMonth);
+          await app.client.chat.postMessage({
+            channel: message.channel,
+            text: '*' + (fb.question_index + 1) + '/' + (totalFbConf || []).length + ':* ' + fb.question,
+          });
+          return;
+        }
 
         if (isAskingClarification || isComplaining) {
-          // Respond to the clarification instead of advancing
           var clarificationReply = '';
           if (isComplaining) {
             clarificationReply = 'Scusa! Aspetto la tua risposta alla domanda. Prenditi il tempo che vuoi.\n\n*Domanda:* ' + fb.question;
