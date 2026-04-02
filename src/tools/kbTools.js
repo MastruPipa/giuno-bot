@@ -48,6 +48,40 @@ var definitions = [
       required: ['entry_id'],
     },
   },
+  {
+    name: 'get_channel_digest',
+    description: 'Recupera il riassunto recente di un canale Slack. Utile per capire di cosa si parla in un canale senza leggerlo tutto.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_name: { type: 'string', description: 'Nome del canale (es. "operation", "preventivi-clienti")' },
+      },
+      required: ['channel_name'],
+    },
+  },
+  {
+    name: 'get_entity_relationships',
+    description: 'Recupera il grafo di relazioni di un\'entità (cliente, fornitore, progetto). Mostra entità collegate, memorie associate, documenti.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entity_name: { type: 'string', description: 'Nome dell\'entità (es. "Aitho", "Andrea Lo Pinzi")' },
+      },
+      required: ['entity_name'],
+    },
+  },
+  {
+    name: 'search_drive_index',
+    description: 'Cerca nei documenti Drive già indicizzati e riassunti dal sistema. Più veloce di search_drive perché cerca nei riassunti AI già generati.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nei documenti indicizzati' },
+        client_filter: { type: 'string', description: 'Filtra per nome cliente (opzionale)' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 function normalizeArray(v) {
@@ -101,6 +135,71 @@ async function execute(toolName, input, userId) {
 
     var kbDeleted = await Promise.resolve(db.deleteKBEntry(entryId));
     return kbDeleted ? { success: true } : { error: 'Entry non trovata.' };
+  }
+
+  if (toolName === 'get_channel_digest') {
+    var chName = (input.channel_name || '').toLowerCase().replace(/^#/, '');
+    if (!chName) throw new UserInputError('Nome canale mancante.');
+    var digests = db.getChannelDigestCache();
+    var channelMap = db.getChannelMapCache();
+    // Find channel by name
+    var targetChId = null;
+    for (var chId in channelMap) {
+      if ((channelMap[chId].channel_name || '').toLowerCase() === chName) {
+        targetChId = chId;
+        break;
+      }
+    }
+    if (!targetChId) return { error: 'Canale "' + chName + '" non trovato nella mappa canali.' };
+    var digest = digests[targetChId];
+    var mapping = channelMap[targetChId] || {};
+    return {
+      channel: chName,
+      cliente: mapping.cliente || null,
+      progetto: mapping.progetto || null,
+      tags: mapping.tags || [],
+      last_digest: digest ? digest.last_digest : 'Nessun digest disponibile',
+      last_updated: digest ? digest.last_ts : null,
+    };
+  }
+
+  if (toolName === 'get_entity_relationships') {
+    var entName = (input.entity_name || '').trim();
+    if (!entName) throw new UserInputError('Nome entità mancante.');
+    try {
+      var entityCtx = await db.getEntityContext(entName, 2);
+      if (entityCtx && entityCtx.found) return entityCtx;
+      // Fallback: resolve entity + search memories
+      var resolved = await db.resolveEntity(entName);
+      if (resolved) {
+        var memories = await db.searchMemories(null, entName);
+        return {
+          entity: resolved,
+          related_memories: (memories || []).slice(0, 5).map(function(m) { return m.content; }),
+        };
+      }
+      return { error: 'Entità "' + entName + '" non trovata.' };
+    } catch(e) {
+      return { error: 'Errore ricerca entità: ' + e.message };
+    }
+  }
+
+  if (toolName === 'search_drive_index') {
+    var driveQuery = (input.query || '').trim();
+    if (!driveQuery) throw new UserInputError('Query mancante.');
+    try {
+      var driveResults = await db.searchDriveContent(driveQuery, 10);
+      if (input.client_filter) {
+        var clientFilter = input.client_filter.toLowerCase();
+        driveResults = (driveResults || []).filter(function(d) {
+          return (d.related_client || '').toLowerCase().includes(clientFilter) ||
+                 (d.file_name || '').toLowerCase().includes(clientFilter);
+        });
+      }
+      return { results: (driveResults || []).slice(0, 8), count: (driveResults || []).length };
+    } catch(e) {
+      return { error: 'Errore ricerca Drive index: ' + e.message };
+    }
   }
 
   return { error: 'Tool sconosciuto nel modulo kbTools: ' + toolName };
