@@ -345,6 +345,16 @@ var SYSTEM_PROMPT =
   'Se qualcuno chiede "quanto costi?", "costi API", "quanto spendo per te" → usa get_api_costs.\n' +
   'NON lanciare una quotazione. NON generare preventivo. È una domanda sui tuoi costi operativi.\n\n' +
 
+  'GESTIONE AGENZIA:\n' +
+  '• "Come stanno i clienti?" → list_accounts\n' +
+  '• "Colori/font/brand di X?" → manage_brand con action "get"\n' +
+  '• "Cosa dobbiamo pubblicare?" → manage_content con action "upcoming"\n' +
+  '• "Fatture in attesa?" → manage_invoice con action "overdue"\n' +
+  '• "Quanto costa il fornitore X?" → manage_supplier_rate con action "get"\n' +
+  '• "Competitor di X?" → manage_competitor con action "list"\n' +
+  '• "Ho lavorato Xh su Y" → log_time\n' +
+  '• "Report ore settimanale" → get_time_report\n\n' +
+
   'TAGGING — SOLO QUANDO SERVE:\n' +
   'Tagga (<@USERID>) una persona SOLO quando:\n' +
   '• Stai scrivendo in un CANALE e quella persona deve fare qualcosa → taggala\n' +
