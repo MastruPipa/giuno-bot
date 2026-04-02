@@ -69,8 +69,10 @@ var RULES = [
       'quanto costa fare', 'quanto quotare', 'prezzo per un',
       'budget per un',
     ],
-    // Anti-noise: requires service type AND must NOT be a data update (modifica + amount)
     validate: function(msg) {
+      // "quanto costi tu?" / "costo di giuno" / "costi API" = NOT a quote request
+      if (/quanto cost[ia]?\s*(tu|il tuo|giuno|l'api|le api|al giorno|al mese|utilizzo)/i.test(msg)) return false;
+      if (/cost[io]\s*(di\s+)?giuno|costi?\s+api|spesa\s+api/i.test(msg)) return false;
       // If user says "modifica/aggiorna" + gives amounts → NOT a quote request, it's CRM update
       if (/modifica|aggiorna|cambia|correggi/i.test(msg) && /\d+\s*€|€\s*\d+|\d+\s*euro/i.test(msg)) return false;
       // If user says "sono X€" → giving data, not asking for estimate

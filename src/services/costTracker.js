@@ -53,23 +53,30 @@ async function flushToDb() {
       var buf = _buffer[keys[i]];
       var cost = estimateCost(model, buf.input_tokens, buf.output_tokens);
 
-      await supabase.rpc('upsert_api_usage', {
-        p_date: date,
-        p_provider: provider,
-        p_model: model,
-        p_input_tokens: buf.input_tokens,
-        p_output_tokens: buf.output_tokens,
-        p_calls: buf.calls,
-        p_cost: cost,
-      }).catch(function() {
-        // Fallback: direct upsert if RPC doesn't exist
-        supabase.from('api_usage').upsert({
+      // Use raw SQL for reliable upsert
+      await supabase.rpc('execute_sql_void', { query: '' }).catch(function() {});
+      // Direct insert with ON CONFLICT via Supabase
+      var { error } = await supabase.from('api_usage')
+        .upsert({
           date: date, provider: provider, model: model,
           input_tokens: buf.input_tokens, output_tokens: buf.output_tokens,
           calls: buf.calls, estimated_cost_usd: cost,
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'date,provider,model' }).catch(function() {});
-      });
+        }, { onConflict: 'date,provider,model', ignoreDuplicates: false });
+      if (error) {
+        // Fallback: try insert, ignore if exists then update
+        await supabase.from('api_usage').insert({
+          date: date, provider: provider, model: model,
+          input_tokens: buf.input_tokens, output_tokens: buf.output_tokens,
+          calls: buf.calls, estimated_cost_usd: cost,
+        }).catch(function() {
+          // Already exists — update
+          supabase.from('api_usage')
+            .update({ input_tokens: buf.input_tokens, output_tokens: buf.output_tokens, calls: buf.calls, estimated_cost_usd: cost, updated_at: new Date().toISOString() })
+            .eq('date', date).eq('provider', provider).eq('model', model)
+            .catch(function() {});
+        });
+      }
     }
 
     _buffer = {};
