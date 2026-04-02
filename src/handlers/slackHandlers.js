@@ -362,7 +362,8 @@ app.message(async function(args) {
 
         // If user is asking a clarification question, don't save — respond instead
         var isAskingClarification = /\?$/.test(fbText) && fbText.length < 80;
-        var isComplaining = /ma ti ho|non mi rispon|aspetta|fermati|stop/i.test(fbText);
+        // Only complaining about Giuno specifically, not using these words in answers
+        var isComplaining = /^(ma ti ho fatto|non mi rispondi|fermati|stop|basta domande)$/i.test(fbText);
         // "Ok", "continua", "vai" = user wants to proceed, re-show the question
         var isJustConfirming = /^(ok|sì|si|vai|continua|avanti|prosegui)$/i.test(fbText);
 
