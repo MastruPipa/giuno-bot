@@ -128,10 +128,22 @@ async function checkUpcomingCalls() {
           8000, 'precall_calendar'
         );
 
-        var events = (res.data.items || []).filter(function(e) {
-          // Skip recurring standup/daily events
-          var t = (e.summary || '').toLowerCase();
-          return !(/stand-?up|daily|sync|check-?in|scrum/i.test(t));
+        var events = (res.data.items || []).filter(function(ev) {
+          var t = (ev.summary || '').toLowerCase();
+          // Skip ALL recurring events (weekly 1:1, daily standups, etc.)
+          if (ev.recurringEventId) return false;
+          // Skip known routine patterns even if not marked recurring
+          if (/stand-?up|daily|sync|check-?in|scrum|weekly|1[:-]1|one.on.one|retrospective|retro|planning|sprint|huddle|coffee|pranzo|lunch|pausa/i.test(t)) return false;
+          // Skip events without other attendees (personal blocks, focus time)
+          if (!ev.attendees || ev.attendees.length <= 1) return false;
+          // Skip all-day events (not calls)
+          if (ev.start && ev.start.date && !ev.start.dateTime) return false;
+          // Only brief for events with external attendees or client-related titles
+          var hasExternal = ev.attendees && ev.attendees.some(function(a) {
+            return a.email && !a.email.endsWith('@kataniastudio.com');
+          });
+          var isClientRelated = /call|meeting|riunione|presentazione|brainstorm|kick.?off|review|demo/i.test(t);
+          return hasExternal || isClientRelated;
         });
 
         for (var ei = 0; ei < events.length; ei++) {
