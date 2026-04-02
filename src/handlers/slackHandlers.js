@@ -358,8 +358,32 @@ app.message(async function(args) {
         .limit(1);
       if (pendingFb && pendingFb.length > 0) {
         var fb = pendingFb[0];
+        var fbText = (message.text || '').trim();
+
+        // If user is asking a clarification question, don't save — let Giuno answer naturally
+        var isAskingClarification = /\?$/.test(fbText) && fbText.length < 80;
+        var isComplaining = /ma ti ho|non mi rispon|aspetta|fermati|stop/i.test(fbText);
+
+        if (isAskingClarification || isComplaining) {
+          // Respond to the clarification instead of advancing
+          var clarificationReply = '';
+          if (isComplaining) {
+            clarificationReply = 'Scusa! Aspetto la tua risposta alla domanda. Prenditi il tempo che vuoi.\n\n*Domanda:* ' + fb.question;
+          } else {
+            // Generate a brief clarification using the question context
+            clarificationReply = 'Buona domanda! Per chiarire: ' + fb.question + '\n\nRispondi liberamente con la tua esperienza. Non c\'è una risposta giusta o sbagliata.';
+          }
+          await app.client.chat.postMessage({ channel: message.channel, text: clarificationReply });
+          return;
+        }
+
         // Save answer
-        await fbSupabase.from('team_feedback').update({ answer: message.text, answered_at: new Date().toISOString() }).eq('id', fb.id);
+        await fbSupabase.from('team_feedback').update({ answer: fbText, answered_at: new Date().toISOString() }).eq('id', fb.id);
+
+        // Small acknowledgment before next question
+        var acks = ['Capito, grazie.', 'Registrato.', 'Ok, nota presa.', 'Interessante, grazie.'];
+        var ack = acks[Math.floor(Math.random() * acks.length)];
+
         // Check for next question
         var { data: nextFb } = await fbSupabase.from('team_feedback')
           .select('question_index, question')
@@ -372,14 +396,15 @@ app.message(async function(args) {
           var { data: totalFb } = await fbSupabase.from('team_feedback')
             .select('id').eq('slack_user_id', message.user).eq('month', currentMonth);
           var totalCount = (totalFb || []).length;
+          // Wait a moment before next question so it feels like a conversation
           await app.client.chat.postMessage({
             channel: message.channel,
-            text: '*' + (nextFb[0].question_index + 1) + '/' + totalCount + ':* ' + nextFb[0].question,
+            text: ack + '\n\n*' + (nextFb[0].question_index + 1) + '/' + totalCount + ':* ' + nextFb[0].question,
           });
         } else {
           await app.client.chat.postMessage({
             channel: message.channel,
-            text: 'Grazie per il feedback! Tutte le risposte sono state salvate. 🙏',
+            text: ack + '\n\nGrazie per il feedback! Tutte le risposte sono state salvate. Le leggerò con attenzione. 🙏',
           });
         }
         return; // Don't process further — this was a feedback response
