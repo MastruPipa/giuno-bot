@@ -397,6 +397,21 @@ async function searchMemories(userId, query) {
           return (m.confidence_score || m.final_score || 0.5) >= 0.3;
         });
 
+        // RECENCY SCORING — recent memories get massive priority
+        var now = Date.now();
+        deduped.forEach(function(m) {
+          var created = m.created_at || m.created;
+          var ageMs = created ? (now - new Date(created).getTime()) : 365 * 86400000;
+          var ageDays = ageMs / 86400000;
+          // Recency multiplier: last 7 days = 2x, last 30 days = 1.5x, last 90 days = 1x, older = 0.5x
+          var recencyBoost = ageDays <= 7 ? 2.0 : (ageDays <= 30 ? 1.5 : (ageDays <= 90 ? 1.0 : 0.5));
+          var baseScore = m.final_score || m.confidence_score || 0.5;
+          m._sortScore = baseScore * recencyBoost;
+        });
+
+        // Sort by recency-weighted score (recent + high confidence first)
+        deduped.sort(function(a, b) { return (b._sortScore || 0) - (a._sortScore || 0); });
+
         // Track usage
         var ids = deduped.map(function(m) { return m.id; }).filter(Boolean);
         if (ids.length > 0) {

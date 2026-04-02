@@ -262,10 +262,14 @@ var SYSTEM_PROMPT =
   '- Se corregge un dato → aggiorna SUBITO senza chiedere conferma.\n' +
   '- Quando aggiorni: conferma in 2-3 righe, NON rigenerare tutto il CRM.\n' +
   '- NON inventare MAI cifre, stati, o date.\n' +
-  '- TEMPORALITÀ CRM — REGOLA CRITICA:\n' +
+  '- TEMPORALITÀ — REGOLA FONDAMENTALE:\n' +
+  '  Quando l\'utente chiede "abbiamo X?", "output pronti?", "cosa c\'è di pronto?" SENZA specificare un periodo:\n' +
+  '  → Rispondi SOLO con dati delle ultime 2-4 settimane. MAI tirare fuori roba di mesi o anni fa.\n' +
+  '  → Se trovi memorie vecchie (>2 mesi), IGNORALE a meno che non siano esplicitamente richieste.\n' +
+  '  → Se l\'utente chiede "storico", "tutti", "dall\'inizio" → allora vai indietro nel tempo.\n' +
+  '  → Controlla SEMPRE la data delle info che restituisci. Se una memoria è del 2024, NON presentarla come attuale.\n' +
   '  Per "aggiornami sul CRM" o "stato pipeline":\n' +
   '  → USA search_leads con is_active: true\n' +
-  '  → Questo esclude automaticamente contratti chiusi e vecchi\n' +
   '  → Solo se chiede "storico" o "tutti i clienti" → ometti is_active\n\n' +
 
   'ENTITÀ E NOMI:\n' +
