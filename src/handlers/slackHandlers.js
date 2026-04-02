@@ -100,6 +100,9 @@ app.event('app_mention', async function(args) {
     source: 'app_mention',
   }), async function() {
   try {
+    // "Sta scrivendo" — reagisci subito per feedback visivo
+    try { await app.client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* already reacted or missing scope */ }
+
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
     // Track behavior + classify sentiment for channel mentions
@@ -216,6 +219,9 @@ app.event('app_mention', async function(args) {
       logger.warn('[MENTION] Reply vuota per', event.user, '- skip postMessage');
       return;
     }
+    // Rimuovi reaction "sta scrivendo" prima di rispondere
+    try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
+
     var posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
     if (posted && posted.ts) {
       botMessages.set(posted.ts, { userId: event.user, text: formatted, channel: event.channel, timestamp: Date.now() });
@@ -383,6 +389,9 @@ app.message(async function(args) {
     var originalText = message.text || '';
     var textForRoute = originalText;
 
+    // "Sta scrivendo" — reagisci subito per feedback visivo in DM
+    try { await app.client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
+
     // Track behavior + classify sentiment
     behaviorTracker.trackInteraction(message.user, originalText, { channelId: message.channel, isDM: true });
     var msgSentiment = sentimentClassifier.classify(originalText);
@@ -435,6 +444,10 @@ app.message(async function(args) {
       dmRouteOptions.preflightInstruction = sentimentInstruction;
     }
     var reply = await route(message.user, textForRoute, dmRouteOptions);
+
+    // Rimuovi reaction "sta scrivendo"
+    try { await app.client.reactions.remove({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
+
     var formatted = formatPerSlack(reply);
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
