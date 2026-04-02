@@ -21,6 +21,7 @@ var cron         = require('./cron');
 var feedback     = require('./feedback');
 var entities     = require('./entities');
 var unifiedSearch = require('./unifiedSearch');
+var projects     = require('./projects');
 
 async function initAll() {
   var results = await Promise.all([
@@ -148,4 +149,16 @@ module.exports = {
   searchDriveContent:   unifiedSearch.searchDriveContent,
   upsertEntity:         unifiedSearch.upsertEntity,
   addGraphEdge:         unifiedSearch.addGraphEdge,
+
+  // Projects
+  createProject:        projects.createProject,
+  updateProject:        projects.updateProject,
+  searchProjects:       projects.searchProjects,
+  getProject:           projects.getProject,
+  deleteProject:        projects.deleteProject,
+  allocateResource:     projects.allocateResource,
+  updateAllocation:     projects.updateAllocation,
+  getProjectAllocations: projects.getProjectAllocations,
+  getUserAllocations:   projects.getUserAllocations,
+  getTeamWorkload:      projects.getTeamWorkload,
 };

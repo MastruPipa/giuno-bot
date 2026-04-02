@@ -22,6 +22,8 @@ var { toUserErrorMessage } = require('../utils/errorResponse');
 var feedbackCorrections = require('../utils/feedbackCorrections');
 var { isDegradedReply } = require('../utils/degradedReply');
 var appHome = require('./appHomeHandler');
+var behaviorTracker = require('../services/behaviorTracker');
+var sentimentClassifier = require('../services/sentimentClassifier');
 
 // Register App Home tab
 appHome.register();
@@ -100,6 +102,27 @@ app.event('app_mention', async function(args) {
   try {
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
+    // Track behavior + classify sentiment for channel mentions
+    behaviorTracker.trackInteraction(event.user, text, { channelId: event.channel, isDM: false });
+    var mentionSentiment = sentimentClassifier.classify(text);
+
+    // Detect CC/presa visione: if message mentions other users AND Giuno is at the end
+    var isCCMention = false;
+    var rawText = event.text || '';
+    var mentionMatches = rawText.match(/<@[A-Z0-9]+>/g) || [];
+    if (mentionMatches.length >= 2) {
+      // Giuno's mention is among several — likely CC
+      var botUserId = (app.client && app.client.token) ? null : null; // We'll detect by position
+      var giunoMentionIdx = rawText.lastIndexOf('<@');
+      var textAfterGiuno = rawText.substring(giunoMentionIdx).replace(/<@[^>]+>/, '').trim();
+      // If Giuno is the last mention and nothing meaningful follows → CC
+      if (textAfterGiuno.length < 10) isCCMention = true;
+    }
+    // Also detect patterns like "message to someone. @Giuno"
+    if (!isCCMention && mentionMatches.length >= 2 && text.length < 15) {
+      isCCMention = true; // Very little text directed at Giuno specifically
+    }
+
     // Collect channel context
     var channelContext = '';
     var ch = {};
@@ -146,12 +169,25 @@ app.event('app_mention', async function(args) {
     }
 
     var mentionChannelType = ch.is_private ? 'private' : 'public';
+
+    // If CC mention: add instruction to not respond unless necessary
+    var ccInstruction = '';
+    if (isCCMention) {
+      ccInstruction = '\n[SEI IN CC/PRESA VISIONE su questo messaggio. NON rispondere a meno che:\n' +
+        '1. Ti venga fatta una domanda diretta\n' +
+        '2. Ci sia un errore grave da segnalare\n' +
+        '3. Puoi aggiungere info critiche che nessuno ha\n' +
+        'Se nessuna di queste condizioni è vera, rispondi con un brevissimo "👀 Visto." o non rispondere.]\n';
+    }
+
     var reply = await route(event.user, text, {
       mentionedBy: event.user,
       threadTs: threadTs,
       channelContext: channelContext,
       channelId: ch.id || null,
       channelType: mentionChannelType,
+      sentiment: mentionSentiment,
+      preflightInstruction: ccInstruction || undefined,
     });
 
     var degradedMentionReply = isDegradedReply(reply);
@@ -346,6 +382,11 @@ app.message(async function(args) {
   try {
     var originalText = message.text || '';
     var textForRoute = originalText;
+
+    // Track behavior + classify sentiment
+    behaviorTracker.trackInteraction(message.user, originalText, { channelId: message.channel, isDM: true });
+    var msgSentiment = sentimentClassifier.classify(originalText);
+
     var isCorrection = !!(
       feedbackCorrections &&
       typeof feedbackCorrections.isCorrectionFeedback === 'function' &&
@@ -380,11 +421,18 @@ app.message(async function(args) {
       }
     }
 
-    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true };
+    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true, sentiment: msgSentiment };
+    // Inject sentiment instruction
+    var sentimentInstruction = '';
+    if (msgSentiment.urgency !== 'normal' || msgSentiment.sentiment !== 'neutral') {
+      sentimentInstruction = '\n[TONO MESSAGGIO: urgenza=' + msgSentiment.urgency + ', sentiment=' + msgSentiment.sentiment + '. Stile risposta: ' + msgSentiment.responseStyle + ']\n';
+    }
     if (dmThreadContext) {
-      dmRouteOptions.preflightInstruction = '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
+      dmRouteOptions.preflightInstruction = sentimentInstruction + '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
         'USA QUESTI MESSAGGI per capire il contesto. Se l\'utente si riferisce a qualcosa detto "sopra", le info sono QUI.\n' +
         'Il SOGGETTO della conversazione è determinato da questi messaggi precedenti. Non perderlo.';
+    } else if (sentimentInstruction) {
+      dmRouteOptions.preflightInstruction = sentimentInstruction;
     }
     var reply = await route(message.user, textForRoute, dmRouteOptions);
     var formatted = formatPerSlack(reply);

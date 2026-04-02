@@ -351,6 +351,27 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'get_team_presence',
+    description: 'Controlla chi è online/offline/away su Slack in questo momento. Mostra lo stato di presenza di tutto il team o di utenti specifici.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_ids: { type: 'array', items: { type: 'string' }, description: 'Lista di Slack user ID da controllare (opzionale — default: tutto il team)' },
+      },
+    },
+  },
+  {
+    name: 'analyze_team_activity',
+    description: 'Analizza l\'attività del team su Slack nelle ultime 24-48h. Conta messaggi per utente, canali più attivi, orari di attività. Usalo per capire chi è più carico, chi è silenzioso, chi sta interagendo di più. NON basarti solo sui daily — analizza i messaggi reali.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        hours: { type: 'number', description: 'Quante ore indietro analizzare (default 24, max 72)' },
+        user_filter: { type: 'string', description: 'Filtra per un utente specifico (Slack ID, opzionale)' },
+      },
+    },
+  },
 ];
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
@@ -858,6 +879,118 @@ async function execute(toolName, input, userId) {
       });
       return { emoji: emojiList.slice(0, 100), total: emojiList.length };
     } catch(e) { return { error: 'Errore emoji: ' + e.message }; }
+  }
+
+  // ─── Team presence ─────────────────────────────────────────────────────────
+  if (toolName === 'get_team_presence') {
+    try {
+      var userIds = input.user_ids;
+      if (!userIds || userIds.length === 0) {
+        // Get all team members
+        var teamRes = await app.client.users.list();
+        userIds = (teamRes.members || [])
+          .filter(function(u) { return !u.is_bot && !u.deleted && u.id !== 'USLACKBOT'; })
+          .map(function(u) { return u.id; });
+      }
+      var presenceResults = [];
+      for (var pi = 0; pi < Math.min(userIds.length, 20); pi++) {
+        try {
+          var presRes = await app.client.users.getPresence({ user: userIds[pi] });
+          var profileRes = await app.client.users.info({ user: userIds[pi] });
+          var userName = profileRes.user ? (profileRes.user.real_name || profileRes.user.name) : userIds[pi];
+          var statusText = (profileRes.user && profileRes.user.profile) ? profileRes.user.profile.status_text : '';
+          var statusEmoji = (profileRes.user && profileRes.user.profile) ? profileRes.user.profile.status_emoji : '';
+          presenceResults.push({
+            user_id: userIds[pi],
+            name: userName,
+            presence: presRes.presence, // 'active' or 'away'
+            online: presRes.online || false,
+            status: statusText ? (statusEmoji + ' ' + statusText) : null,
+          });
+        } catch(e) {
+          presenceResults.push({ user_id: userIds[pi], presence: 'unknown', error: e.message });
+        }
+      }
+      var online = presenceResults.filter(function(p) { return p.presence === 'active'; });
+      var away = presenceResults.filter(function(p) { return p.presence === 'away'; });
+      return {
+        online: online,
+        away: away,
+        online_count: online.length,
+        away_count: away.length,
+        total: presenceResults.length,
+      };
+    } catch(e) { return { error: 'Errore controllo presenza: ' + e.message }; }
+  }
+
+  // ─── Team activity analysis ───────────────────────────────────────────────
+  if (toolName === 'analyze_team_activity') {
+    try {
+      var hoursBack = Math.min(input.hours || 24, 72);
+      var oldest = String(Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 1000));
+      var channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
+      var channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
+
+      var userActivity = {}; // userId -> { messages: 0, channels: Set, lastActive: ts }
+      var channelActivity = {}; // channelName -> msgCount
+      var totalMessages = 0;
+
+      for (var ci = 0; ci < channels.length; ci++) {
+        try {
+          var hist = await app.client.conversations.history({ channel: channels[ci].id, oldest: oldest, limit: 100 });
+          var msgs = (hist.messages || []).filter(function(m) { return !m.bot_id && m.type === 'message' && m.user; });
+          if (msgs.length > 0) {
+            channelActivity[channels[ci].name] = msgs.length;
+            totalMessages += msgs.length;
+          }
+          for (var mi = 0; mi < msgs.length; mi++) {
+            var msg = msgs[mi];
+            if (input.user_filter && msg.user !== input.user_filter) continue;
+            if (!userActivity[msg.user]) {
+              userActivity[msg.user] = { messages: 0, channels: {}, lastActive: null, threads: 0 };
+            }
+            userActivity[msg.user].messages++;
+            userActivity[msg.user].channels[channels[ci].name] = (userActivity[msg.user].channels[channels[ci].name] || 0) + 1;
+            if (!userActivity[msg.user].lastActive || msg.ts > userActivity[msg.user].lastActive) {
+              userActivity[msg.user].lastActive = msg.ts;
+            }
+            if (msg.thread_ts && msg.thread_ts !== msg.ts) userActivity[msg.user].threads++;
+          }
+        } catch(e) { /* skip inaccessible channels */ }
+      }
+
+      // Resolve user names
+      var activityList = [];
+      for (var uid in userActivity) {
+        var ua = userActivity[uid];
+        var uName = uid;
+        try {
+          var uInfo = await app.client.users.info({ user: uid });
+          uName = uInfo.user ? (uInfo.user.real_name || uInfo.user.name) : uid;
+        } catch(e) { /* ignore */ }
+        activityList.push({
+          user_id: uid,
+          name: uName,
+          messages: ua.messages,
+          threads: ua.threads,
+          channels_active: Object.keys(ua.channels).length,
+          top_channels: Object.entries(ua.channels).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 3).map(function(e) { return e[0] + ' (' + e[1] + ')'; }),
+          last_active: ua.lastActive ? new Date(parseFloat(ua.lastActive) * 1000).toISOString() : null,
+        });
+      }
+      activityList.sort(function(a, b) { return b.messages - a.messages; });
+
+      var topChannels = Object.entries(channelActivity).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 5);
+
+      return {
+        period: 'ultime ' + hoursBack + 'h',
+        total_messages: totalMessages,
+        team_activity: activityList.slice(0, 15),
+        top_channels: topChannels.map(function(c) { return { name: c[0], messages: c[1] }; }),
+        most_active: activityList.length > 0 ? activityList[0].name + ' (' + activityList[0].messages + ' msg)' : 'nessuno',
+        least_active: activityList.length > 1 ? activityList[activityList.length - 1].name + ' (' + activityList[activityList.length - 1].messages + ' msg)' : null,
+      };
+    } catch(e) { return { error: 'Errore analisi attività: ' + e.message }; }
   }
 
   return { error: 'Tool sconosciuto nel modulo slackTools: ' + toolName };

@@ -189,6 +189,46 @@ async function buildPersonalizedContext(ctx) {
     logger.warn('[DAILY-DIGEST] fetch fallito:', e.message);
   }
 
+  // Projects from projects table (with budget/hours data)
+  try {
+    var db = require('../../supabase');
+    var dbProjects = await db.searchProjects({ status: 'active', limit: 20 });
+    if (dbProjects && dbProjects.length > 0) {
+      // For team members: filter to their projects
+      if (!isAdmin && ctx.userId) {
+        var userAllocs = await db.getUserAllocations(ctx.userId);
+        var userProjectIds = {};
+        (userAllocs || []).forEach(function(a) { userProjectIds[a.project_id] = true; });
+        if (Object.keys(userProjectIds).length > 0) {
+          dbProjects = dbProjects.filter(function(p) { return userProjectIds[p.id]; });
+        }
+      }
+      if (dbProjects.length > 0) {
+        var projLines = dbProjects.map(function(p) {
+          var line = '• ' + p.name;
+          if (p.client_name) line += ' [' + p.client_name + ']';
+          if (p.budget_quoted && p.budget_actual) {
+            var delta = parseFloat(p.budget_actual) - parseFloat(p.budget_quoted);
+            var deltaPct = Math.round((delta / parseFloat(p.budget_quoted)) * 100);
+            var icon = deltaPct > 25 ? '🔴' : (deltaPct > 10 ? '🟡' : '🟢');
+            line += ' ' + icon + ' €' + Math.round(p.budget_actual) + '/€' + Math.round(p.budget_quoted) + ' (' + (delta > 0 ? '+' : '') + deltaPct + '%)';
+          } else if (p.budget_quoted) {
+            line += ' budget: €' + Math.round(p.budget_quoted);
+          }
+          if (p.end_date) {
+            var daysLeft = Math.ceil((new Date(p.end_date) - now) / 86400000);
+            if (daysLeft < 0) line += ' ⚠️ scaduto da ' + Math.abs(daysLeft) + 'gg';
+            else if (daysLeft <= 7) line += ' ⏰ ' + daysLeft + 'gg rimasti';
+          }
+          return line;
+        });
+        parts.push('PROGETTI (con metriche):\n' + projLines.join('\n'));
+      }
+    }
+  } catch(e) {
+    logger.warn('[DAILY-DIGEST] fetch progetti fallito:', e.message);
+  }
+
   // Admin-only: CRM pipeline summary
   if (isAdmin) {
     try {
