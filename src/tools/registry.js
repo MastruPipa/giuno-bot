@@ -50,7 +50,7 @@ var ALL_MODULES = [
 
 // ─── Critical action confirmation ─────────────────────────────────────────────
 
-var AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet', 'edit_doc', 'edit_slides'];
+var AZIONI_CRITICHE = ['send_email', 'reply_email', 'forward_email', 'create_event', 'delete_event', 'share_file', 'write_sheet', 'edit_doc', 'edit_slides', 'move_file', 'rename_file', 'export_file'];
 var confermeInAttesa = new Map(); // actionId -> { toolName, input, userId, created }
 var catalogaConfirm  = new Map(); // cataloga_confirm_userId -> { files, userId, channelId, rateCard }
 
