@@ -347,17 +347,80 @@ async function execute(toolName, input, userId, userRole) {
 
       if (!data || data.length === 0) return { message: 'Nessun feedback per ' + month + '.' };
 
-      // Group by user
-      var byUser = {};
+      // Resolve user names
+      var { getUtenti } = require('../services/slackService');
+      var utenti = await getUtenti();
+      var nameMap = {};
+      utenti.forEach(function(u) { nameMap[u.id] = u.name; });
+
+      // Group by user with names
+      var respondents = [];
+      var nonRespondents = [];
+      var allAnswers = {};
+      var votes = [];
+
+      var currentUser = null;
+      var currentResponses = [];
+
       data.forEach(function(f) {
-        if (!byUser[f.slack_user_id]) byUser[f.slack_user_id] = [];
-        byUser[f.slack_user_id].push({ question: f.question, answer: f.answer || '(non risposto)', index: f.question_index });
+        if (currentUser !== f.slack_user_id) {
+          if (currentUser && currentResponses.some(function(r) { return r.answer; })) {
+            respondents.push({ name: nameMap[currentUser] || currentUser, id: currentUser, responses: currentResponses });
+          } else if (currentUser) {
+            nonRespondents.push(nameMap[currentUser] || currentUser);
+          }
+          currentUser = f.slack_user_id;
+          currentResponses = [];
+        }
+        var answer = f.answer || null;
+        currentResponses.push({ question: f.question, answer: answer });
+
+        // Aggregate by question
+        if (answer) {
+          var qKey = 'Q' + (f.question_index + 1);
+          if (!allAnswers[qKey]) allAnswers[qKey] = { question: f.question, answers: [] };
+          allAnswers[qKey].answers.push({ name: nameMap[f.slack_user_id] || f.slack_user_id, answer: answer });
+
+          // Extract numeric votes
+          var voteMatch = answer.match(/^(\d+)/);
+          if (voteMatch && f.question.includes('1 a 10')) {
+            votes.push(parseInt(voteMatch[1]));
+          }
+        }
       });
+      // Don't forget last user
+      if (currentUser && currentResponses.some(function(r) { return r.answer; })) {
+        respondents.push({ name: nameMap[currentUser] || currentUser, id: currentUser, responses: currentResponses });
+      } else if (currentUser) {
+        nonRespondents.push(nameMap[currentUser] || currentUser);
+      }
 
-      var answered = data.filter(function(f) { return f.answer; }).length;
-      var total = data.length;
+      var totalUsers = respondents.length + nonRespondents.length;
+      var avgVote = votes.length > 0 ? Math.round(votes.reduce(function(a, b) { return a + b; }, 0) / votes.length * 10) / 10 : null;
 
-      return { month: month, response_rate: Math.round((answered / total) * 100) + '%', users: byUser, answered: answered, total: total };
+      return {
+        month: month,
+        response_rate: Math.round((respondents.length / totalUsers) * 100) + '% (' + respondents.length + '/' + totalUsers + ')',
+        avg_vote: avgVote,
+        respondents: respondents.map(function(r) {
+          return {
+            name: r.name,
+            answers: r.responses.filter(function(a) { return a.answer; }).map(function(a) {
+              // Shorten question to key
+              var qShort = a.question.includes('perdere più tempo') ? 'Tempo perso' :
+                a.question.includes('automatizzata') ? 'Da automatizzare' :
+                a.question.includes('più utile') ? 'Giuno utile quando' :
+                a.question.includes('non ha saputo') ? 'Giuno criticità' :
+                a.question.includes('UNA funzione') ? 'Feature richiesta' :
+                a.question.includes('1 a 10') ? 'Voto Giuno' :
+                a.question.includes('suggerimento') ? 'Suggerimento' : a.question.substring(0, 30);
+              return qShort + ': "' + a.answer + '"';
+            }),
+          };
+        }),
+        non_respondents: nonRespondents,
+        by_question: allAnswers,
+      };
     } catch(e) { return { error: e.message }; }
   }
 
