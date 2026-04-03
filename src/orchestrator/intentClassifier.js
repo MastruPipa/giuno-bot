@@ -132,13 +132,19 @@ async function classifyIntent(message) {
     }
   }
 
-  // Keyword matching pass
+  // Keyword matching pass — require message to have enough context
   for (var i = 0; i < RULES.length; i++) {
     var rule = RULES[i];
     for (var j = 0; j < rule.keywords.length; j++) {
       if (msgLow.includes(rule.keywords[j])) {
         // Anti-noise validation if defined
         if (rule.validate && !rule.validate(msgLow)) continue;
+        // Conservative: if message is very short (<30 chars) and matches only 1 keyword,
+        // it's likely ambiguous — send to GENERAL which has all tools and can reason better
+        if (msgLow.length < 30 && rule.intent !== INTENTS.GENERAL) {
+          logger.info('[INTENT] Short message + single keyword → GENERAL instead of ' + rule.intent);
+          return INTENTS.GENERAL;
+        }
         logger.info('[INTENT] Keyword match → ' + rule.intent);
         return rule.intent;
       }
@@ -160,8 +166,9 @@ async function classifyIntent(message) {
         'QUOTE_SUPPORT — l\'utente CHIEDE di generare/stimare un preventivo nuovo (es. "quanto costerebbe fare X?"). NON usare se l\'utente fornisce già i numeri.\n' +
         'CRM_UPDATE — aggiornamento CRM, modifica dati lead, cambio status. INCLUDE: "modifica la quotazione/offerta di X", "sono X€ al mese", "la proposta è di X€" (= l\'utente dà dati da salvare, non chiede una stima)\n' +
         'HISTORICAL_SCAN — scan storico Slack/Drive, indicizzazione, stato scan\n' +
-        'GENERAL — tutto il resto\n' +
-        'ATTENZIONE: se l\'utente dice "modifica" + fornisce importi in €, è SEMPRE CRM_UPDATE, MAI QUOTE_SUPPORT.',
+        'GENERAL — tutto il resto. NEL DUBBIO, scegli GENERAL. Meglio GENERAL che un intent sbagliato.\n' +
+        'ATTENZIONE: se l\'utente dice "modifica" + fornisce importi in €, è SEMPRE CRM_UPDATE, MAI QUOTE_SUPPORT.\n' +
+        'Se il messaggio è conversazionale, una domanda generica, o ambiguo → GENERAL.',
       messages: [{ role: 'user', content: message }],
     });
     var intent = (res.content[0].text || '').trim().toUpperCase();

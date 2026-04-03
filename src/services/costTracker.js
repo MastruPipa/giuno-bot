@@ -53,30 +53,29 @@ async function flushToDb() {
       var buf = _buffer[keys[i]];
       var cost = estimateCost(model, buf.input_tokens, buf.output_tokens);
 
-      // Use raw SQL for reliable upsert
-      await supabase.rpc('execute_sql_void', { query: '' }).catch(function() {});
-      // Direct insert with ON CONFLICT via Supabase
-      var { error } = await supabase.from('api_usage')
-        .upsert({
+      // Simple approach: try insert, if fails (duplicate) then update
+      try {
+        var insertRes = await supabase.from('api_usage').insert({
           date: date, provider: provider, model: model,
           input_tokens: buf.input_tokens, output_tokens: buf.output_tokens,
           calls: buf.calls, estimated_cost_usd: cost,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'date,provider,model', ignoreDuplicates: false });
-      if (error) {
-        // Fallback: try insert, ignore if exists then update
-        await supabase.from('api_usage').insert({
-          date: date, provider: provider, model: model,
-          input_tokens: buf.input_tokens, output_tokens: buf.output_tokens,
-          calls: buf.calls, estimated_cost_usd: cost,
-        }).catch(function() {
-          // Already exists — update
-          supabase.from('api_usage')
-            .update({ input_tokens: buf.input_tokens, output_tokens: buf.output_tokens, calls: buf.calls, estimated_cost_usd: cost, updated_at: new Date().toISOString() })
-            .eq('date', date).eq('provider', provider).eq('model', model)
-            .catch(function() {});
         });
-      }
+        if (insertRes.error) {
+          // Duplicate — update existing row by adding to current values
+          var { data: existing } = await supabase.from('api_usage')
+            .select('input_tokens, output_tokens, calls, estimated_cost_usd')
+            .eq('date', date).eq('provider', provider).eq('model', model).single();
+          if (existing) {
+            await supabase.from('api_usage').update({
+              input_tokens: (existing.input_tokens || 0) + buf.input_tokens,
+              output_tokens: (existing.output_tokens || 0) + buf.output_tokens,
+              calls: (existing.calls || 0) + buf.calls,
+              estimated_cost_usd: (parseFloat(existing.estimated_cost_usd) || 0) + cost,
+              updated_at: new Date().toISOString(),
+            }).eq('date', date).eq('provider', provider).eq('model', model);
+          }
+        }
+      } catch(e2) { logger.debug('[COST-TRACKER] Entry error:', e2.message); }
     }
 
     _buffer = {};
