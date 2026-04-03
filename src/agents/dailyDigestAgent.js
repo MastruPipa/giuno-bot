@@ -102,6 +102,14 @@ async function buildPersonalizedContext(ctx) {
 
     var { data: deadlines } = await memQuery;
     if (deadlines && deadlines.length > 0) {
+      // Filter out system/internal memories
+      deadlines = deadlines.filter(function(m) {
+        var c = m.content || '';
+        if (/^precall_|^TOOL:|briefing inviato|^FEEDBACK_|^CORREZIONE|^\[TOOL:|^tool_result/i.test(c)) return false;
+        if (c.length < 15) return false;
+        return true;
+      });
+
       // For team members: filter deadlines that mention their name
       if (!isAdmin && userName) {
         var personalDeadlines = deadlines.filter(function(m) {
@@ -119,7 +127,7 @@ async function buildPersonalizedContext(ctx) {
         deadlines = personalDeadlines;
       }
       if (deadlines.length > 0) {
-        parts.push('SCADENZE:\n' + deadlines.map(function(m) { return '• [' + m.memory_type + '] ' + m.content; }).join('\n'));
+        parts.push('SCADENZE:\n' + deadlines.map(function(m) { return '• ' + m.content; }).join('\n'));
       }
     }
   } catch(e) {
