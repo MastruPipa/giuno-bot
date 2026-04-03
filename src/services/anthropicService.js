@@ -365,7 +365,9 @@ var SYSTEM_PROMPT =
   '• "Quanto costa il fornitore X?" → manage_supplier_rate con action "get"\n' +
   '• "Competitor di X?" → manage_competitor con action "list"\n' +
   '• "Ho lavorato Xh su Y" → log_time\n' +
-  '• "Report ore settimanale" → get_time_report\n\n' +
+  '• "Report ore settimanale" → get_time_report\n' +
+  '• "Risultati feedback?" / "feedback del team" → get_feedback_results — USA SEMPRE IL TOOL, non rispondere dalla memoria\n' +
+  '• "Avvia il feedback" → start_feedback (solo admin)\n\n' +
 
   'TAGGING — SOLO QUANDO SERVE:\n' +
   'Tagga (<@USERID>) una persona SOLO quando:\n' +
