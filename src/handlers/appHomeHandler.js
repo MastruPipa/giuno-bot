@@ -120,9 +120,46 @@ async function buildHomeBlocks(userId) {
   // ── Welcome ──────────────────────────────────────────────────────────────
 
   blocks.push(header('Giuno — Katania Studio'));
-  blocks.push(section('Ciao! Sono *Giuno*, il tuo assistente interno. Scrivimi in DM o taggami con *@Giuno* in qualsiasi canale.'));
   blocks.push(context([dateStr + ' — ' + timeStr]));
   blocks.push(divider());
+
+  // ── Today's priorities (most important section) ─────────────────────────
+
+  var todayItems = [];
+
+  // Standup status
+  if (prefs.standup_enabled) {
+    if (standup.active && !standup.responded) {
+      todayItems.push(':hourglass_flowing_sand: *Daily standup in attesa* — rispondi in DM');
+    }
+  }
+
+  // Active project phases assigned to user
+  try {
+    var supabaseHome = require('../services/db/client').getClient();
+    if (supabaseHome) {
+      var { data: myPhases } = await supabaseHome.from('project_phases')
+        .select('name, status, end_date, projects!inner(name)')
+        .eq('assignee_slack_id', userId)
+        .in('status', ['in_progress', 'blocked'])
+        .order('end_date', { ascending: true })
+        .limit(5);
+      if (myPhases && myPhases.length > 0) {
+        myPhases.forEach(function(p) {
+          var daysLeft = p.end_date ? Math.ceil((new Date(p.end_date) - now) / 86400000) : null;
+          var icon = daysLeft !== null && daysLeft <= 1 ? ':red_circle:' : (daysLeft !== null && daysLeft <= 3 ? ':large_yellow_circle:' : ':large_green_circle:');
+          var projName = p.projects ? p.projects.name : '';
+          todayItems.push(icon + ' *' + projName + '* — ' + p.name + (daysLeft !== null ? ' (' + daysLeft + 'gg)' : ''));
+        });
+      }
+    }
+  } catch(e) { /* ignore */ }
+
+  if (todayItems.length > 0) {
+    blocks.push(header('Oggi'));
+    blocks.push(section(todayItems.join('\n')));
+    blocks.push(divider());
+  }
 
   // ── User profile ─────────────────────────────────────────────────────────
 

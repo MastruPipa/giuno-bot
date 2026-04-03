@@ -30,6 +30,7 @@ async function checkBudgetOverruns() {
           client: p.client_name,
           owner: p.owner_slack_id,
           detail: '€' + Math.round(actual) + '/€' + Math.round(quoted) + ' (+' + Math.round(overrun) + '%)',
+          suggestion: overrun > 30 ? 'Considera di rivedere lo scope o negoziare extra budget col cliente.' : 'Monitora le prossime ore — potrebbe rientrare.',
         });
       }
     }
@@ -59,6 +60,7 @@ async function checkStaleLeads() {
           status: lead.status,
           owner: lead.owner_slack_id,
           detail: 'Nessun aggiornamento da ' + daysSince + ' giorni',
+          suggestion: daysSince > 10 ? 'Rischio di perdere il lead. Manda un messaggio di check-in.' : 'Un follow-up rapido potrebbe riattivare la conversazione.',
         });
       });
     }
@@ -134,6 +136,7 @@ async function sendAlert(userId, alerts) {
       else if (a.type === 'overdue_project') msg += '*Progetto scaduto* — ' + a.project + ': ' + a.detail;
       else if (a.type === 'stale_lead') msg += '*Lead fermo* — ' + a.lead + ' [' + a.status + ']: ' + a.detail;
       else if (a.type === 'overloaded') msg += '*Sovraccarico* — ' + a.detail;
+      if (a.suggestion) msg += '\n  _→ ' + a.suggestion + '_';
       msg += '\n';
     });
   }
@@ -146,6 +149,7 @@ async function sendAlert(userId, alerts) {
       else if (a.type === 'deadline_soon') msg += 'Deadline ' + a.project + ': ' + a.detail;
       else if (a.type === 'stale_lead') msg += 'Lead ' + a.lead + ': ' + a.detail;
       else if (a.type === 'overloaded') msg += 'Carico alto: ' + a.detail;
+      if (a.suggestion) msg += '\n  _→ ' + a.suggestion + '_';
       msg += '\n';
     });
   }
