@@ -13,110 +13,99 @@ var { formatPerSlack } = require('../utils/slackFormat');
 var { withTimeout } = require('../utils/timeout');
 
 async function buildBriefing(userId, event) {
-  var parts = [];
   var title = event.summary || 'Meeting senza titolo';
   var startTime = event.start.dateTime
     ? new Date(event.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
     : 'tutto il giorno';
 
-  parts.push('*📞 Briefing pre-call: ' + title + '*');
-  parts.push('_Inizio: ' + startTime + '_\n');
+  // Collect raw data
+  var rawData = { title: title, time: startTime, attendees: [], crmData: null, channelDigest: null, projectInfo: null };
 
   // Attendees
-  if (event.attendees && event.attendees.length > 0) {
-    var attendeeList = event.attendees
-      .filter(function(a) { return !a.self; })
-      .map(function(a) { return (a.displayName || a.email || '?') + (a.responseStatus === 'declined' ? ' ❌' : ''); });
-    if (attendeeList.length > 0) {
-      parts.push('*Partecipanti:* ' + attendeeList.join(', '));
-    }
-  }
-
-  // Extract potential client/entity names from title AND attendees
-  var titleClean = (title || '').replace(/call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione/gi, ' ').trim();
-  var titleWords = titleClean.split(/\s+/).filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno)$/i.test(w); });
-
-  // Also extract company names from attendee email domains
   if (event.attendees) {
-    event.attendees.forEach(function(a) {
-      if (a.email && !a.email.endsWith('@kataniastudio.com') && !a.email.endsWith('@gmail.com') && !a.email.endsWith('@google.com')) {
-        var domain = a.email.split('@')[1].split('.')[0];
-        if (domain.length > 2 && titleWords.indexOf(domain) === -1) titleWords.push(domain);
-        // Also try the display name
-        if (a.displayName) {
-          var nameParts = a.displayName.split(/\s+/).filter(function(w) { return w.length > 3; });
-          nameParts.forEach(function(n) { if (titleWords.indexOf(n) === -1) titleWords.push(n); });
-        }
-      }
+    rawData.attendees = event.attendees.filter(function(a) { return !a.self; }).map(function(a) {
+      return { name: a.displayName || null, email: a.email, external: a.email && !a.email.endsWith('@kataniastudio.com') };
     });
   }
 
-  var foundClientInfo = false;
+  // Extract search terms from title + attendees
+  var searchTerms = (title || '').replace(/call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione|deep\s*dive/gi, ' ')
+    .trim().split(/\s+/).filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno|ks)$/i.test(w); });
 
-  // Search for client info
-  for (var wi = 0; wi < Math.min(titleWords.length, 5); wi++) {
-    var word = titleWords[wi];
+  // CRM
+  for (var wi = 0; wi < Math.min(searchTerms.length, 5); wi++) {
     try {
-      // CRM search
-      var leads = await db.searchLeads({ company_name: word, limit: 1 });
-      if (leads && leads.length > 0) {
-        var lead = leads[0];
-        parts.push('\n*CRM — ' + lead.company_name + ':*');
-        parts.push('• Status: ' + (lead.status || 'N/A'));
-        if (lead.value) parts.push('• Valore: €' + lead.value);
-        if (lead.services) parts.push('• Servizi: ' + lead.services);
-        if (lead.updated_at) parts.push('• Ultimo update: ' + lead.updated_at.split('T')[0]);
-        foundClientInfo = true;
-        break; // Found a match, stop searching
-      }
+      var leads = await db.searchLeads({ company_name: searchTerms[wi], limit: 1 });
+      if (leads && leads.length > 0) { rawData.crmData = leads[0]; break; }
     } catch(e) { /* ignore */ }
   }
 
-  // Search memories and KB for context
-  for (var wi2 = 0; wi2 < Math.min(titleWords.length, 2); wi2++) {
-    try {
-      var mems = await db.searchMemories(userId, titleWords[wi2]);
-      var relevant = (mems || []).slice(0, 3).filter(function(m) {
-        return m.content && m.content.length > 20;
-      });
-      if (relevant.length > 0) {
-        parts.push('\n*Ricordi:*');
-        relevant.forEach(function(m) {
-          parts.push('• ' + m.content.substring(0, 120));
-        });
-        break;
-      }
-    } catch(e) { /* ignore */ }
-  }
-
-  // Recent activity in related channel
+  // Channel digest
   try {
     var channelMap = db.getChannelMapCache();
     for (var chId in channelMap) {
       var mapping = channelMap[chId];
       if (!mapping.cliente) continue;
-      var isRelated = titleWords.some(function(w) {
+      var isRelated = searchTerms.some(function(w) {
         return (mapping.cliente || '').toLowerCase().includes(w.toLowerCase()) ||
                (mapping.channel_name || '').toLowerCase().includes(w.toLowerCase());
       });
       if (isRelated) {
         var digests = db.getChannelDigestCache();
-        var digest = digests[chId];
-        if (digest && digest.last_digest) {
-          parts.push('\n*Ultimo update #' + mapping.channel_name + ':*');
-          parts.push(digest.last_digest.substring(0, 200));
+        if (digests[chId] && digests[chId].last_digest) {
+          rawData.channelDigest = { channel: mapping.channel_name, digest: digests[chId].last_digest };
         }
         break;
       }
     }
   } catch(e) { /* ignore */ }
 
-  if (event.hangoutLink || event.conferenceData) {
-    var meetLink = event.hangoutLink || (event.conferenceData && event.conferenceData.entryPoints && event.conferenceData.entryPoints[0] ? event.conferenceData.entryPoints[0].uri : null);
-    if (meetLink) parts.push('\n<' + meetLink + '|Entra nella call>');
+  // Projects
+  try {
+    for (var si = 0; si < Math.min(searchTerms.length, 3); si++) {
+      var projects = await db.searchProjects({ client_name: searchTerms[si], limit: 1 });
+      if (!projects || projects.length === 0) projects = await db.searchProjects({ name: searchTerms[si], limit: 1 });
+      if (projects && projects.length > 0) { rawData.projectInfo = projects[0]; break; }
+    }
+  } catch(e) { /* ignore */ }
+
+  // Meet link
+  var meetLink = null;
+  if (event.hangoutLink) meetLink = event.hangoutLink;
+  else if (event.conferenceData && event.conferenceData.entryPoints && event.conferenceData.entryPoints[0]) {
+    meetLink = event.conferenceData.entryPoints[0].uri;
   }
 
-  return parts.join('\n');
+  // Generate briefing with LLM — no raw dumps, only useful info
+  try {
+    var Anthropic = require('@anthropic-ai/sdk');
+    var llmClient = new Anthropic();
+    var res = await llmClient.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      system: 'Genera un briefing pre-call per un membro di un\'agenzia di marketing. Max 8 righe.\n' +
+        'Includi SOLO info utili per prepararsi alla call:\n' +
+        '• Scopo probabile della call (dal titolo)\n' +
+        '• Stato progetto/cliente se disponibile (1-2 righe)\n' +
+        '• Cosa potrebbe essere discusso\n' +
+        '• Partecipanti esterni se presenti\n' +
+        'NON includere: info tecniche sul bot, errori interni, memorie di debug.\n' +
+        'NON mostrare email @kataniastudio — sono colleghi, li conoscono.\n' +
+        'Formato Slack: *grassetto* per punti chiave. MAI ** o ##. Conciso e operativo.',
+      messages: [{ role: 'user', content: JSON.stringify(rawData).substring(0, 2000) }],
+    });
+    var briefingText = res.content[0].text.trim();
+
+    var output = '*📞 ' + title + '* — ' + startTime + '\n\n' + briefingText;
+    if (meetLink) output += '\n\n<' + meetLink + '|Entra nella call>';
+    return output;
+  } catch(e) {
+    // Fallback: basic info only
+    var fallback = '*📞 ' + title + '* — ' + startTime;
+    if (rawData.crmData) fallback += '\nCliente: ' + rawData.crmData.company_name + ' [' + (rawData.crmData.status || '') + ']';
+    if (meetLink) fallback += '\n<' + meetLink + '|Entra nella call>';
+    return fallback.length > 80 ? fallback : null; // Don't send if too short
+  }
 }
 
 async function checkUpcomingCalls() {
