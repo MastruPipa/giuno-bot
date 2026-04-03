@@ -185,9 +185,129 @@ var definitions = [
       required: ['folder_id'],
     },
   },
+  {
+    name: 'read_doc_comments',
+    description: 'Legge i commenti e le discussioni in un Google Doc. I commenti spesso contengono decisioni, feedback e revisioni importanti.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_id: { type: 'string', description: 'ID del documento Google' },
+        include_resolved: { type: 'boolean', description: 'Includi commenti risolti (default: false)' },
+      },
+      required: ['doc_id'],
+    },
+  },
+  {
+    name: 'create_sheet',
+    description: 'Crea un nuovo Google Sheets vuoto o con dati iniziali.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Titolo del foglio' },
+        headers: { type: 'array', items: { type: 'string' }, description: 'Intestazioni colonne (opzionale)' },
+        data: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Righe di dati iniziali (opzionale)' },
+        drive_id: { type: 'string', description: 'ID Drive condiviso (opzionale)' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'create_folder',
+    description: 'Crea una cartella su Google Drive. Utile per setup nuovi progetti.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Nome della cartella' },
+        parent_folder_id: { type: 'string', description: 'ID cartella genitore (opzionale)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'move_file',
+    description: 'Sposta un file in una cartella diversa su Google Drive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file da spostare' },
+        destination_folder_id: { type: 'string', description: 'ID cartella di destinazione' },
+      },
+      required: ['file_id', 'destination_folder_id'],
+    },
+  },
+  {
+    name: 'rename_file',
+    description: 'Rinomina un file su Google Drive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file' },
+        new_name: { type: 'string', description: 'Nuovo nome' },
+      },
+      required: ['file_id', 'new_name'],
+    },
+  },
+  {
+    name: 'link_doc_to_project',
+    description: 'Collega un documento/file a un progetto. Così "documenti del progetto Aitho?" restituisce tutti i file collegati.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'ID progetto' },
+        file_id: { type: 'string', description: 'ID file su Drive' },
+        file_name: { type: 'string', description: 'Nome file' },
+        drive_link: { type: 'string', description: 'Link al file' },
+        doc_role: { type: 'string', description: 'Ruolo: brief, preventivo, contratto, presentazione, moodboard, report, deliverable, asset, altro' },
+      },
+      required: ['project_id', 'file_id'],
+    },
+  },
+  {
+    name: 'get_project_documents',
+    description: 'Mostra tutti i documenti collegati a un progetto.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'ID progetto' },
+        project_name: { type: 'string', description: 'Nome progetto (alternativa a ID)' },
+      },
+    },
+  },
+  {
+    name: 'get_file_permissions',
+    description: 'Mostra chi ha accesso a un file su Google Drive e con quale ruolo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file' },
+      },
+      required: ['file_id'],
+    },
+  },
+  {
+    name: 'export_file',
+    description: 'Esporta un Google Doc/Sheet/Slides in un formato diverso (PDF, DOCX, XLSX, ecc.).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file Google' },
+        format: { type: 'string', description: 'Formato: pdf, docx, xlsx, pptx, csv, txt' },
+      },
+      required: ['file_id', 'format'],
+    },
+  },
+  {
+    name: 'get_doc_changes',
+    description: 'Mostra le modifiche recenti a un documento Google (chi ha modificato cosa, quando).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'ID del file' },
+      },
+      required: ['file_id'],
+    },
+  },
 ];
-
-// ─── Document text extraction helper ──────────────────────────────────────────
 
 function extractDocText(elements) {
   var text = '';
@@ -657,6 +777,201 @@ async function execute(toolName, input, userId) {
       if (e.message && e.message.includes('404')) return { error: 'Cartella non trovata o accesso non autorizzato.', folder_id: folderId };
       return { error: 'Errore lettura cartella: ' + e.message };
     }
+  }
+
+  // ─── Read Doc Comments ─────────────────────────────────────────────────
+  if (toolName === 'read_doc_comments') {
+    var driveComments = getDrivePerUtente(userId);
+    if (!driveComments) return { error: 'Google Drive non collegato.' };
+    try {
+      var commentsRes = await driveComments.comments.list({
+        fileId: input.doc_id,
+        fields: 'comments(id,author,content,resolved,createdTime,replies)',
+        includeDeleted: false,
+      });
+      var comments = (commentsRes.data.comments || []).filter(function(c) {
+        if (!input.include_resolved && c.resolved) return false;
+        return true;
+      });
+      return {
+        comments: comments.map(function(c) {
+          return {
+            author: c.author ? c.author.displayName : 'unknown',
+            content: c.content,
+            resolved: c.resolved || false,
+            date: c.createdTime,
+            replies: (c.replies || []).map(function(r) {
+              return { author: r.author ? r.author.displayName : 'unknown', content: r.content, date: r.createdTime };
+            }),
+          };
+        }),
+        total: comments.length,
+      };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore commenti: ' + e.message };
+    }
+  }
+
+  // ─── Create Sheet ─────────────────────────────────────────────────────
+  if (toolName === 'create_sheet') {
+    var sheetsCreate = getSheetPerUtente(userId);
+    if (!sheetsCreate) return { error: 'Google Sheets non collegato.' };
+    try {
+      var newSheet = await sheetsCreate.spreadsheets.create({
+        requestBody: { properties: { title: input.title } },
+      });
+      var sheetId = newSheet.data.spreadsheetId;
+      // Add headers and data if provided
+      if (input.headers || input.data) {
+        var values = [];
+        if (input.headers) values.push(input.headers);
+        if (input.data) values = values.concat(input.data);
+        await sheetsCreate.spreadsheets.values.update({
+          spreadsheetId: sheetId,
+          range: 'Sheet1!A1',
+          valueInputOption: 'RAW',
+          requestBody: { values: values },
+        });
+      }
+      return { success: true, id: sheetId, title: input.title, link: 'https://docs.google.com/spreadsheets/d/' + sheetId };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore creazione sheet: ' + e.message };
+    }
+  }
+
+  // ─── Create Folder ────────────────────────────────────────────────────
+  if (toolName === 'create_folder') {
+    var drvFolder = getDrivePerUtente(userId);
+    if (!drvFolder) return { error: 'Google Drive non collegato.' };
+    try {
+      var folderMeta = { name: input.name, mimeType: 'application/vnd.google-apps.folder' };
+      if (input.parent_folder_id) folderMeta.parents = [input.parent_folder_id];
+      var folderRes = await drvFolder.files.create({ requestBody: folderMeta, fields: 'id, name, webViewLink' });
+      return { success: true, folder: folderRes.data };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore creazione cartella: ' + e.message };
+    }
+  }
+
+  // ─── Move File ────────────────────────────────────────────────────────
+  if (toolName === 'move_file') {
+    var drvMove = getDrivePerUtente(userId);
+    if (!drvMove) return { error: 'Google Drive non collegato.' };
+    try {
+      var fileInfo = await drvMove.files.get({ fileId: input.file_id, fields: 'parents' });
+      var prevParents = (fileInfo.data.parents || []).join(',');
+      var moveRes = await drvMove.files.update({
+        fileId: input.file_id,
+        addParents: input.destination_folder_id,
+        removeParents: prevParents,
+        fields: 'id, name, parents',
+      });
+      return { success: true, file: moveRes.data };
+    } catch(e) {
+      if (await handleTokenScaduto(userId, e)) return { error: 'Token scaduto.' };
+      return { error: 'Errore spostamento: ' + e.message };
+    }
+  }
+
+  // ─── Rename File ──────────────────────────────────────────────────────
+  if (toolName === 'rename_file') {
+    var drvRename = getDrivePerUtente(userId);
+    if (!drvRename) return { error: 'Google Drive non collegato.' };
+    try {
+      var renameRes = await drvRename.files.update({ fileId: input.file_id, requestBody: { name: input.new_name }, fields: 'id, name' });
+      return { success: true, file: renameRes.data };
+    } catch(e) { return { error: 'Errore rinomina: ' + e.message }; }
+  }
+
+  // ─── Link Doc to Project ──────────────────────────────────────────────
+  if (toolName === 'link_doc_to_project') {
+    try {
+      var supabaseLink = require('../services/db/client').getClient();
+      var { data } = await supabaseLink.from('project_documents').insert({
+        project_id: input.project_id, file_id: input.file_id,
+        file_name: input.file_name || null, drive_link: input.drive_link || null,
+        doc_role: input.doc_role || 'altro', added_by: userId,
+      }).select().single();
+      return { success: true, document: data };
+    } catch(e) { return { error: e.message }; }
+  }
+
+  // ─── Get Project Documents ────────────────────────────────────────────
+  if (toolName === 'get_project_documents') {
+    try {
+      var supabaseDocs = require('../services/db/client').getClient();
+      var projectId = input.project_id;
+      if (!projectId && input.project_name) {
+        var db = require('../../supabase');
+        var projects = await db.searchProjects({ name: input.project_name, limit: 1 });
+        if (projects && projects.length > 0) projectId = projects[0].id;
+      }
+      if (!projectId) return { error: 'Progetto non trovato.' };
+      var { data } = await supabaseDocs.from('project_documents').select('*').eq('project_id', projectId).order('created_at');
+      return { documents: data || [], count: (data || []).length };
+    } catch(e) { return { error: e.message }; }
+  }
+
+  // ─── File Permissions ─────────────────────────────────────────────────
+  if (toolName === 'get_file_permissions') {
+    var drvPerm = getDrivePerUtente(userId);
+    if (!drvPerm) return { error: 'Google Drive non collegato.' };
+    try {
+      var permRes = await drvPerm.permissions.list({ fileId: input.file_id, fields: 'permissions(id,emailAddress,role,displayName,type)' });
+      return { permissions: (permRes.data.permissions || []).map(function(p) {
+        return { email: p.emailAddress, name: p.displayName, role: p.role, type: p.type };
+      }) };
+    } catch(e) { return { error: 'Errore permessi: ' + e.message }; }
+  }
+
+  // ─── Export File ──────────────────────────────────────────────────────
+  if (toolName === 'export_file') {
+    var drvExport = getDrivePerUtente(userId);
+    if (!drvExport) return { error: 'Google Drive non collegato.' };
+    var mimeTypes = {
+      'pdf': 'application/pdf', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'csv': 'text/csv', 'txt': 'text/plain',
+    };
+    var mime = mimeTypes[input.format];
+    if (!mime) return { error: 'Formato non supportato. Usa: pdf, docx, xlsx, pptx, csv, txt.' };
+    try {
+      var exportRes = await drvExport.files.export({ fileId: input.file_id, mimeType: mime }, { responseType: 'arraybuffer' });
+      // Upload exported file back to Drive
+      var originalFile = await drvExport.files.get({ fileId: input.file_id, fields: 'name,parents' });
+      var exportName = (originalFile.data.name || 'export') + '.' + input.format;
+      var { Readable } = require('stream');
+      var stream = new Readable();
+      stream.push(Buffer.from(exportRes.data));
+      stream.push(null);
+      var uploadRes = await drvExport.files.create({
+        requestBody: { name: exportName, parents: originalFile.data.parents || [] },
+        media: { mimeType: mime, body: stream },
+        fields: 'id, name, webViewLink',
+      });
+      return { success: true, exported: uploadRes.data, format: input.format };
+    } catch(e) { return { error: 'Errore export: ' + e.message }; }
+  }
+
+  // ─── Doc Changes / Revisions ──────────────────────────────────────────
+  if (toolName === 'get_doc_changes') {
+    var drvRev = getDrivePerUtente(userId);
+    if (!drvRev) return { error: 'Google Drive non collegato.' };
+    try {
+      var revRes = await drvRev.revisions.list({ fileId: input.file_id, fields: 'revisions(id,modifiedTime,lastModifyingUser)', pageSize: 10 });
+      var revisions = (revRes.data.revisions || []).reverse().map(function(r) {
+        return {
+          date: r.modifiedTime,
+          author: r.lastModifyingUser ? r.lastModifyingUser.displayName : 'unknown',
+          email: r.lastModifyingUser ? r.lastModifyingUser.emailAddress : null,
+        };
+      });
+      return { revisions: revisions, total: revisions.length };
+    } catch(e) { return { error: 'Errore revisioni: ' + e.message }; }
   }
 
   return { error: 'Tool sconosciuto nel modulo driveTools: ' + toolName };

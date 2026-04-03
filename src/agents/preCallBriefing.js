@@ -32,11 +32,29 @@ async function buildBriefing(userId, event) {
     }
   }
 
-  // Extract potential client/entity name from title
-  var titleWords = (title || '').replace(/call|meeting|sync|check|×|x|-|con|per/gi, ' ').trim().split(/\s+/).filter(function(w) { return w.length > 2; });
+  // Extract potential client/entity names from title AND attendees
+  var titleClean = (title || '').replace(/call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione/gi, ' ').trim();
+  var titleWords = titleClean.split(/\s+/).filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno)$/i.test(w); });
+
+  // Also extract company names from attendee email domains
+  if (event.attendees) {
+    event.attendees.forEach(function(a) {
+      if (a.email && !a.email.endsWith('@kataniastudio.com') && !a.email.endsWith('@gmail.com') && !a.email.endsWith('@google.com')) {
+        var domain = a.email.split('@')[1].split('.')[0];
+        if (domain.length > 2 && titleWords.indexOf(domain) === -1) titleWords.push(domain);
+        // Also try the display name
+        if (a.displayName) {
+          var nameParts = a.displayName.split(/\s+/).filter(function(w) { return w.length > 3; });
+          nameParts.forEach(function(n) { if (titleWords.indexOf(n) === -1) titleWords.push(n); });
+        }
+      }
+    });
+  }
+
+  var foundClientInfo = false;
 
   // Search for client info
-  for (var wi = 0; wi < Math.min(titleWords.length, 3); wi++) {
+  for (var wi = 0; wi < Math.min(titleWords.length, 5); wi++) {
     var word = titleWords[wi];
     try {
       // CRM search
@@ -48,6 +66,7 @@ async function buildBriefing(userId, event) {
         if (lead.value) parts.push('• Valore: €' + lead.value);
         if (lead.services) parts.push('• Servizi: ' + lead.services);
         if (lead.updated_at) parts.push('• Ultimo update: ' + lead.updated_at.split('T')[0]);
+        foundClientInfo = true;
         break; // Found a match, stop searching
       }
     } catch(e) { /* ignore */ }
@@ -148,14 +167,26 @@ async function checkUpcomingCalls() {
 
         for (var ei = 0; ei < events.length; ei++) {
           var ev = events[ei];
-          // Check if we already sent a briefing for this event (use memory)
+          // Check if we already sent a briefing for this event today — use direct DB check
           var briefingKey = 'precall_' + uid + '_' + ev.id + '_' + now.toISOString().slice(0, 10);
           try {
-            var existing = await db.searchMemories(uid, briefingKey);
-            if (existing && existing.some(function(m) { return m.content && m.content.includes(briefingKey); })) continue;
-          } catch(e) { /* proceed anyway */ }
+            var supabaseCheck = require('../services/db/client').getClient();
+            if (supabaseCheck) {
+              var { data: existCheck } = await supabaseCheck.from('memories')
+                .select('id')
+                .ilike('content', '%' + briefingKey + '%')
+                .limit(1);
+              if (existCheck && existCheck.length > 0) continue; // Already sent today
+            }
+          } catch(e) { /* proceed if DB check fails */ }
 
           var briefing = await buildBriefing(uid, ev);
+
+          // Don't send if briefing is too short/empty (no useful info found)
+          if (!briefing || briefing.length < 100) {
+            logger.debug('[PRECALL] Briefing troppo vuoto per', uid, '— skip');
+            continue;
+          }
           await app.client.chat.postMessage({ channel: uid, text: formatPerSlack(briefing), unfurl_links: false });
           sent++;
 
