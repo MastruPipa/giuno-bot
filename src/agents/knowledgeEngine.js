@@ -171,6 +171,28 @@ async function indexDrive(userId, report) {
         report.clientsFound.push(classification.client);
       }
 
+      // Auto-link file to project if client matches
+      if (classification.client) {
+        try {
+          var projects = await db.searchProjects({ client_name: classification.client, limit: 1 });
+          if (projects && projects.length > 0) {
+            var supabaseLink = require('../services/db/client').getClient();
+            if (supabaseLink) {
+              var { data: existingLink } = await supabaseLink.from('project_documents')
+                .select('id').eq('file_id', file.id).limit(1);
+              if (!existingLink || existingLink.length === 0) {
+                await supabaseLink.from('project_documents').insert({
+                  project_id: projects[0].id, file_id: file.id, file_name: file.name,
+                  drive_link: 'https://docs.google.com/d/' + file.id,
+                  doc_role: classification.type || 'altro', added_by: 'kb-engine',
+                });
+                logger.info('[KB-ENGINE][DRIVE] Auto-linked to project:', projects[0].name);
+              }
+            }
+          }
+        } catch(e) { /* non-blocking */ }
+      }
+
       logger.info('[KB-ENGINE][DRIVE] Indicizzato:', file.name.substring(0, 50));
     } catch(e) {
       report.errorsCount++;
