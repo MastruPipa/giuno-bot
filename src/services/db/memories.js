@@ -412,6 +412,24 @@ async function searchMemories(userId, query) {
         // Sort by recency-weighted score (recent + high confidence first)
         deduped.sort(function(a, b) { return (b._sortScore || 0) - (a._sortScore || 0); });
 
+        // Content dedup: if two memories share >60% of words, keep only the higher scored one
+        var finalDeduped = [];
+        var seenContent = [];
+        for (var di = 0; di < deduped.length; di++) {
+          var content = (deduped[di].content || '').toLowerCase();
+          var words = content.split(/\s+/).filter(function(w) { return w.length > 3; });
+          var isDuplicate = false;
+          for (var si = 0; si < seenContent.length; si++) {
+            var overlap = words.filter(function(w) { return seenContent[si].indexOf(w) !== -1; });
+            if (words.length > 0 && overlap.length / words.length > 0.6) { isDuplicate = true; break; }
+          }
+          if (!isDuplicate) {
+            finalDeduped.push(deduped[di]);
+            seenContent.push(words);
+          }
+        }
+        deduped = finalDeduped;
+
         // Track usage
         var ids = deduped.map(function(m) { return m.id; }).filter(Boolean);
         if (ids.length > 0) {

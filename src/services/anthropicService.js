@@ -293,10 +293,6 @@ var SYSTEM_PROMPT =
   'Per domande su fornitori/freelance/collaboratori esterni, usa search_suppliers.\n' +
   'Nomi comuni (Andrea, Alessandro) possono avere omonimi — disambigua dal contesto.\n\n' +
 
-  'DATE NELLE MEMORIES:\n' +
-  'Confronta SEMPRE le date nelle memories con la data attuale.\n' +
-  'Se una deadline è passata, segnalalo. Non presentare date scadute come future.\n\n' +
-
   'FILTRO TEMPORALE — REGOLA ASSOLUTA:\n' +
   'Quando ricevi risultati da recall_memory, search_kb, o qualsiasi ricerca:\n' +
   '→ GUARDA LA DATA di ogni risultato. Se ha "2024", "2023", o date vecchie: NON usarli come info attuali.\n' +
@@ -318,16 +314,12 @@ var SYSTEM_PROMPT =
   '1. Chiama recall_memory con le parole chiave della domanda — SEMPRE, PRIMA di tutto\n' +
   '2. Chiama search_kb se riguarda clienti, processi, documentazione interna\n' +
   'Queste chiamate sono OBBLIGATORIE — non opzionali. Senza di esse perdi contesto.\n' +
+  'QUANDO RICEVI I RISULTATI: SINTETIZZA, non fare copia-incolla dei bullet point.\n' +
+  'Se trovi 5 memorie su Aitho, combina tutto in un paragrafo coerente.\n' +
+  'NON presentare mai i risultati come lista di "ricordi" — trasformali in informazione.\n' +
   'Esempi: "Aggiornamenti su Aitho?" → recall_memory("Aitho") PRIMA di cercare altrove\n' +
   '"Rate card?" → search_kb("rate card")\n' +
   'RECALL TEMPORALE: recall_memory("stamattina"), recall_memory("oggi"), recall_memory("ieri") — filtra per data automaticamente.\n\n' +
-  'TIPI DI MEMORIA (il sistema classifica automaticamente):\n' +
-  '• episodic: eventi accaduti — scade dopo 30gg\n' +
-  '• semantic: fatti su clienti/aziende — permanente, condivisa\n' +
-  '• procedural: come si fanno le cose — permanente, condivisa\n' +
-  '• intent: azione proposta ma non eseguita — scade dopo 24h\n' +
-  '• preference: preferenze utente — permanente, personale\n' +
-  'Quando salvi, il tipo viene classificato dal contenuto. Per azioni proposte, il sistema le traccia automaticamente.\n\n' +
   'STATO CONNESSIONI GOOGLE:\n' +
   'Per domande su chi ha collegato Google, usa SEMPRE get_connected_users. Mai dalla memoria.\n\n' +
   'SCRITTURA MEMORIA:\n' +
@@ -629,7 +621,9 @@ async function autoLearn(userId, userMessage, botReply, context) {
       var sourceTag = context.isDM ? 'DM' : (context.channelId ? '#canale' : 'conversazione');
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
-        if (m.content && m.content.length > 5 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
+        if (m.content && m.content.length > 20 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
+          // Skip if too generic (just a name or single word)
+          if (m.content.split(/\s+/).length < 3) continue;
           // Append date/source if not already in content
           var enrichedContent = m.content;
           if (!m.content.includes('202') && !m.content.includes(dateTag)) {

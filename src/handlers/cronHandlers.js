@@ -1320,12 +1320,34 @@ function scheduleCrons() {
     catch(e) { logger.error('[KB-SWEEP]', e.message); }
     finally { await releaseCronLock('kb_quality_sweep'); }
   }, { timezone: 'Europe/Rome' });
-  logger.info('Memory maintenance: dom 2:00-4:00, KB sweep 1° lun mese');
-  logger.info('Standup asincrono: domande 9:05, recap 10:00 lun-ven in #' + STANDUP_CHANNEL);
-  logger.info('Recap settimanale: venerdì alle 17:00 Europe/Rome');
-  logger.info('Drive auto-index: ogni 2 ore');
-  logger.info('Channel digest: ogni 4 ore');
-  logger.info('Memory consolidation: domenica alle 3:00');
+  logger.info('[CRON] Tutti i cron schedulati.');
+
+  // ─── Boot tasks: embedding backfill + consolidation (run once 30s after start) ─
+  setTimeout(async function() {
+    logger.info('[BOOT] Avvio embedding backfill...');
+    try {
+      var embService = require('../services/embeddingService');
+      var processed = await embService.backfillEmbeddings();
+      logger.info('[BOOT] Embedding backfill completato:', processed, 'entry processate');
+    } catch(e) { logger.error('[BOOT] Embedding backfill error:', e.message); }
+
+    // Also run consolidation if it hasn't run in >3 days
+    try {
+      var supabase = db.getClient ? db.getClient() : null;
+      if (supabase) {
+        var { data: lastConsolidate } = await supabase.from('cron_locks')
+          .select('locked_at')
+          .eq('job_name', 'consolidate_memories')
+          .limit(1);
+        var lastRun = lastConsolidate && lastConsolidate.length > 0 ? new Date(lastConsolidate[0].locked_at) : null;
+        var daysSinceLast = lastRun ? (Date.now() - lastRun.getTime()) / 86400000 : 999;
+        if (daysSinceLast > 3) {
+          logger.info('[BOOT] Consolidazione memorie non gira da', Math.round(daysSinceLast), 'giorni — avvio...');
+          consolidaMemorie().catch(function(e) { logger.error('[BOOT] Consolidation error:', e.message); });
+        }
+      }
+    } catch(e) { logger.warn('[BOOT] Consolidation check error:', e.message); }
+  }, 30000); // 30 secondi dopo il boot
 }
 
 module.exports = {
