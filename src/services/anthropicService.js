@@ -1084,6 +1084,34 @@ async function askGiuno(userId, userMessage, options) {
     }).join('\n');
     learnContext.conversationSummary = convSummary;
   }
+  // Detect implicit negative feedback: if user rephrases their question right after
+  var prevMessages = convCache[convKey] || [];
+  if (prevMessages.length >= 4) {
+    var lastUserMsg = null;
+    var secondLastUserMsg = null;
+    for (var pi = prevMessages.length - 1; pi >= 0; pi--) {
+      if (prevMessages[pi].role === 'user' && typeof prevMessages[pi].content === 'string') {
+        if (!lastUserMsg) lastUserMsg = prevMessages[pi].content;
+        else if (!secondLastUserMsg) { secondLastUserMsg = prevMessages[pi].content; break; }
+      }
+    }
+    if (lastUserMsg && secondLastUserMsg) {
+      // If user's last two messages share >40% words, they're rephrasing = bad answer
+      var words1 = lastUserMsg.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
+      var words2 = secondLastUserMsg.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
+      if (words1.length > 2 && words2.length > 2) {
+        var overlap = words1.filter(function(w) { return words2.indexOf(w) !== -1; });
+        if (overlap.length / Math.max(words1.length, words2.length) > 0.4) {
+          try {
+            var errorTracker = require('./errorTracker');
+            errorTracker.recordError(secondLastUserMsg, 'rephrase_detected', userId);
+            logger.info('[FEEDBACK] Rephrase detected — implicit negative feedback');
+          } catch(e) { /* ignore */ }
+        }
+      }
+    }
+  }
+
   autoLearn(userId, resolvedMessage, finalReply, learnContext).catch(function(e) {
     logger.error('Auto-learn error:', e.message);
   });

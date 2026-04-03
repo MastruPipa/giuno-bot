@@ -172,6 +172,16 @@ app.event('app_mention', async function(args) {
       logger.debug('[SLACK-HANDLER] fetch membri canale ignorato:', e.message);
     }
 
+    // Inject Giuno's last response in this channel as context
+    var lastBotCtx = '';
+    var lastBot = lastBotMessageByChannel.get(event.channel);
+    if (lastBot && (Date.now() - lastBot.timestamp) < 600000) { // Within 10 min
+      var lastBotMsg = botMessages.get(lastBot.ts);
+      if (lastBotMsg && lastBotMsg.text) {
+        lastBotCtx = '\n[LA MIA ULTIMA RISPOSTA IN QUESTO CANALE (< 10 min fa):\n' + lastBotMsg.text.substring(0, 300) + ']\n';
+      }
+    }
+
     var mentionChannelType = ch.is_private ? 'private' : 'public';
 
     // If CC mention: add instruction to not respond unless necessary
@@ -191,7 +201,7 @@ app.event('app_mention', async function(args) {
       channelId: ch.id || null,
       channelType: mentionChannelType,
       sentiment: mentionSentiment,
-      preflightInstruction: ccInstruction || undefined,
+      preflightInstruction: (lastBotCtx + (ccInstruction || '')).trim() || undefined,
     });
 
     var degradedMentionReply = isDegradedReply(reply);

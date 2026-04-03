@@ -1105,7 +1105,7 @@ async function consolidaMemorie() {
 }
 
 function scheduleCrons() {
-  cron.schedule('45 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  cron.schedule('30 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
   var dailyStandup = require('./dailyStandupV2');
   dailyStandup.scheduleDailyJobs(cron);
@@ -1115,17 +1115,18 @@ function scheduleCrons() {
     sendWeeklyReports().catch(function(e) { logger.error('[WEEKLY-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
   // Follow-up agent — ogni 4 ore lun-ven durante orario lavorativo
-  cron.schedule('0 9,13,17 * * 1-5', function() {
+  // Follow-up: 13:00 e 17:00 (non alle 9 — troppi messaggi insieme)
+  cron.schedule('0 13,17 * * 1-5', function() {
     var { runFollowups } = require('../agents/followUpAgent');
     runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
-  // Pre-call briefing — ogni 30 min durante orario lavorativo
-  cron.schedule('*/30 8-18 * * 1-5', function() {
+  // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
+  cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
     checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
-  // Daily priorities DM — 9:05 lun-ven, after standup send
-  cron.schedule('5 9 * * 1-5', async function() {
+  // Daily priorities DM — 9:15 lun-ven (dopo standup delle 9:00)
+  cron.schedule('15 9 * * 1-5', async function() {
     try {
       var workflowTools = require('../tools/workflowTools');
       var { getUtenti } = require('../services/slackService');
