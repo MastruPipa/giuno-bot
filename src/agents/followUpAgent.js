@@ -32,10 +32,19 @@ async function checkPendingFollowups() {
       res.data.forEach(function(m) {
         var ageHours = Math.round((now.getTime() - new Date(m.created_at).getTime()) / 3600000);
         if (ageHours >= 24 && ageHours <= 120) { // 1-5 days old
+          // Skip system/internal memories — not real user actions
+          var content = m.content || '';
+          if (/^precall_|^TOOL:|briefing inviato|^FEEDBACK_|^CORREZIONE|^\[TOOL:|^tool_result/i.test(content)) return;
+          // Skip very short/generic content
+          if (content.length < 15) return;
+          // Skip system tags
+          var tags = m.tags || [];
+          if (tags.indexOf('precall') !== -1 || tags.indexOf('system') !== -1 || tags.indexOf('tool_result') !== -1 || tags.indexOf('search_pattern') !== -1) return;
+
           followups.push({
             type: 'pending_intent',
             userId: m.slack_user_id,
-            content: m.content,
+            content: content,
             ageHours: ageHours,
             memoryId: m.id,
           });
@@ -115,10 +124,13 @@ async function checkSilentChannels() {
 async function sendFollowups(userId, items) {
   if (!items || items.length === 0) return;
 
-  var msg = '*📋 Follow-up da Giuno*\n\n';
-
   var intents = items.filter(function(i) { return i.type === 'pending_intent'; });
   var leads = items.filter(function(i) { return i.type === 'lead_followup'; });
+
+  // Don't send if nothing substantial
+  if (intents.length === 0 && leads.length === 0) return;
+
+  var msg = '*📋 Follow-up da Giuno*\n\n';
 
   if (intents.length > 0) {
     msg += '*Azioni in sospeso:*\n';
@@ -136,6 +148,9 @@ async function sendFollowups(userId, items) {
     });
     msg += '\n';
   }
+
+  // Quality gate: don't send garbage
+  if (msg.length < 80 || (intents.length === 0 && leads.length === 0)) return;
 
   msg += '_Rispondi "fatto" per qualsiasi punto completato._';
 
