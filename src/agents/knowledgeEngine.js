@@ -74,6 +74,18 @@ async function indexDrive(userId, report) {
       var nameLow = (file.name || '').toLowerCase();
       if (EXCLUDED_NAMES.some(function(e) { return nameLow.includes(e); })) continue;
 
+      // Change detection: skip if file hasn't been modified since last index
+      try {
+        var supabaseCheck = require('../services/db/client').getClient();
+        if (supabaseCheck) {
+          var { data: existingIdx } = await supabaseCheck.from('drive_content_index')
+            .select('last_modified').eq('file_id', file.id).limit(1);
+          if (existingIdx && existingIdx.length > 0 && existingIdx[0].last_modified === file.modifiedTime) {
+            continue; // File not changed since last index
+          }
+        }
+      } catch(e) { /* proceed with indexing */ }
+
       var content = '';
       if (file.mimeType.includes('document')) {
         var docs = getDocsPerUtente(userId);
@@ -138,6 +150,21 @@ async function indexDrive(userId, report) {
       if (classification.project) tags.push('progetto:' + classification.project.toLowerCase());
 
       db.addKBEntry(kbContent, tags, 'kb-engine-drive', { confidenceTier: 'drive_indexed', sourceType: 'drive', sourceChannelType: 'drive' });
+
+      // Save to drive_content_index with change tracking
+      try {
+        db.saveDriveContent({
+          file_id: file.id,
+          file_name: file.name,
+          ai_summary: kbContent.substring(0, 500),
+          web_link: 'https://docs.google.com/' + (file.mimeType.includes('document') ? 'document' : file.mimeType.includes('spreadsheet') ? 'spreadsheets' : file.mimeType.includes('presentation') ? 'presentation' : 'file') + '/d/' + file.id,
+          doc_category: classification.type,
+          related_client: classification.client || null,
+          confidence_score: 0.8,
+          last_modified: file.modifiedTime,
+        });
+      } catch(e) { /* non-blocking */ }
+
       report.filesIndexed++;
 
       if (classification.client && report.clientsFound.indexOf(classification.client) === -1) {

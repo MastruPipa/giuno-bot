@@ -1049,16 +1049,6 @@ async function askGiuno(userId, userMessage, options) {
           var resultStr = JSON.stringify(result);
           logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
 
-          // Learn from meaningful tool results (fire-and-forget)
-          if (resultStr.length > 50 && /search_leads|search_kb|recall_memory|read_channel|find_emails|search_drive/.test(tu.name)) {
-            try {
-              var toolInsight = '[TOOL:' + tu.name + '] Query: ' + JSON.stringify(tu.input).substring(0, 100) + ' → ' + resultStr.substring(0, 300);
-              db.addMemory(userId, toolInsight, ['tool_result', 'search_pattern', 'tool:' + tu.name], {
-                memory_type: 'episodic', confidence_score: 0.4,
-              });
-            } catch(e) { /* non-blocking */ }
-          }
-
           return { type: 'tool_result', tool_use_id: tu.id, content: resultStr };
         })
     );

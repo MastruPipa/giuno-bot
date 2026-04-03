@@ -257,14 +257,21 @@ function formatContextForPrompt(ctx) {
   }
 
   if (ctx.relevantMemories && ctx.relevantMemories.length > 0) {
-    parts.push('MEMORIA:\n' + ctx.relevantMemories.slice(0, 5).map(function(m) {
-      return '- [' + (m.type || m.memory_type || '?') + '] ' + (m.content || '');
-    }).join('\n'));
+    // Filter out system memories and show clean content
+    var cleanMems = ctx.relevantMemories.filter(function(m) {
+      var c = m.content || '';
+      return !(/^precall_|^\[TOOL:|^TOOL:|^FEEDBACK_|^tool_result|briefing inviato/i.test(c)) && c.length > 15;
+    });
+    if (cleanMems.length > 0) {
+      parts.push('MEMORIA:\n' + cleanMems.slice(0, 5).map(function(m) {
+        return '- ' + (m.content || '');
+      }).join('\n'));
+    }
   }
 
   if (ctx.kbResults && ctx.kbResults.length > 0) {
     parts.push('KB:\n' + ctx.kbResults.slice(0, 4).map(function(k) {
-      return '- [' + (k.confidence_tier || '?') + '] ' + (k.content || '');
+      return '- ' + (k.content || '');
     }).join('\n'));
   }
 
