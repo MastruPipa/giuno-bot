@@ -180,9 +180,9 @@ async function checkUpcomingCalls() {
           sent++;
 
           // Mark as sent
-          db.addMemory(uid, briefingKey + ' — briefing inviato', ['precall', 'system'], {
-            memory_type: 'intent',
-            confidence_score: 0.3,
+          db.addMemory(uid, briefingKey + ' — briefing inviato', ['precall', 'system', 'internal'], {
+            memory_type: 'episodic',
+            confidence_score: 0.1, // Low — just a dedup marker, not real memory
           }).catch(function() {});
         }
       } catch(e) {
