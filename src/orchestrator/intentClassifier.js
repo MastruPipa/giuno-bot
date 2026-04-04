@@ -93,7 +93,13 @@ var RULES = [
   },
   {
     intent: INTENTS.PROSPECTING,
-    keywords: ['prospect', 'analizza azienda', 'valuta azienda', 'fit score', 'dovremmo contattare', 'vale la pena contattare', 'scheda azienda'],
+    keywords: ['analizza azienda', 'valuta azienda', 'fit score', 'dovremmo contattare', 'vale la pena contattare', 'scheda azienda'],
+    // "prospect" alone is too aggressive — "ultimi prospect" = CRM list, not analysis
+    validate: function(msg) {
+      // If asking for a list ("ultimi", "tutti i", "quanti", "lista") → not prospecting analysis
+      if (/ultim[io]|tutti i|quanti|lista|elenco|parlami|aggiornami/i.test(msg)) return false;
+      return true;
+    },
   },
   {
     intent: INTENTS.CLIENT_RETRIEVAL,
