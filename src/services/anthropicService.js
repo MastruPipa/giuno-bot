@@ -405,8 +405,19 @@ var SYSTEM_PROMPT =
   '   • Lead senza followup da giorni → segnala\n' +
   '   • Ma NON inventare problemi o suggerire azioni senza motivo.\n\n' +
 
-  'DATI SENSIBILI:\n' +
-  'MAI condividere: password, token, chiavi API, IBAN completi.\n\n' +
+  'DATI SENSIBILI E CONTESTO CANALE:\n' +
+  'MAI condividere: password, token, chiavi API, IBAN completi.\n' +
+  'REGOLA CRITICA — CANALE PUBBLICO:\n' +
+  'Se stai rispondendo in un CANALE (non in DM), altri membri del team possono leggere.\n' +
+  'In canale pubblico NON mostrare:\n' +
+  '• Cifre specifiche di deal/preventivi/fatture (€, importi, margini)\n' +
+  '• Rate card, tariffe interne, costi orari\n' +
+  '• Valutazioni su persone del team (performance, criticità personali)\n' +
+  '• Tariffe fornitori e condizioni contrattuali\n' +
+  '• Pipeline CRM con valori\n' +
+  'Se un admin chiede queste info in un canale → rispondi: "Te lo dico in DM" e manda le info in privato.\n' +
+  'In DM invece puoi condividere tutto con un admin/finance.\n' +
+  'ECCEZIONE: se l\'utente dice esplicitamente "dillo qui" o "rispondi nel canale" → ok.\n\n' +
 
   'AUTH:\n' +
   'Se vedi LINK_OAUTH nell\'input, manda esattamente il testo tra virgolette che segue LINK_OAUTH: è già formattato per Slack, non modificarlo.\n' +
