@@ -228,6 +228,16 @@ app.event('app_mention', async function(args) {
     var formatted = formatPerSlack(reply);
     if (!formatted) {
       logger.warn('[MENTION] Reply vuota per', event.user, '- skip postMessage');
+      try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
+      return;
+    }
+    // Confidence gate: if reply is low-quality filler, don't post in channel
+    var isFillerReply = /^(non ho (trovato|informazioni|dati)|non sono sicuro|non saprei|devo verificare|al momento non|purtroppo non)/i.test(reply.trim());
+    var isTooGeneric = reply.trim().length < 30 && !/fatto|ok|registrato|salvato/i.test(reply);
+    if (isFillerReply && !event.thread_ts) {
+      // In main channel: don't post filler. In thread: it's ok to say "non so"
+      logger.info('[MENTION] Confidence gate: reply troppo generica, skip');
+      try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
       return;
     }
     // Rimuovi reaction "sta scrivendo" prima di rispondere
