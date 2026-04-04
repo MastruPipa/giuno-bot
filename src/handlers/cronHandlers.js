@@ -1145,7 +1145,7 @@ function scheduleCrons() {
               else if (item.type === 'info') msg += '_' + item.text + '_\n';
               else if (item.type === 'priorities') msg += '\n🎯 *Priorità settimana:* ' + item.items.join(' | ') + '\n';
             });
-            msg += '\n_Chiedimi "cosa devo fare oggi?" per aggiornamenti._';
+            // No trailing prompt — if they need more they'll ask
             await app.client.chat.postMessage({ channel: u.id, text: formatPerSlack(msg), unfurl_links: false });
           }
         } catch(e) { logger.debug('[DAILY-PRIO] Errore per', u.id + ':', e.message); }

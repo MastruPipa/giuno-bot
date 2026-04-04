@@ -627,6 +627,19 @@ async function autoLearn(userId, userMessage, botReply, context) {
         if (m.content && m.content.length > 20 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
           // Skip if too generic (just a name or single word)
           if (m.content.split(/\s+/).length < 3) continue;
+          // Quality gate: check if we already know this (dedup before saving)
+          var memCache = db.getMemCache();
+          var userMems = (memCache[userId] || []);
+          var contentLower = m.content.toLowerCase();
+          var contentWords = contentLower.split(/\s+/).filter(function(w) { return w.length > 3; });
+          var isDuplicate = userMems.some(function(existing) {
+            var existWords = (existing.content || '').toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
+            if (existWords.length === 0 || contentWords.length === 0) return false;
+            var overlap = contentWords.filter(function(w) { return existWords.indexOf(w) !== -1; });
+            return overlap.length / contentWords.length > 0.7; // >70% overlap = duplicate
+          });
+          if (isDuplicate) continue;
+
           // Append date/source if not already in content
           var enrichedContent = m.content;
           if (!m.content.includes('202') && !m.content.includes(dateTag)) {
@@ -923,6 +936,25 @@ async function askGiuno(userId, userMessage, options) {
     if (profile.competenze && profile.competenze.length > 0) contextData += 'Competenze: ' + profile.competenze.join(', ') + '\n';
     if (profile.stile_comunicativo) contextData += 'Stile: ' + profile.stile_comunicativo + '\n';
   }
+
+  // Cross-session context: inject latest conversation summary from this user (any thread)
+  try {
+    var supabaseSess = require('./db/client').getClient();
+    if (supabaseSess) {
+      var { data: lastSession } = await supabaseSess.from('conversation_summaries')
+        .select('summary_text, updated_at')
+        .like('conv_key', userId + '%')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      if (lastSession && lastSession.length > 0 && lastSession[0].summary_text) {
+        var sessionAge = (Date.now() - new Date(lastSession[0].updated_at).getTime()) / 3600000;
+        if (sessionAge < 48) { // Only inject if <48h old
+          contextData += '\nCONTESTO PRECEDENTE (ultima conversazione, ' + Math.round(sessionAge) + 'h fa):\n' +
+            lastSession[0].summary_text.substring(0, 300) + '\n';
+        }
+      }
+    }
+  } catch(e) { /* non-blocking */ }
 
   // Behavioral profile injection — user patterns
   try {
