@@ -122,11 +122,15 @@ async function processSlackMessage(message, channelId) {
       sourceChannelType: 'public',
     });
 
-    // React with 📝 to show Giuno read and learned from this message
-    try {
-      var { app } = require('./slackService');
-      await app.client.reactions.add({ channel: channelId, timestamp: message.ts, name: 'memo' });
-    } catch(e) { /* ignore — may not have permission or already reacted */ }
+    // Only react 📝 for high-value patterns (decisions, deadlines, blockers) — not for every match
+    var highValueTypes = ['deadline', 'decision', 'blocker', 'contract', 'delivery'];
+    var isHighValue = matchedPatterns.some(function(p) { return highValueTypes.indexOf(p.type) !== -1; });
+    if (isHighValue) {
+      try {
+        var { app } = require('./slackService');
+        await app.client.reactions.add({ channel: channelId, timestamp: message.ts, name: 'memo' });
+      } catch(e) { /* ignore */ }
+    }
 
     logger.debug('[MEM-WATCHER] Saved from #' + channelName + ':', text.substring(0, 50));
   } catch(e) { logger.debug('[MEM-WATCHER] Save error:', e.message); }

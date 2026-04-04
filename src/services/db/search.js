@@ -28,6 +28,20 @@ var SINONIMI = {
   'task': ['compito', 'attività', 'todo', 'da fare', 'azione'],
   'deadline': ['scadenza', 'consegna', 'termine'],
   'scadenza': ['deadline', 'consegna', 'termine'],
+  'packaging': ['etichetta', 'etichette', 'confezione', 'label'],
+  'shooting': ['riprese', 'servizio fotografico', 'set'],
+  'foto': ['fotografia', 'shooting', 'servizio fotografico'],
+  'copy': ['copywriting', 'testi', 'scrittura'],
+  'sito': ['website', 'web', 'landing'],
+  'ped': ['piano editoriale', 'calendario editoriale', 'content plan'],
+  'piano editoriale': ['ped', 'calendario editoriale'],
+  'output': ['deliverable', 'consegna', 'materiale', 'prodotto finito'],
+  'deliverable': ['output', 'consegna', 'materiale'],
+  'brief': ['briefing', 'richiesta', 'requisiti'],
+  'moodboard': ['concept', 'visual', 'ispirazione'],
+  'presentazione': ['deck', 'pitch', 'slides'],
+  'fornitore': ['freelance', 'collaboratore', 'esterno'],
+  'budget': ['costo', 'spesa', 'investimento'],
 };
 
 function expandQueryTokens(query) {
