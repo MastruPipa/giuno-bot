@@ -50,10 +50,9 @@ async function scanEmails() {
           try {
             var msgRes = await withTimeout(
               gmail.users.messages.get({
-                userId: 'me', id: msgId, format: 'metadata',
-                metadataHeaders: ['From', 'To', 'Subject', 'Date', 'Cc'],
+                userId: 'me', id: msgId, format: 'full',
               }),
-              5000, 'email_learn_get'
+              8000, 'email_learn_get'
             );
 
             var headers = msgRes.data.payload.headers || [];
@@ -68,6 +67,49 @@ async function scanEmails() {
             var subject = getHeader('Subject');
             var date = getHeader('Date');
             var snippet = msgRes.data.snippet || '';
+
+            // Extract attachments info + read text attachments
+            var attachmentsSummary = [];
+            function scanParts(parts) {
+              if (!parts) return;
+              for (var pi2 = 0; pi2 < parts.length; pi2++) {
+                var part = parts[pi2];
+                if (part.filename && part.filename.length > 0 && part.body) {
+                  var attSize = part.body.size || 0;
+                  var attMime = part.mimeType || '';
+                  // Skip very large files (>5MB) and media files
+                  if (attSize > 5 * 1024 * 1024) continue;
+                  if (/video|audio/i.test(attMime)) continue;
+
+                  var attInfo = { name: part.filename, type: attMime, size: attSize };
+
+                  // If it's a small text/csv/json file and has data inline, read it
+                  if (part.body.data && attSize < 100000 && /text|csv|json/i.test(attMime)) {
+                    try {
+                      var attContent = Buffer.from(part.body.data, 'base64').toString('utf-8');
+                      attInfo.content = attContent.substring(0, 500);
+                    } catch(e) { /* ignore */ }
+                  }
+
+                  // If it's a Google Drive link in the attachment, note it
+                  if (/google-apps/i.test(attMime)) {
+                    attInfo.isDriveLink = true;
+                  }
+
+                  // For PDFs, images, docs — just save metadata
+                  if (/pdf/i.test(attMime)) attInfo.type_label = 'PDF';
+                  else if (/image/i.test(attMime)) attInfo.type_label = 'Immagine';
+                  else if (/spreadsheet|excel/i.test(attMime)) attInfo.type_label = 'Foglio';
+                  else if (/document|word/i.test(attMime)) attInfo.type_label = 'Documento';
+                  else if (/presentation|powerpoint/i.test(attMime)) attInfo.type_label = 'Presentazione';
+
+                  attachmentsSummary.push(attInfo);
+                }
+                // Recurse into nested parts
+                if (part.parts) scanParts(part.parts);
+              }
+            }
+            scanParts(msgRes.data.payload.parts);
 
             // Skip internal-only emails (all @kataniastudio.com)
             var isInternal = from.includes('@kataniastudio.com') &&
@@ -94,6 +136,27 @@ async function scanEmails() {
             } else if (hasClientContent) {
               emailSummary = 'Email interna: "' + subject + '" — ' + snippet.substring(0, 150);
               emailSummary += ' (' + new Date(date).toISOString().slice(0, 10) + ')';
+            }
+
+            // Append attachment info to summary
+            if (attachmentsSummary.length > 0) {
+              emailSummary += ' | Allegati: ' + attachmentsSummary.map(function(a) {
+                var desc = a.name;
+                if (a.type_label) desc += ' (' + a.type_label + ')';
+                if (a.content) desc += ' → ' + a.content.substring(0, 100);
+                return desc;
+              }).join(', ');
+
+              // Save attachment details to KB separately if they have readable content
+              for (var ai = 0; ai < attachmentsSummary.length; ai++) {
+                var att = attachmentsSummary[ai];
+                if (att.content && att.content.length > 30) {
+                  var attKB = '[ALLEGATO EMAIL] ' + att.name + ' da "' + subject + '" (' + fromName + '): ' + att.content.substring(0, 400);
+                  db.addKBEntry(attKB, ['fonte:email_allegato', 'file:' + att.name.toLowerCase(), 'data:' + new Date(date).toISOString().slice(0, 10)], userId, {
+                    confidenceTier: 'auto_learn', sourceType: 'gmail_attachment',
+                  });
+                }
+              }
             }
 
             if (!emailSummary || emailSummary.length < 30) continue;
