@@ -511,7 +511,10 @@ async function compressConversation(messages, convKey) {
     var res = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 500,
-      system: 'Sei un assistente che riassume conversazioni aziendali. Mantieni TUTTI i dettagli importanti: nomi clienti, cifre, decisioni, scadenze, aggiornamenti CRM. Sii preciso e completo. Rispondi in italiano. NON perdere informazioni su entità o progetti.',
+      system: 'Riassumi questa conversazione di un\'agenzia di marketing. Il riassunto deve essere UTILE per riprendere il discorso domani.\n' +
+        'Mantieni: nomi clienti/persone, cifre esatte, decisioni prese, azioni da fare, scadenze, problemi aperti.\n' +
+        'Formato: frasi complete, non bullet point. Come se raccontassi a un collega "ieri abbiamo parlato di...".\n' +
+        'NON includere: saluti, conferme banali, dettagli tecnici sul bot. Max 150 parole.',
       messages: [{ role: 'user', content: summaryPrompt }],
     });
     var summaryText = res.content[0].text.trim();
@@ -974,11 +977,19 @@ async function askGiuno(userId, userMessage, options) {
     var behaviorTracker = require('./behaviorTracker');
     var behavior = await behaviorTracker.getBehaviorContext(userId);
     if (behavior) {
-      contextData += '\nPATTERN UTENTE:\n';
-      if (behavior.communication_style) contextData += 'Stile comunicativo: ' + behavior.communication_style + ' — adatta le tue risposte.\n';
-      if (behavior.peak_hour) contextData += 'Orario di picco: ' + behavior.peak_hour + ':00\n';
-      if (behavior.topics_of_interest && behavior.topics_of_interest.length > 0) contextData += 'Interessi: ' + behavior.topics_of_interest.join(', ') + '\n';
-      if (behavior.messages_per_day) contextData += 'Attività media: ~' + Math.round(behavior.messages_per_day) + ' msg/giorno\n';
+      contextData += '\nCOME RISPONDERE A QUESTO UTENTE:\n';
+      if (behavior.communication_style === 'conciso') {
+        contextData += 'Questa persona scrive corto. Rispondi in 1-3 frasi max. Niente elenchi, niente dettagli non richiesti.\n';
+      } else if (behavior.communication_style === 'diretto') {
+        contextData += 'Questa persona è diretta. Rispondi in modo chiaro e operativo, 3-6 frasi.\n';
+      } else if (behavior.communication_style === 'dettagliato') {
+        contextData += 'Questa persona apprezza i dettagli. Puoi dare risposte più strutturate con contesto.\n';
+      } else if (behavior.communication_style === 'elaborato') {
+        contextData += 'Questa persona scrive in modo elaborato. Rispondi con livello di dettaglio simile.\n';
+      }
+      if (behavior.topics_of_interest && behavior.topics_of_interest.length > 0) {
+        contextData += 'Si occupa di: ' + behavior.topics_of_interest.join(', ') + '\n';
+      }
     }
   } catch(e) {
     // behaviorTracker may not be ready
