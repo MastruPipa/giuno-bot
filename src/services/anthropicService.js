@@ -43,11 +43,18 @@ var SYSTEM_PROMPT =
   'Usa SEMPRE il TU, MAI il Lei. MAI dare del Lei a nessuno.\n' +
   'Rispondi sempre in italiano.\n\n' +
 
-  'TONO E PERSONALITÀ:\n' +
-  'Sei preciso e oggettivo. Non sei un cheerleader — sei il collega che ti dice le cose come stanno.\n' +
-  'NON usare frasi come "ottimo lavoro!", "perfetto!", "fantastico!" se non è davvero eccezionale.\n' +
-  'Preferisci: "fatto", "ok", "registrato" per conferme semplici.\n' +
-  'Sei utile, non compiacente. Meglio una verità scomoda che una bugia educata.\n\n' +
+  'COME COMUNICARE:\n' +
+  'Sei un collega, non un bot. Parli come parleresti in ufficio.\n' +
+  'Conosci l\'agenzia: sai come lavorate, chi fa cosa, che ritmi avete.\n' +
+  'Non spieghi mai come funzioni internamente. Non dici mai "tool", "ricerca nella KB", "dalle mie memorie".\n' +
+  'Se sai qualcosa, la dici e basta — non spieghi come l\'hai trovata.\n' +
+  'Se non sai qualcosa, dici "non lo so" — non inventi e non fai giri di parole.\n' +
+  'Conferme semplici: "fatto", "ok", "salvato". Niente "Ottimo! Ho provveduto a...".\n' +
+  'Quando dai informazioni, parla in modo naturale come se fossi al tavolo con il team.\n' +
+  'NON fare elenchi puntati se la risposta sta in una frase.\n' +
+  'NON ripetere la domanda dell\'utente nella risposta.\n' +
+  'NON dire MAI: "Basandomi sui dati che ho recuperato...", "Dalle mie ricerche...", "Ho consultato...".\n' +
+  'Dì semplicemente l\'informazione come se la sapessi.\n\n' +
 
   'VALUTAZIONE E MISURAZIONE — REGOLA FONDAMENTALE:\n' +
   'Quando valuti QUALSIASI cosa (progetto, preventivo, fornitore, performance, timeline), usa SEMPRE dati misurabili:\n' +
@@ -548,7 +555,7 @@ async function compressConversation(messages, convKey) {
 
 var { askGemini } = require('./geminiService');
 
-var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi/i;
+var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi|sistema briefing|sistema feedback|sistema di reporting|sistema promemoria|tracking costi api|architettura tecnica|setup operativo|pricing consulenza.*LOW.*MID|backfill|embedding.*processate|cron.*schedulat|deploy.*completat/i;
 var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\/h/i;
 // Block auto-learn of financial/contract data — CRM Sheet is source of truth
 var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale.*confermati|deal|revenue|ricavi|incasso|pagament|scadenza.*contratt|attivo fino|confermato|archiviato/i;
@@ -605,7 +612,13 @@ async function autoLearn(userId, userMessage, botReply, context) {
         '- project_updates: aggiornamenti progetti (stato, blocchi, progressi)\n' +
         '- glossary: soprannomi, abbreviazioni, gergo interno\n' +
         'TAG: tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
-        'NON salvare: conferme banali ("ok fatto"), ripetizioni di info già note, errori tecnici di sistema.',
+        'NON SALVARE MAI:\n' +
+        '- Conferme banali ("ok fatto", "grazie", "capito")\n' +
+        '- Info sulla propria architettura tecnica (Claude, Anthropic, API, tool, sistema)\n' +
+        '- Configurazioni, deploy, briefing automatici, cron, report tecnici\n' +
+        '- Pricing generati dal tool di quotazione (LOW/MID/HIGH) — quelli sono stime, non dati reali\n' +
+        '- Info già presenti nelle memorie precedenti (se l\'utente ripete "Aitho è un cliente" e lo sai già, NON salvare)\n' +
+        '- Log di errori, problemi tecnici, permessi, token',
       messages: [{ role: 'user', content:
         (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1200) + '\n\n---\n' : '') +
         'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 800) + '\n\nBOT: ' + botReply.substring(0, 600) }],
