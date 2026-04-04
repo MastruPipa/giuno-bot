@@ -78,7 +78,8 @@ async function run(message, ctx) {
     return '*Fogli registrati:*\n' + listMsg;
   }
 
-  return '*Comandi scan:*\n• "avvia scan storico" / "avvia scan storico 5"\n• "scan drive" / "scan drive 100"\n• "scan sheets" / "scan fogli"\n• "lista fogli"\n• "scan completo"\n• "stato scan"';
+  // Don't show help text as fallback — return null so router falls back to general assistant
+  return null;
 }
 
 module.exports = { run: run };
