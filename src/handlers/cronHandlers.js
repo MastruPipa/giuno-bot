@@ -1120,6 +1120,11 @@ function scheduleCrons() {
     var { runFollowups } = require('../agents/followUpAgent');
     runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
+  // Email learner — ogni 2h, legge email importanti e salva in KB
+  cron.schedule('15 10,12,14,16 * * 1-5', function() {
+    var { scanEmails } = require('../agents/emailLearner');
+    scanEmails().catch(function(e) { logger.error('[EMAIL-LEARN-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome' });
   // Meeting recap scanner — ogni 2h, legge recap Gemini da Gmail e salva in KB
   cron.schedule('30 10,12,14,16 * * 1-5', function() {
     var { scanMeetingRecaps } = require('../agents/meetingRecapScanner');
