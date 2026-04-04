@@ -310,6 +310,11 @@ var SYSTEM_PROMPT =
   '- Se corregge un dato → aggiorna SUBITO senza chiedere conferma.\n' +
   '- Quando aggiorni: conferma in 2-3 righe, NON rigenerare tutto il CRM.\n' +
   '- NON inventare MAI cifre, stati, o date.\n' +
+  '- PROSPECT vs CLIENTI vs PERSI:\n' +
+  '  "Prospect" o "nuovi" = lead con status new/contacted/proposal_sent. USA is_active: true + exclude_status won,lost,dormant.\n' +
+  '  "Clienti attivi" = lead con status won E is_active: true.\n' +
+  '  "Persi" = lead con status lost.\n' +
+  '  NON mischiare prospect con clienti vinti. NON mostrare lead lost come prospect.\n' +
   '- TEMPORALITÀ — REGOLA FONDAMENTALE:\n' +
   '  Quando l\'utente chiede "abbiamo X?", "output pronti?", "cosa c\'è di pronto?" SENZA specificare un periodo:\n' +
   '  → Rispondi SOLO con dati delle ultime 2-4 settimane. MAI tirare fuori roba di mesi o anni fa.\n' +

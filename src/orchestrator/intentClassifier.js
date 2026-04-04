@@ -90,6 +90,10 @@ var RULES = [
       'avvia scan', 'inizia scan', 'scan storico', 'scan slack', 'scan drive',
       'stato scan', 'progresso scan', 'indicizza slack', 'indicizza drive',
     ],
+    // Must contain "scan" or "indicizza" — reject if not explicitly a scan request
+    validate: function(msg) {
+      return /scan|indicizz/i.test(msg);
+    },
   },
   {
     intent: INTENTS.PROSPECTING,

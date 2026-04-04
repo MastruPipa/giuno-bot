@@ -129,6 +129,7 @@ async function route(userId, message, options) {
         break;
       case INTENTS.HISTORICAL_SCAN:
         reply = await getScanCommand().run(message, ctx);
+        if (!reply) reply = await withTimeout(getGeneralAssistantAgent().run(message, ctx), AGENT_TIMEOUT_MS, 'general');
         break;
       case INTENTS.PROSPECTING:
         reply = await getProspectingAgent().run(message, ctx);
