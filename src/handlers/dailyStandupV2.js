@@ -126,7 +126,7 @@ async function pushMissingResponders(pushNumber) {
 
 // ─── Handle daily response from DM ──────────────────────────────────────────
 
-async function handleDailyResponse(userId, text) {
+async function handleDailyResponse(userId, text, structured) {
   var todayStr = oggi();
   var sd = db.getStandupCache();
   if (sd.oggi !== todayStr) return false;
@@ -137,6 +137,31 @@ async function handleDailyResponse(userId, text) {
 
   var standupInAttesa = getStandupInAttesa();
   standupInAttesa.delete(userId);
+
+  // Save permanently to standup_entries
+  try {
+    var dbClient = require('../services/db/client');
+    var supabase = dbClient.getClient();
+    if (supabase) {
+      var entry = {
+        slack_user_id: userId,
+        date: todayStr,
+        raw_text: text,
+        source: structured ? 'modal' : 'dm',
+      };
+      if (structured) {
+        entry.ieri_tasks = structured.ieri || [];
+        entry.oggi_tasks = structured.oggi || [];
+        entry.blocchi = structured.blocchi || null;
+        entry.total_hours_ieri = structured.totalIeri || 0;
+        entry.total_hours_oggi = structured.totalOggi || 0;
+      }
+      await supabase.from('standup_entries').upsert(entry, { onConflict: 'slack_user_id,date' }).catch(function() {
+        // If upsert fails (no unique constraint), just insert
+        supabase.from('standup_entries').insert(entry).catch(function() {});
+      });
+    }
+  } catch(e) { logger.debug('[DAILY-V2] Save entry error:', e.message); }
 
   logger.info('[DAILY-V2] Risposta ricevuta da:', userId);
   return true;
