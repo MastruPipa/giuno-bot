@@ -586,6 +586,28 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (text === 'test-daily' || text === 'testdaily') {
+    var dailyStandupTest = require('./dailyStandupV2');
+    var { getUtenti: getUtentiTest } = require('../services/slackService');
+    var utentiTest = await getUtentiTest();
+    var meTest = utentiTest.find(function(u) { return u.id === command.user_id; });
+    var nomeTest = meTest ? meTest.name.split(' ')[0] : 'Test';
+    try {
+      standupInAttesa.add(command.user_id);
+      await app.client.chat.postMessage({
+        channel: command.user_id,
+        text: 'Ciao ' + nomeTest + ', è il momento del daily!',
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nomeTest + '*, è il momento del daily!' } },
+          { type: 'context', elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Il recap esce alle 11:30.' }] },
+          { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '✏️ Compila daily', emoji: true }, style: 'primary', action_id: 'open_daily_modal' }] },
+        ],
+      });
+      await respond({ text: 'DM daily inviato!', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: 'Errore: ' + e.message, response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (text === 'chi sono' || text === 'chisono') {
     try {
       var myRole = await getUserRole(command.user_id);
