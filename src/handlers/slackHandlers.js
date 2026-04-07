@@ -893,9 +893,32 @@ app.view('daily_standup_submit', async function(args) {
   formattedText = formattedText.trim();
 
   if (formattedText) {
-    // Save using the existing handler
+    // Build structured data for permanent storage
+    var structured = {
+      ieri: ieriTasks.map(function(t, idx) {
+        var oreKey = 'ieri_ore_' + (idx + 1);
+        var minKey = 'ieri_min_' + (idx + 1);
+        var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? parseInt(values[oreKey].ore_select.selected_option.value) : 0;
+        var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? parseInt(values[minKey].min_select.selected_option.value) : 0;
+        return { task: t.split(' (')[0], hours: ore, minutes: min };
+      }),
+      oggi: oggiTasks.map(function(t, idx) {
+        var oreKey = 'oggi_ore_' + (idx + 1);
+        var minKey = 'oggi_min_' + (idx + 1);
+        var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? parseInt(values[oreKey].ore_select.selected_option.value) : 0;
+        var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? parseInt(values[minKey].min_select.selected_option.value) : 0;
+        return { task: t.split(' (')[0], hours: ore, minutes: min };
+      }),
+      blocchi: blocchi || null,
+      totalIeri: 0,
+      totalOggi: 0,
+    };
+    structured.ieri.forEach(function(t) { structured.totalIeri += t.hours + t.minutes / 60; });
+    structured.oggi.forEach(function(t) { structured.totalOggi += t.hours + t.minutes / 60; });
+
+    // Save using the existing handler with structured data
     var dailyStandup = require('./dailyStandupV2');
-    await dailyStandup.handleDailyResponse(userId, formattedText);
+    await dailyStandup.handleDailyResponse(userId, formattedText, structured);
 
     // Confirm in DM
     await app.client.chat.postMessage({
