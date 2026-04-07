@@ -164,6 +164,53 @@ async function handleDailyResponse(userId, text, structured) {
   } catch(e) { logger.debug('[DAILY-V2] Save entry error:', e.message); }
 
   logger.info('[DAILY-V2] Risposta ricevuta da:', userId);
+
+  // Post individual response to #daily channel immediately (replaces the old workflow bot)
+  try {
+    var { formatPerSlack } = require('../utils/slackFormat');
+    var userInfo = null;
+    try { userInfo = await app.client.users.info({ user: userId }); } catch(e) { /* ignore */ }
+    var userName = userInfo && userInfo.user ? (userInfo.user.real_name || userInfo.user.name) : userId;
+
+    var dailyMsg = '*Daily di <@' + userId + '>*\n\n';
+    if (structured && structured.ieri && structured.ieri.length > 0) {
+      dailyMsg += '*Cosa hai fatto ieri?*\n';
+      structured.ieri.forEach(function(t) {
+        dailyMsg += t.task;
+        if (t.hours || t.minutes) dailyMsg += ' ' + (t.hours ? t.hours + 'h' : '') + (t.minutes ? t.minutes + 'min' : '');
+        dailyMsg += '\n';
+      });
+      dailyMsg += '\n';
+    }
+    if (structured && structured.oggi && structured.oggi.length > 0) {
+      dailyMsg += '*Cosa farai oggi?*\n';
+      structured.oggi.forEach(function(t) {
+        dailyMsg += t.task;
+        if (t.hours || t.minutes) dailyMsg += ' ' + (t.hours ? t.hours + 'h' : '') + (t.minutes ? t.minutes + 'min' : '');
+        dailyMsg += '\n';
+      });
+      dailyMsg += '\n';
+    } else if (!structured) {
+      // Text-based response — post as-is
+      dailyMsg += text + '\n\n';
+    }
+    if (structured && structured.blocchi) {
+      dailyMsg += '*Qualcosa ti blocca?*\n' + structured.blocchi + '\n';
+    }
+
+    try {
+      await app.client.conversations.join({ channel: DAILY_CHANNEL_ID });
+    } catch(e) { /* already joined */ }
+
+    await app.client.chat.postMessage({
+      channel: DAILY_CHANNEL_ID,
+      text: formatPerSlack(dailyMsg.trim()),
+      unfurl_links: false,
+    });
+  } catch(e) {
+    logger.warn('[DAILY-V2] Errore post in #daily:', e.message);
+  }
+
   return true;
 }
 
