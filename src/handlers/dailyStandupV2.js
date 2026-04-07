@@ -53,15 +53,29 @@ async function sendDailyRequests() {
       if (!getPrefs(utente.id).standup_enabled) continue;
       try {
         standupInAttesa.add(utente.id);
+        var nome = utente.name.split(' ')[0];
         await app.client.chat.postMessage({
           channel: utente.id,
-          text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Daily standup time.\n\n' +
-            'Rispondi con:\n' +
-            '• *Ieri:* cosa hai fatto (con tempo dedicato)\n' +
-            '• *Oggi:* cosa farai (con tempo stimato)\n' +
-            '• *Blocchi:* se hai bisogno di aiuto\n\n' +
-            '_Esempio: "Ieri: 4h design Aitho, 2h revisione deck. Oggi: 3h mockup nuovo sito, 2h call cliente. Nessun blocco."_\n' +
-            '_Il riepilogo uscirà alle 11:30 in #daily._',
+          text: 'Ciao ' + nome + ', è il momento del daily!',
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*, è il momento del daily!' },
+            },
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Il recap esce alle 11:30.' }],
+            },
+            {
+              type: 'actions',
+              elements: [{
+                type: 'button',
+                text: { type: 'plain_text', text: '✏️ Compila daily', emoji: true },
+                style: 'primary',
+                action_id: 'open_daily_modal',
+              }],
+            },
+          ],
         });
         inviati++;
       } catch(e) {
