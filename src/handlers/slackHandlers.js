@@ -774,6 +774,140 @@ app.event('team_join', async function(args) {
 
 // ─── reaction_added (feedback) ────────────────────────────────────────────────
 
+// ─── Daily Standup Modal ─────────────────────────────────────────────────────
+
+app.action('open_daily_modal', async function(args) {
+  var body = args.body;
+  var ack = args.ack;
+  await ack();
+
+  // Build task blocks for the modal
+  function taskBlock(section, num, optional) {
+    var prefix = section + '_task_' + num;
+    var blocks = [
+      {
+        type: 'input', block_id: prefix, optional: !!optional,
+        label: { type: 'plain_text', text: 'Task ' + num },
+        element: { type: 'plain_text_input', action_id: 'task_input',
+          placeholder: { type: 'plain_text', text: 'Es. Design logo Aitho' } },
+      },
+      {
+        type: 'input', block_id: section + '_ore_' + num, optional: true,
+        label: { type: 'plain_text', text: 'Ore' },
+        element: {
+          type: 'static_select', action_id: 'ore_select',
+          placeholder: { type: 'plain_text', text: 'Ore' },
+          options: [0,1,2,3,4,5,6,7,8].map(function(h) {
+            return { text: { type: 'plain_text', text: h + 'h' }, value: String(h) };
+          }),
+        },
+      },
+      {
+        type: 'input', block_id: section + '_min_' + num, optional: true,
+        label: { type: 'plain_text', text: 'Minuti' },
+        element: {
+          type: 'static_select', action_id: 'min_select',
+          placeholder: { type: 'plain_text', text: 'Min' },
+          options: [0,15,30,45].map(function(m) {
+            return { text: { type: 'plain_text', text: m + 'min' }, value: String(m) };
+          }),
+        },
+      },
+    ];
+    return blocks;
+  }
+
+  var modalBlocks = [
+    { type: 'header', text: { type: 'plain_text', text: '📋 Cosa hai fatto ieri?' } },
+  ];
+  modalBlocks = modalBlocks.concat(taskBlock('ieri', 1, false));
+  modalBlocks = modalBlocks.concat(taskBlock('ieri', 2, true));
+  modalBlocks = modalBlocks.concat(taskBlock('ieri', 3, true));
+  modalBlocks.push({ type: 'divider' });
+  modalBlocks.push({ type: 'header', text: { type: 'plain_text', text: '🎯 Cosa farai oggi?' } });
+  modalBlocks = modalBlocks.concat(taskBlock('oggi', 1, false));
+  modalBlocks = modalBlocks.concat(taskBlock('oggi', 2, true));
+  modalBlocks = modalBlocks.concat(taskBlock('oggi', 3, true));
+  modalBlocks.push({ type: 'divider' });
+  modalBlocks.push({
+    type: 'input', block_id: 'blocchi', optional: true,
+    label: { type: 'plain_text', text: '🚧 Qualcosa ti blocca?' },
+    element: { type: 'plain_text_input', action_id: 'blocchi_input', multiline: true,
+      placeholder: { type: 'plain_text', text: 'Blocchi o aiuto necessario' } },
+  });
+
+  try {
+    await app.client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'daily_standup_submit',
+        title: { type: 'plain_text', text: 'Daily Standup' },
+        submit: { type: 'plain_text', text: 'Invia' },
+        close: { type: 'plain_text', text: 'Chiudi' },
+        blocks: modalBlocks,
+      },
+    });
+  } catch(e) {
+    logger.error('[DAILY-MODAL] Errore apertura modale:', e.message);
+  }
+});
+
+app.view('daily_standup_submit', async function(args) {
+  var view = args.view;
+  var ack = args.ack;
+  var userId = args.body.user.id;
+  await ack();
+
+  var values = view.state.values;
+
+  // Extract tasks with time
+  function extractTasks(section) {
+    var tasks = [];
+    for (var i = 1; i <= 3; i++) {
+      var taskKey = section + '_task_' + i;
+      var oreKey = section + '_ore_' + i;
+      var minKey = section + '_min_' + i;
+      var taskVal = values[taskKey] && values[taskKey].task_input ? values[taskKey].task_input.value : null;
+      if (!taskVal) continue;
+      var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? values[oreKey].ore_select.selected_option.value : '0';
+      var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? values[minKey].min_select.selected_option.value : '0';
+      var timeStr = '';
+      if (ore !== '0' || min !== '0') {
+        timeStr = ' (' + (ore !== '0' ? ore + 'h' : '') + (min !== '0' ? min + 'min' : '') + ')';
+      }
+      tasks.push(taskVal + timeStr);
+    }
+    return tasks;
+  }
+
+  var ieriTasks = extractTasks('ieri');
+  var oggiTasks = extractTasks('oggi');
+  var blocchi = values.blocchi && values.blocchi.blocchi_input ? values.blocchi.blocchi_input.value : null;
+
+  // Format the response
+  var formattedText = '';
+  if (ieriTasks.length > 0) formattedText += '*Ieri:* ' + ieriTasks.join(', ') + '\n';
+  if (oggiTasks.length > 0) formattedText += '*Oggi:* ' + oggiTasks.join(', ') + '\n';
+  if (blocchi) formattedText += '*Blocchi:* ' + blocchi;
+  formattedText = formattedText.trim();
+
+  if (formattedText) {
+    // Save using the existing handler
+    var dailyStandup = require('./dailyStandupV2');
+    await dailyStandup.handleDailyResponse(userId, formattedText);
+
+    // Confirm in DM
+    await app.client.chat.postMessage({
+      channel: userId,
+      text: 'Daily registrato! ✅',
+    });
+    logger.info('[DAILY-MODAL] Risposta ricevuta da:', userId);
+  }
+});
+
+// ─── reaction_added (feedback) ────────────────────────────────────────────────
+
 app.event('reaction_added', async function(args) {
   var event = args.event;
   if (!event.item || event.item.type !== 'message') return;
