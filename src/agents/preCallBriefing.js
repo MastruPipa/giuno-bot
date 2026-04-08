@@ -36,7 +36,12 @@ async function buildBriefing(userId, event) {
   for (var wi = 0; wi < Math.min(searchTerms.length, 5); wi++) {
     try {
       var leads = await db.searchLeads({ company_name: searchTerms[wi], limit: 1 });
-      if (leads && leads.length > 0) { rawData.crmData = leads[0]; break; }
+      if (leads && leads.length > 0) {
+        // Only pass useful CRM fields, not technical status
+        var l = leads[0];
+        rawData.crmData = { company: l.company_name, services: l.services || null, contact: l.contact_name || null };
+        break;
+      }
     } catch(e) { /* ignore */ }
   }
 
@@ -82,16 +87,13 @@ async function buildBriefing(userId, event) {
     var llmClient = new Anthropic();
     var res = await llmClient.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      system: 'Genera un briefing pre-call per un membro di un\'agenzia di marketing. Max 8 righe.\n' +
-        'Includi SOLO info utili per prepararsi alla call:\n' +
-        '• Scopo probabile della call (dal titolo)\n' +
-        '• Stato progetto/cliente se disponibile (1-2 righe)\n' +
-        '• Cosa potrebbe essere discusso\n' +
-        '• Partecipanti esterni se presenti\n' +
-        'NON includere: info tecniche sul bot, errori interni, memorie di debug.\n' +
-        'NON mostrare email @kataniastudio — sono colleghi, li conoscono.\n' +
-        'Formato Slack: *grassetto* per punti chiave. MAI ** o ##. Conciso e operativo.',
+      max_tokens: 200,
+      system: 'Briefing pre-call per agenzia marketing. Max 5 righe, tono naturale.\n' +
+        'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +
+        'Non usare CAPS. Non dire "BRIEFING CALL". Non mostrare status CRM tecnici ("lost", "won").\n' +
+        'Non inventare valori in € se non sono nei dati.\n' +
+        'Se c\'è un partecipante esterno, metti solo il nome (no email gmail/hotmail).\n' +
+        'Formato: frasi normali, *grassetto* solo per nomi. Conciso.',
       messages: [{ role: 'user', content: JSON.stringify(rawData).substring(0, 2000) }],
     });
     var briefingText = res.content[0].text.trim();
