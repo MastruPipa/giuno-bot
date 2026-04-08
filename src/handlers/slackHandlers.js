@@ -798,107 +798,172 @@ app.event('team_join', async function(args) {
 
 // ─── Daily Standup Modal ─────────────────────────────────────────────────────
 
-app.action('open_daily_modal', async function(args) {
-  var body = args.body;
-  var ack = args.ack;
-  await ack();
+var DURATA_OPTIONS = [
+  { text: { type: 'plain_text', text: '15min' }, value: '0.25' },
+  { text: { type: 'plain_text', text: '30min' }, value: '0.5' },
+  { text: { type: 'plain_text', text: '45min' }, value: '0.75' },
+  { text: { type: 'plain_text', text: '1h' }, value: '1' },
+  { text: { type: 'plain_text', text: '1h 30min' }, value: '1.5' },
+  { text: { type: 'plain_text', text: '2h' }, value: '2' },
+  { text: { type: 'plain_text', text: '2h 30min' }, value: '2.5' },
+  { text: { type: 'plain_text', text: '3h' }, value: '3' },
+  { text: { type: 'plain_text', text: '3h 30min' }, value: '3.5' },
+  { text: { type: 'plain_text', text: '4h' }, value: '4' },
+  { text: { type: 'plain_text', text: '5h' }, value: '5' },
+  { text: { type: 'plain_text', text: '6h' }, value: '6' },
+  { text: { type: 'plain_text', text: '7h' }, value: '7' },
+  { text: { type: 'plain_text', text: '8h' }, value: '8' },
+];
 
-  // Build task blocks for the modal
-  function taskBlock(section, num, optional) {
-    var prefix = section + '_task_' + num;
-    var blocks = [
-      {
-        type: 'input', block_id: prefix, optional: !!optional,
-        label: { type: 'plain_text', text: 'Task ' + num },
-        element: { type: 'plain_text_input', action_id: 'task_input',
-          placeholder: { type: 'plain_text', text: 'Es. Design logo Aitho' } },
-      },
-      {
-        type: 'input', block_id: section + '_ore_' + num, optional: true,
-        label: { type: 'plain_text', text: 'Ore' },
-        element: {
-          type: 'static_select', action_id: 'ore_select',
-          placeholder: { type: 'plain_text', text: 'Ore' },
-          options: [0,1,2,3,4,5,6,7,8].map(function(h) {
-            return { text: { type: 'plain_text', text: h + 'h' }, value: String(h) };
-          }),
-        },
-      },
-      {
-        type: 'input', block_id: section + '_min_' + num, optional: true,
-        label: { type: 'plain_text', text: 'Minuti' },
-        element: {
-          type: 'static_select', action_id: 'min_select',
-          placeholder: { type: 'plain_text', text: 'Min' },
-          options: [0,15,30,45].map(function(m) {
-            return { text: { type: 'plain_text', text: m + 'min' }, value: String(m) };
-          }),
-        },
-      },
-    ];
-    return blocks;
+function buildDailyModalBlocks(ieriCount, oggiCount) {
+  var blocks = [];
+
+  // ─── IERI ─────────────────────────────────────────────────────────────
+  blocks.push({ type: 'header', text: { type: 'plain_text', text: '📋  Ieri' } });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Cosa hai fatto ieri? Aggiungi task e tempo dedicato.' }] });
+
+  for (var i = 1; i <= ieriCount; i++) {
+    blocks.push({
+      type: 'input', block_id: 'ieri_task_' + i, optional: i > 1,
+      label: { type: 'plain_text', text: 'Task ' + i },
+      element: { type: 'plain_text_input', action_id: 'task_input',
+        placeholder: { type: 'plain_text', text: i === 1 ? 'Es. Design logo Aitho' : 'Altra attività...' } },
+    });
+    blocks.push({
+      type: 'input', block_id: 'ieri_durata_' + i, optional: true,
+      label: { type: 'plain_text', text: '⏱ Durata' },
+      element: { type: 'static_select', action_id: 'durata_select',
+        placeholder: { type: 'plain_text', text: 'Tempo' },
+        options: DURATA_OPTIONS },
+    });
   }
 
-  var modalBlocks = [
-    { type: 'header', text: { type: 'plain_text', text: '📋 Cosa hai fatto ieri?' } },
-  ];
-  modalBlocks = modalBlocks.concat(taskBlock('ieri', 1, false));
-  modalBlocks = modalBlocks.concat(taskBlock('ieri', 2, true));
-  modalBlocks = modalBlocks.concat(taskBlock('ieri', 3, true));
-  modalBlocks.push({ type: 'divider' });
-  modalBlocks.push({ type: 'header', text: { type: 'plain_text', text: '🎯 Cosa farai oggi?' } });
-  modalBlocks = modalBlocks.concat(taskBlock('oggi', 1, false));
-  modalBlocks = modalBlocks.concat(taskBlock('oggi', 2, true));
-  modalBlocks = modalBlocks.concat(taskBlock('oggi', 3, true));
-  modalBlocks.push({ type: 'divider' });
-  modalBlocks.push({
+  // Add task button for ieri
+  if (ieriCount < 6) {
+    blocks.push({
+      type: 'actions', block_id: 'ieri_add_action',
+      elements: [{ type: 'button', text: { type: 'plain_text', text: '+ Aggiungi task ieri' },
+        action_id: 'add_task_ieri', value: String(ieriCount) }],
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // ─── OGGI ─────────────────────────────────────────────────────────────
+  blocks.push({ type: 'header', text: { type: 'plain_text', text: '🎯  Oggi' } });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Cosa farai oggi? Aggiungi task e tempo stimato.' }] });
+
+  for (var j = 1; j <= oggiCount; j++) {
+    blocks.push({
+      type: 'input', block_id: 'oggi_task_' + j, optional: j > 1,
+      label: { type: 'plain_text', text: 'Task ' + j },
+      element: { type: 'plain_text_input', action_id: 'task_input',
+        placeholder: { type: 'plain_text', text: j === 1 ? 'Es. Mockup sito cliente' : 'Altra attività...' } },
+    });
+    blocks.push({
+      type: 'input', block_id: 'oggi_durata_' + j, optional: true,
+      label: { type: 'plain_text', text: '⏱ Durata' },
+      element: { type: 'static_select', action_id: 'durata_select',
+        placeholder: { type: 'plain_text', text: 'Tempo' },
+        options: DURATA_OPTIONS },
+    });
+  }
+
+  // Add task button for oggi
+  if (oggiCount < 6) {
+    blocks.push({
+      type: 'actions', block_id: 'oggi_add_action',
+      elements: [{ type: 'button', text: { type: 'plain_text', text: '+ Aggiungi task oggi' },
+        action_id: 'add_task_oggi', value: String(oggiCount) }],
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // ─── BLOCCHI ──────────────────────────────────────────────────────────
+  blocks.push({
     type: 'input', block_id: 'blocchi', optional: true,
-    label: { type: 'plain_text', text: '🚧 Qualcosa ti blocca?' },
+    label: { type: 'plain_text', text: '🚧  Blocchi o problemi' },
     element: { type: 'plain_text_input', action_id: 'blocchi_input', multiline: true,
-      placeholder: { type: 'plain_text', text: 'Blocchi o aiuto necessario' } },
+      placeholder: { type: 'plain_text', text: 'Qualcosa ti rallenta o ti blocca?' } },
   });
 
+  return blocks;
+}
+
+app.action('open_daily_modal', async function(args) {
+  await args.ack();
   try {
     await app.client.views.open({
-      trigger_id: body.trigger_id,
+      trigger_id: args.body.trigger_id,
       view: {
-        type: 'modal',
-        callback_id: 'daily_standup_submit',
+        type: 'modal', callback_id: 'daily_standup_submit',
+        private_metadata: JSON.stringify({ ieri: 2, oggi: 2 }),
         title: { type: 'plain_text', text: 'Daily Standup' },
-        submit: { type: 'plain_text', text: 'Invia' },
+        submit: { type: 'plain_text', text: '✅ Invia' },
         close: { type: 'plain_text', text: 'Chiudi' },
-        blocks: modalBlocks,
+        blocks: buildDailyModalBlocks(2, 2),
       },
     });
-  } catch(e) {
-    logger.error('[DAILY-MODAL] Errore apertura modale:', e.message);
-  }
+  } catch(e) { logger.error('[DAILY-MODAL] Errore apertura:', e.message); }
+});
+
+// "Aggiungi task" buttons — update the modal with more rows
+app.action('add_task_ieri', async function(args) {
+  await args.ack();
+  var meta = JSON.parse(args.body.view.private_metadata || '{}');
+  meta.ieri = Math.min((meta.ieri || 2) + 1, 6);
+  try {
+    await app.client.views.update({
+      view_id: args.body.view.id,
+      view: {
+        type: 'modal', callback_id: 'daily_standup_submit',
+        private_metadata: JSON.stringify(meta),
+        title: { type: 'plain_text', text: 'Daily Standup' },
+        submit: { type: 'plain_text', text: '✅ Invia' },
+        close: { type: 'plain_text', text: 'Chiudi' },
+        blocks: buildDailyModalBlocks(meta.ieri, meta.oggi || 2),
+      },
+    });
+  } catch(e) { logger.error('[DAILY-MODAL] Errore aggiungi ieri:', e.message); }
+});
+
+app.action('add_task_oggi', async function(args) {
+  await args.ack();
+  var meta = JSON.parse(args.body.view.private_metadata || '{}');
+  meta.oggi = Math.min((meta.oggi || 2) + 1, 6);
+  try {
+    await app.client.views.update({
+      view_id: args.body.view.id,
+      view: {
+        type: 'modal', callback_id: 'daily_standup_submit',
+        private_metadata: JSON.stringify(meta),
+        title: { type: 'plain_text', text: 'Daily Standup' },
+        submit: { type: 'plain_text', text: '✅ Invia' },
+        close: { type: 'plain_text', text: 'Chiudi' },
+        blocks: buildDailyModalBlocks(meta.ieri || 2, meta.oggi),
+      },
+    });
+  } catch(e) { logger.error('[DAILY-MODAL] Errore aggiungi oggi:', e.message); }
 });
 
 app.view('daily_standup_submit', async function(args) {
   var view = args.view;
-  var ack = args.ack;
+  await args.ack();
   var userId = args.body.user.id;
-  await ack();
-
   var values = view.state.values;
 
-  // Extract tasks with time
   function extractTasks(section) {
     var tasks = [];
-    for (var i = 1; i <= 3; i++) {
+    for (var i = 1; i <= 6; i++) {
       var taskKey = section + '_task_' + i;
-      var oreKey = section + '_ore_' + i;
-      var minKey = section + '_min_' + i;
+      var durKey = section + '_durata_' + i;
       var taskVal = values[taskKey] && values[taskKey].task_input ? values[taskKey].task_input.value : null;
       if (!taskVal) continue;
-      var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? values[oreKey].ore_select.selected_option.value : '0';
-      var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? values[minKey].min_select.selected_option.value : '0';
-      var timeStr = '';
-      if (ore !== '0' || min !== '0') {
-        timeStr = ' (' + (ore !== '0' ? ore + 'h' : '') + (min !== '0' ? min + 'min' : '') + ')';
-      }
-      tasks.push(taskVal + timeStr);
+      var durVal = values[durKey] && values[durKey].durata_select && values[durKey].durata_select.selected_option ? values[durKey].durata_select.selected_option : null;
+      var hours = durVal ? parseFloat(durVal.value) : 0;
+      var durLabel = durVal ? durVal.text.text : '';
+      tasks.push({ task: taskVal, hours: hours, label: durLabel });
     }
     return tasks;
   }
@@ -907,47 +972,39 @@ app.view('daily_standup_submit', async function(args) {
   var oggiTasks = extractTasks('oggi');
   var blocchi = values.blocchi && values.blocchi.blocchi_input ? values.blocchi.blocchi_input.value : null;
 
-  // Format the response
+  var totalIeri = 0; ieriTasks.forEach(function(t) { totalIeri += t.hours; });
+  var totalOggi = 0; oggiTasks.forEach(function(t) { totalOggi += t.hours; });
+
+  // Format text for recap
   var formattedText = '';
-  if (ieriTasks.length > 0) formattedText += '*Ieri:* ' + ieriTasks.join(', ') + '\n';
-  if (oggiTasks.length > 0) formattedText += '*Oggi:* ' + oggiTasks.join(', ') + '\n';
+  if (ieriTasks.length > 0) {
+    formattedText += '*Ieri:* ' + ieriTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
+  }
+  if (oggiTasks.length > 0) {
+    formattedText += '*Oggi:* ' + oggiTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
+  }
   if (blocchi) formattedText += '*Blocchi:* ' + blocchi;
   formattedText = formattedText.trim();
 
   if (formattedText) {
-    // Build structured data for permanent storage
     var structured = {
-      ieri: ieriTasks.map(function(t, idx) {
-        var oreKey = 'ieri_ore_' + (idx + 1);
-        var minKey = 'ieri_min_' + (idx + 1);
-        var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? parseInt(values[oreKey].ore_select.selected_option.value) : 0;
-        var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? parseInt(values[minKey].min_select.selected_option.value) : 0;
-        return { task: t.split(' (')[0], hours: ore, minutes: min };
-      }),
-      oggi: oggiTasks.map(function(t, idx) {
-        var oreKey = 'oggi_ore_' + (idx + 1);
-        var minKey = 'oggi_min_' + (idx + 1);
-        var ore = values[oreKey] && values[oreKey].ore_select && values[oreKey].ore_select.selected_option ? parseInt(values[oreKey].ore_select.selected_option.value) : 0;
-        var min = values[minKey] && values[minKey].min_select && values[minKey].min_select.selected_option ? parseInt(values[minKey].min_select.selected_option.value) : 0;
-        return { task: t.split(' (')[0], hours: ore, minutes: min };
-      }),
+      ieri: ieriTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
+      oggi: oggiTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
       blocchi: blocchi || null,
-      totalIeri: 0,
-      totalOggi: 0,
+      totalIeri: totalIeri,
+      totalOggi: totalOggi,
     };
-    structured.ieri.forEach(function(t) { structured.totalIeri += t.hours + t.minutes / 60; });
-    structured.oggi.forEach(function(t) { structured.totalOggi += t.hours + t.minutes / 60; });
 
-    // Save using the existing handler with structured data
     var dailyStandup = require('./dailyStandupV2');
     await dailyStandup.handleDailyResponse(userId, formattedText, structured);
 
-    // Confirm in DM
-    await app.client.chat.postMessage({
-      channel: userId,
-      text: 'Daily registrato! ✅',
-    });
-    logger.info('[DAILY-MODAL] Risposta ricevuta da:', userId);
+    // Confirm with total hours
+    var confirmMsg = 'Daily registrato! ✅';
+    if (totalIeri > 0 || totalOggi > 0) {
+      confirmMsg += '\n_Ieri: ' + totalIeri + 'h | Oggi: ' + totalOggi + 'h stimate_';
+    }
+    await app.client.chat.postMessage({ channel: userId, text: confirmMsg });
+    logger.info('[DAILY-MODAL] Risposta da', userId, '| Ieri:', totalIeri + 'h | Oggi:', totalOggi + 'h');
   }
 });
 
