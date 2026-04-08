@@ -6,7 +6,7 @@
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
-var { getGmailPerUtente, getUserTokens } = require('../services/googleAuthService');
+var { getGmailPerUtente, getCalendarPerUtente, getUserTokens } = require('../services/googleAuthService');
 var { withTimeout } = require('../utils/timeout');
 
 // Patterns that identify meeting recap emails
@@ -132,6 +132,116 @@ async function scanMeetingRecaps() {
         }
       } catch(e) {
         logger.debug('[RECAP-SCAN] Errore per user', userId + ':', e.message);
+      }
+    }
+
+    // ─── PHASE 2: Scan Calendar events for Gemini meeting notes ────────────
+    for (var ci = 0; ci < userIds.length; ci++) {
+      var calUserId = userIds[ci];
+      var cal = getCalendarPerUtente(calUserId);
+      if (!cal) continue;
+
+      try {
+        // Get events from last 24h that have ended
+        var dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        var nowISO = new Date().toISOString();
+        var calRes = await withTimeout(
+          cal.events.list({
+            calendarId: 'primary',
+            timeMin: dayAgo,
+            timeMax: nowISO,
+            singleEvents: true,
+            orderBy: 'startTime',
+            maxResults: 10,
+          }),
+          8000, 'recap_cal_list'
+        );
+
+        var calEvents = (calRes.data.items || []);
+        for (var ei = 0; ei < calEvents.length; ei++) {
+          var calEvent = calEvents[ei];
+          var eventId = calEvent.id;
+
+          // Check if already processed
+          var existingCal = db.searchKB('cal_recap_' + eventId);
+          if (existingCal && existingCal.some(function(k) { return (k.tags || []).indexOf('cal_event_id:' + eventId) !== -1; })) continue;
+
+          // Look for Gemini notes in: description, attachments, conferenceData.notes
+          var notesContent = '';
+          var eventTitle = calEvent.summary || 'Meeting';
+
+          // 1. Check description for notes
+          if (calEvent.description && calEvent.description.length > 50) {
+            notesContent = calEvent.description;
+          }
+
+          // 2. Check attachments (Gemini meeting notes appear as Drive attachments)
+          if (calEvent.attachments && calEvent.attachments.length > 0) {
+            for (var ai = 0; ai < calEvent.attachments.length; ai++) {
+              var att = calEvent.attachments[ai];
+              if (/appunti|notes|recap|meeting/i.test(att.title || '')) {
+                // Try to read the Google Doc attachment
+                try {
+                  var { getDocsPerUtente } = require('../services/googleAuthService');
+                  var docs = getDocsPerUtente(calUserId);
+                  if (docs && att.fileId) {
+                    var { extractDocText } = require('../tools/driveTools');
+                    var docRes = await withTimeout(
+                      docs.documents.get({ documentId: att.fileId }),
+                      8000, 'recap_doc_get'
+                    );
+                    var docText = extractDocText(docRes.data.body.content);
+                    if (docText && docText.length > 50) {
+                      notesContent = docText.substring(0, 3000);
+                    }
+                  }
+                } catch(e) {
+                  logger.debug('[RECAP-SCAN] Errore lettura doc allegato:', e.message);
+                }
+              }
+            }
+          }
+
+          if (!notesContent || notesContent.length < 50) continue;
+
+          // Summarize with LLM
+          try {
+            var Anthropic = require('@anthropic-ai/sdk');
+            var client = new Anthropic();
+            var summaryRes = await client.messages.create({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 300,
+              system: 'Riassumi questi appunti di meeting. Estrai: partecipanti, decisioni, action items, prossimi step, scadenze. Max 8 righe. Se non è un vero recap, rispondi "SKIP".',
+              messages: [{ role: 'user', content: 'Meeting: ' + eventTitle + '\n\n' + notesContent.substring(0, 2500) }],
+            });
+
+            var summary = summaryRes.content[0].text.trim();
+            if (summary === 'SKIP' || summary.startsWith('SKIP')) continue;
+
+            var kbContent = '[RECAP MEETING] ' + eventTitle + ' (' + (calEvent.start.dateTime || calEvent.start.date || '') + ')\n' + summary;
+            var tags = ['tipo:meeting_recap', 'cal_event_id:' + eventId, 'fonte:calendar'];
+
+            // Extract client name from title
+            var clientMatch = eventTitle.match(/(?:con|×|x|per|@|<>)\s*(\w+)/i);
+            if (clientMatch) tags.push('cliente:' + clientMatch[1].toLowerCase());
+
+            db.addKBEntry(kbContent, tags, calUserId, {
+              confidenceTier: 'drive_indexed',
+              sourceType: 'calendar_recap',
+            });
+
+            db.addMemory(calUserId, kbContent.substring(0, 300), ['meeting_recap', 'data:' + new Date().toISOString().slice(0, 10)], {
+              memory_type: 'episodic', confidence_score: 0.8,
+            });
+
+            totalSaved++;
+            logger.info('[RECAP-SCAN] Salvato recap calendar:', eventTitle.substring(0, 50));
+          } catch(e) {
+            logger.debug('[RECAP-SCAN] Errore LLM recap cal:', e.message);
+          }
+        }
+      } catch(e) {
+        logger.debug('[RECAP-SCAN] Errore calendar per user', calUserId + ':', e.message);
       }
     }
 
