@@ -81,9 +81,11 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
         8000, 'briefing_calendar'
       );
       var eventi = (res.data.items || []).filter(function(e) {
-        if (!e.recurringEventId) return true;
         var t = (e.summary || '').toLowerCase();
-        return !TITOLI_RIPETITIVI.some(function(p) { return t.includes(p); });
+        if (e.recurringEventId && TITOLI_RIPETITIVI.some(function(p) { return t.includes(p); })) return false;
+        // Skip all-day events that are just locations
+        if (!e.start.dateTime && /office|home|cowork|ufficio|remoto|remote|sede|location|smartwork/i.test(t)) return false;
+        return true;
       });
       if (eventi.length > 0) {
         var s = '*Agenda di oggi:*\n';
@@ -116,15 +118,23 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
           );
           var h = msg.data.payload.headers;
           function getHdr(hs, n) { return (hs.find(function(x) { return x.name === n; }) || {}).value || ''; }
-          return { subject: getHdr(h, 'Subject'), from: getHdr(h, 'From') };
+          return { subject: getHdr(h, 'Subject'), from: getHdr(h, 'From').split('<')[0].trim() };
         }));
-        var s = '*Mail importanti non lette:*\n';
-        emails.forEach(function(e) { s += '• "' + e.subject + '" da ' + e.from.split('<')[0].trim() + '\n'; });
-        parti.push(s.trim());
+        // Prose format instead of bullet points
+        if (emails.length === 1) {
+          parti.push('Hai una mail importante non letta da *' + emails[0].from + '* riguardo "' + emails[0].subject + '".');
+        } else {
+          var emailProse = 'Hai ' + emails.length + ' mail importanti non lette: ';
+          emailProse += emails.map(function(e, i) {
+            var prefix = i === emails.length - 1 && i > 0 ? 'e ' : '';
+            return prefix + 'una da *' + e.from + '* su "' + e.subject + '"';
+          }).join(', ') + '.';
+          parti.push(emailProse);
+        }
       }
 
       var resWaiting = await withTimeout(
-        gm.users.messages.list({ userId: 'me', maxResults: 5, q: 'is:inbox -from:me newer_than:3d is:read' }),
+        gm.users.messages.list({ userId: 'me', maxResults: 5, q: 'is:inbox -from:me newer_than:3d is:read -from:noreply -from:notifications -from:newsletter' }),
         8000, 'briefing_gmail_waiting'
       );
       if (resWaiting.data.messages && resWaiting.data.messages.length > 0) {
@@ -137,9 +147,15 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
           function getHdr(hs, n) { return (hs.find(function(x) { return x.name === n; }) || {}).value || ''; }
           return { subject: getHdr(h, 'Subject'), from: getHdr(h, 'From').split('<')[0].trim() };
         }));
-        var s = '*Attendono risposta da te:*\n';
-        waiting.forEach(function(e) { s += '• "' + e.subject + '" — ' + e.from + '\n'; });
-        parti.push(s.trim());
+        // Prose format
+        if (waiting.length === 1) {
+          parti.push('*' + waiting[0].from + '* aspetta una tua risposta riguardo "' + waiting[0].subject + '".');
+        } else {
+          var waitProse = waiting.slice(0, 3).map(function(e) {
+            return '*' + e.from + '* su "' + e.subject + '"';
+          }).join(', ');
+          parti.push('Aspettano una tua risposta via email: ' + waitProse + '.');
+        }
       }
     } catch(e) { logger.error('[BRIEFING] Gmail error:', e.message); }
   }
@@ -163,12 +179,19 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
     }
   }
   if (senzaRisposta.length > 0) {
-    var s = '*Ti aspettano su Slack:*\n';
-    senzaRisposta.slice(0, 4).forEach(function(t) {
-      var link = '<https://slack.com/app_redirect?channel=' + t.channelId + '&message_ts=' + t.ts + '|#' + t.channel + '>';
-      s += '• ' + link + ': ' + t.testo + '…\n';
-    });
-    parti.push(s.trim());
+    // Prose format for Slack mentions
+    var slackItems = senzaRisposta.slice(0, 4);
+    if (slackItems.length === 1) {
+      var link1 = '<https://slack.com/app_redirect?channel=' + slackItems[0].channelId + '&message_ts=' + slackItems[0].ts + '|#' + slackItems[0].channel + '>';
+      parti.push('Su Slack, qualcuno ti ha taggato in ' + link1 + ' riguardo "' + slackItems[0].testo.substring(0, 60) + '" e non hai ancora risposto.');
+    } else {
+      var slackProse = 'Su Slack hai ' + slackItems.length + ' messaggi senza risposta: ';
+      slackProse += slackItems.map(function(t) {
+        var link = '<https://slack.com/app_redirect?channel=' + t.channelId + '&message_ts=' + t.ts + '|#' + t.channel + '>';
+        return 'in ' + link + ' riguardo "' + t.testo.substring(0, 40) + '"';
+      }).join(', ') + '.';
+      parti.push(slackProse);
+    }
   }
 
   // 4. Task dalla memoria
@@ -1176,8 +1199,8 @@ function scheduleCrons() {
   cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
   cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
-  // Proactive monitor — ogni 3 ore durante orario lavorativo
-  cron.schedule('0 10,13,16 * * 1-5', function() {
+  // Proactive monitor — 2x/giorno (mattina + pomeriggio)
+  cron.schedule('0 10,16 * * 1-5', function() {
     var { runProactiveScan } = require('../agents/proactiveMonitor');
     runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });

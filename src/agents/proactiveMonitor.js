@@ -9,6 +9,19 @@ var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app } = require('../services/slackService');
 var { formatPerSlack } = require('../utils/slackFormat');
 
+// Dedup: don't send the same alert twice in one day
+var _sentToday = {};
+var _sentDate = null;
+
+function wasAlertSentToday(userId, alertKey) {
+  var today = new Date().toISOString().slice(0, 10);
+  if (_sentDate !== today) { _sentToday = {}; _sentDate = today; }
+  var key = userId + ':' + alertKey;
+  if (_sentToday[key]) return true;
+  _sentToday[key] = true;
+  return false;
+}
+
 // ─── Alert checkers ─────────────────────────────────────────────────────────
 
 async function checkBudgetOverruns() {
@@ -192,6 +205,25 @@ async function runProactiveScan() {
 
     logger.info('[PROACTIVE] Trovati', allAlerts.length, 'alert.');
 
+    // Dedup: filter out alerts already sent today
+    allAlerts = allAlerts.filter(function(a) {
+      var alertKey = a.type + ':' + (a.project || a.lead || a.owner || 'unknown');
+      return !wasAlertSentToday(a.owner || 'admin', alertKey);
+    });
+
+    if (allAlerts.length === 0) {
+      logger.info('[PROACTIVE] Tutti gli alert già inviati oggi.');
+      return;
+    }
+
+    // Threshold: only send if there's at least 1 critical OR 3+ warnings
+    var criticalCount = allAlerts.filter(function(a) { return a.severity === 'critical'; }).length;
+    var warningCount = allAlerts.filter(function(a) { return a.severity === 'warning'; }).length;
+    if (criticalCount === 0 && warningCount < 3) {
+      logger.info('[PROACTIVE] Sotto soglia (' + warningCount + ' warning, 0 critical) — skip.');
+      return;
+    }
+
     // Group alerts by owner
     var byOwner = {};
     var adminAlerts = [];
@@ -200,7 +232,6 @@ async function runProactiveScan() {
         if (!byOwner[a.owner]) byOwner[a.owner] = [];
         byOwner[a.owner].push(a);
       }
-      // Admin always gets critical alerts
       if (a.severity === 'critical') adminAlerts.push(a);
     });
 
