@@ -117,6 +117,48 @@ async function buildHomeBlocks(userId) {
   blocks.push(context([dateStr + ' · Katania Studio']));
   blocks.push(divider());
 
+  // ── Chi è Giuno ────────────────────────────────────────────────────────
+  blocks.push(section(
+    'Giuno è l\'assistente interno di Katania Studio. Legge i canali Slack, le email, i file su Drive e il CRM per tenerti aggiornato su quello che succede in agenzia. Puoi chiedergli info su clienti, progetti, colleghi, documenti — o semplicemente parlargli come faresti con un collega.'
+  ));
+  blocks.push(divider());
+
+  // ── Stato agenzia (generato dal LLM, solo admin) ──────────────────────
+  if (userRole === 'admin' || userRole === 'finance') {
+    try {
+      var agencyData = {};
+
+      // Collect data for the snapshot
+      var leads = await db.searchLeads({ is_active: true, limit: 100 });
+      if (leads && leads.length > 0) {
+        var byStatus = {};
+        leads.forEach(function(l) { var s = l.status || 'unknown'; byStatus[s] = (byStatus[s] || 0) + 1; });
+        agencyData.pipeline = byStatus;
+        agencyData.totalLeads = leads.length;
+      }
+
+      var standup = getStandupStatus(userId);
+      agencyData.dailyStatus = standup;
+
+      // Generate a natural paragraph with Haiku
+      var Anthropic = require('@anthropic-ai/sdk');
+      var homeClient = new Anthropic();
+      var snapshotRes = await homeClient.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 150,
+        system: 'Scrivi 2-3 frasi sullo stato attuale dell\'agenzia basandoti sui dati. Tono: colloquiale, come un collega che ti aggiorna al volo. No elenchi, no bullet point, no titoli. Solo un paragrafo discorsivo. Se non ci sono dati significativi, scrivi una frase generica sul momento.',
+        messages: [{ role: 'user', content: 'Dati agenzia oggi:\n' + JSON.stringify(agencyData).substring(0, 500) }],
+      });
+      var snapshot = snapshotRes.content[0].text.trim();
+      if (snapshot && snapshot.length > 20) {
+        blocks.push(section('*Come va l\'agenzia*\n' + snapshot));
+        blocks.push(divider());
+      }
+    } catch(e) {
+      logger.debug('[APP-HOME] Snapshot error:', e.message);
+    }
+  }
+
   // ── Stato rapido ────────────────────────────────────────────────────────
   var statusItems = [];
   statusItems.push(googleConnected ? '✅ Google collegato' : '❌ Google non collegato');
