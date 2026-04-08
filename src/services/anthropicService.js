@@ -73,7 +73,9 @@ var SYSTEM_PROMPT =
   'CRM: search_leads (is_active:true). "Prospect" = new/contacted. "Clienti" = won. Non mischiare.\n' +
   'Se utente DÀ numeri → update_lead. Se CHIEDE stima → quotazione.\n' +
   'Tool fallisce → prova altra via: Slack→email→KB→Drive. Non fermarti.\n' +
-  'Trascrizioni meeting: KB → email → Slack.\n' +
+  'Trascrizioni meeting/recap Gemini: cerca prima nella KB, poi nelle TUE email, poi nelle email dei PARTECIPANTI del meeting.\n' +
+  'Se non trovi il recap nelle tue email, prova find_emails sugli altri colleghi che erano alla call.\n' +
+  'Gli appunti di Gemini arrivano via email a tutti i partecipanti — cerca con subject del meeting o "meeting notes".\n' +
   'Memorie: frase completa con chi/cosa/quando. "Ricordati che..." → remember_this.\n' +
   '"Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs.\n' +
   'Dati recenti prioritari. Info 2024 non è attuale.\n' +
