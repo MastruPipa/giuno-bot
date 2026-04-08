@@ -199,6 +199,17 @@ async function buildHomeBlocks(userId) {
     '📂 _"Trova il deck su Drive"_  ·  📊 _"Stato pipeline"_  ·  🌐 _"Cerca azienda X"_'
   ));
 
+  // ── CTA bottone — apre tab Messaggi ─────────────────────────────────────
+  blocks.push({
+    type: 'actions',
+    elements: [{
+      type: 'button',
+      text: { type: 'plain_text', text: '💬 Chatta con me', emoji: true },
+      style: 'primary',
+      action_id: 'open_dm_from_home',
+    }],
+  });
+
   blocks.push(divider());
   blocks.push(context(['Giuno v2 · `/giuno help` per i comandi']));
 

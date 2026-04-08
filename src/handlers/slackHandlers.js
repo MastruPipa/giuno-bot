@@ -891,6 +891,16 @@ function buildDailyModalBlocks(ieriCount, oggiCount) {
   return blocks;
 }
 
+app.action('open_dm_from_home', async function(args) {
+  await args.ack();
+  try {
+    await app.client.chat.postMessage({
+      channel: args.body.user.id,
+      text: 'Eccomi! Che ti serve?',
+    });
+  } catch(e) { logger.debug('[APP-HOME] DM error:', e.message); }
+});
+
 app.action('open_daily_modal', async function(args) {
   await args.ack();
   try {
