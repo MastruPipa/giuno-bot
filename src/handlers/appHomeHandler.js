@@ -139,7 +139,7 @@ async function buildHomeBlocks(userId) {
     var supabaseHome = require('../services/db/client').getClient();
     if (supabaseHome) {
       var { data: myPhases } = await supabaseHome.from('project_phases')
-        .select('name, status, end_date, projects!inner(name)')
+        .select('name, status, end_date, project_id')
         .eq('assignee_slack_id', userId)
         .in('status', ['in_progress', 'blocked'])
         .order('end_date', { ascending: true })
@@ -148,7 +148,7 @@ async function buildHomeBlocks(userId) {
         myPhases.forEach(function(p) {
           var daysLeft = p.end_date ? Math.ceil((new Date(p.end_date) - now) / 86400000) : null;
           var icon = daysLeft !== null && daysLeft <= 1 ? ':red_circle:' : (daysLeft !== null && daysLeft <= 3 ? ':large_yellow_circle:' : ':large_green_circle:');
-          var projName = p.projects ? p.projects.name : '';
+          var projName = p.project_id || '';
           todayItems.push(icon + ' *' + projName + '* — ' + p.name + (daysLeft !== null ? ' (' + daysLeft + 'gg)' : ''));
         });
       }
@@ -321,19 +321,38 @@ async function buildHomeBlocks(userId) {
 
 async function publishHome(userId) {
   try {
-    var blocks = await buildHomeBlocks(userId);
+    var blocks;
+    try {
+      blocks = await buildHomeBlocks(userId);
+    } catch(buildErr) {
+      logger.error('[APP-HOME] buildHomeBlocks error:', buildErr.message);
+      // Fallback: show basic home even if build fails
+      blocks = [
+        header('Giuno — Katania Studio'),
+        section('Ciao! Scrivimi in DM o taggami con *@Giuno* in qualsiasi canale.'),
+        divider(),
+        header('Cosa posso fare'),
+        section(
+          ':mag: *Cerca ovunque* — _"Cerca info su Aitho"_\n' +
+          ':email: *Email* — _"Mail non lette di oggi"_\n' +
+          ':calendar: *Calendario* — _"Cosa ho in agenda domani?"_\n' +
+          ':bar_chart: *CRM* — _"Stato pipeline"_'
+        ),
+      ];
+    }
+
+    if (!blocks || blocks.length === 0) {
+      blocks = [header('Giuno — Katania Studio'), section('Home in caricamento...')];
+    }
 
     await app.client.views.publish({
       user_id: userId,
-      view: {
-        type: 'home',
-        blocks: blocks,
-      },
+      view: { type: 'home', blocks: blocks },
     });
 
     logger.info('[APP-HOME] Home pubblicata per', userId);
   } catch(e) {
-    logger.error('[APP-HOME] Errore pubblicazione home per', userId + ':', e.message);
+    logger.error('[APP-HOME] Errore pubblicazione:', e.message);
   }
 }
 
