@@ -330,6 +330,19 @@ app.message(async function(args) {
           }
         } catch(implErr) { /* non bloccante */ }
       }
+      // Don't respond if message is clearly directed at another person, not Giuno
+      var msgText = message.text || '';
+      var mentionsOther = /<@[A-Z0-9]+>/.test(msgText); // mentions someone
+      var mentionsGiuno = false;
+      try {
+        var authTest = await app.client.auth.test();
+        mentionsGiuno = msgText.includes('<@' + authTest.user_id + '>');
+      } catch(e) { /* ignore */ }
+      if (mentionsOther && !mentionsGiuno) {
+        // Message tags someone else in the thread — they're talking to each other, not to Giuno
+        return;
+      }
+
       var reply = await route(message.user, message.text, implicitRouteOpts);
       var degradedImplicitReply = isDegradedReply(reply);
       var formatted = formatPerSlack(reply);
