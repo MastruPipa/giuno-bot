@@ -101,159 +101,33 @@ function getActiveLeadsCount() {
 
 async function buildHomeBlocks(userId) {
   var blocks = [];
-  var profile = getUserProfile(userId);
   var prefs = getUserPrefs(userId);
   var googleConnected = getGoogleStatus(userId);
   var standup = getStandupStatus(userId);
-  var recentMems = getRecentMemories(userId);
   var userRole = await getUserRole(userId);
 
   var now = new Date();
   var dateStr = now.toLocaleDateString('it-IT', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    weekday: 'long', day: 'numeric', month: 'long',
     timeZone: 'Europe/Rome',
   });
-  var timeStr = now.toLocaleTimeString('it-IT', {
-    hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome',
-  });
 
-  // ── Welcome ──────────────────────────────────────────────────────────────
-
-  blocks.push(header('Giuno — Katania Studio'));
-  blocks.push(context([dateStr + ' — ' + timeStr]));
+  // ── Header ──────────────────────────────────────────────────────────────
+  blocks.push(header('Giuno'));
+  blocks.push(context([dateStr + ' · Katania Studio']));
   blocks.push(divider());
 
-  // ── Today's priorities (most important section) ─────────────────────────
-
-  var todayItems = [];
-
-  // Standup status
-  if (prefs.standup_enabled) {
-    if (standup.active && !standup.responded) {
-      todayItems.push(':hourglass_flowing_sand: *Daily standup in attesa* — rispondi in DM');
-    }
+  // ── Stato rapido ────────────────────────────────────────────────────────
+  var statusItems = [];
+  statusItems.push(googleConnected ? '✅ Google collegato' : '❌ Google non collegato');
+  if (standup.active) {
+    statusItems.push(standup.responded ? '✅ Daily fatto' : '⏳ Daily in attesa');
   }
-
-  // Active project phases assigned to user
-  try {
-    var supabaseHome = require('../services/db/client').getClient();
-    if (supabaseHome) {
-      var { data: myPhases } = await supabaseHome.from('project_phases')
-        .select('name, status, end_date, project_id')
-        .eq('assignee_slack_id', userId)
-        .in('status', ['in_progress', 'blocked'])
-        .order('end_date', { ascending: true })
-        .limit(5);
-      if (myPhases && myPhases.length > 0) {
-        myPhases.forEach(function(p) {
-          var daysLeft = p.end_date ? Math.ceil((new Date(p.end_date) - now) / 86400000) : null;
-          var icon = daysLeft !== null && daysLeft <= 1 ? ':red_circle:' : (daysLeft !== null && daysLeft <= 3 ? ':large_yellow_circle:' : ':large_green_circle:');
-          var projName = p.project_id || '';
-          todayItems.push(icon + ' *' + projName + '* — ' + p.name + (daysLeft !== null ? ' (' + daysLeft + 'gg)' : ''));
-        });
-      }
-    }
-  } catch(e) { /* ignore */ }
-
-  if (todayItems.length > 0) {
-    blocks.push(header('Oggi'));
-    blocks.push(section(todayItems.join('\n')));
-    blocks.push(divider());
-  }
-
-  // ── User profile ─────────────────────────────────────────────────────────
-
-  blocks.push(header('Il tuo profilo'));
-
-  var profileFields = [];
-  profileFields.push('*Ruolo di accesso:*\n' + (userRole || 'member').toUpperCase());
-  if (profile.ruolo) {
-    profileFields.push('*Mansione:*\n' + profile.ruolo);
-  }
-  if (profile.progetti && profile.progetti.length > 0) {
-    profileFields.push('*Progetti:*\n' + profile.progetti.join(', '));
-  }
-  if (profile.clienti && profile.clienti.length > 0) {
-    profileFields.push('*Clienti:*\n' + profile.clienti.join(', '));
-  }
-  if (profile.competenze && profile.competenze.length > 0) {
-    profileFields.push('*Competenze:*\n' + profile.competenze.join(', '));
-  }
-  if (profileFields.length > 0) {
-    // Block Kit fields max 10, pairs of 2
-    blocks.push(fields(profileFields.slice(0, 10)));
-  } else {
-    blocks.push(section('_Nessun dato profilo ancora. Giuno imparerà man mano che interagisci._'));
-  }
-
+  blocks.push(section(statusItems.join('  ·  ')));
   blocks.push(divider());
 
-  // ── Status panel ─────────────────────────────────────────────────────────
-
-  blocks.push(header('Stato'));
-
-  var googleIcon = googleConnected ? ':white_check_mark:' : ':x:';
-  var googleText = googleConnected
-    ? googleIcon + ' *Google collegato* — Calendario, Gmail e Drive attivi.'
-    : googleIcon + ' *Google non collegato* — Scrivimi _"collega il mio Google"_ per attivare calendario, email e Drive.';
-  blocks.push(section(googleText));
-
-  // Standup status
-  if (prefs.standup_enabled) {
-    var standupIcon = standup.active
-      ? (standup.responded ? ':white_check_mark:' : ':hourglass_flowing_sand:')
-      : ':zzz:';
-    var standupText = standup.active
-      ? (standup.responded
-        ? standupIcon + ' *Daily completato* — risposta inviata. Recap alle 11:30 in #daily.'
-        : standupIcon + ' *Daily in attesa* — rispondi in DM con il tuo update!')
-      : standupIcon + ' *Nessun daily attivo oggi.*';
-    if (standup.active && standup.totalResponses > 0) {
-      standupText += '\n_' + standup.totalResponses + ' risposta/e ricevute finora._';
-    }
-    blocks.push(section(standupText));
-  }
-
-  // Preferences
-  var prefsItems = [];
-  prefsItems.push('Briefing mattutino: ' + (prefs.routine_enabled ? ':white_check_mark: attivo' : ':no_entry_sign: disattivato'));
-  prefsItems.push('Notifiche: ' + (prefs.notifiche_enabled ? ':white_check_mark: attive' : ':no_entry_sign: disattivate'));
-  prefsItems.push('Daily standup: ' + (prefs.standup_enabled ? ':white_check_mark: attivo' : ':no_entry_sign: disattivato'));
-  blocks.push(context(prefsItems));
-
-  blocks.push(divider());
-
-  // ── Recent memories ──────────────────────────────────────────────────────
-
-  blocks.push(header('Ultime cose che ricordo di te'));
-
-  if (recentMems.length > 0) {
-    var memText = recentMems.map(function(m, idx) {
-      var typeIcon = {
-        'preference': ':brain:',
-        'semantic':   ':books:',
-        'procedural': ':gear:',
-        'intent':     ':dart:',
-        'episodic':   ':calendar:',
-      }[m.memory_type] || ':memo:';
-      var dateLabel = m.created
-        ? new Date(m.created).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })
-        : '';
-      var content = (m.content || '').substring(0, 120);
-      if ((m.content || '').length > 120) content += '…';
-      return typeIcon + ' ' + content + (dateLabel ? '  _(' + dateLabel + ')_' : '');
-    }).join('\n');
-    blocks.push(section(memText));
-  } else {
-    blocks.push(section('_Nessuna memoria ancora. Più interagiamo, più imparo._'));
-  }
-
-  blocks.push(divider());
-
-  // ── CRM snapshot (admin/finance/manager) ─────────────────────────────────
-
+  // ── CRM snapshot (admin/finance/manager) ────────────────────────────────
   if (userRole === 'admin' || userRole === 'finance' || userRole === 'manager') {
-    blocks.push(header('Pipeline CRM'));
     try {
       var leads = await db.searchLeads({ is_active: true, limit: 100 });
       if (leads && leads.length > 0) {
@@ -263,56 +137,28 @@ async function buildHomeBlocks(userId) {
           if (!byStatus[s]) byStatus[s] = 0;
           byStatus[s]++;
         });
-        var statusLabels = {
-          'new': ':new: Nuovi',
-          'contacted': ':speech_balloon: Contattati',
-          'proposal_sent': ':envelope: Proposta inviata',
-          'negotiating': ':handshake: In trattativa',
-          'won': ':trophy: Vinti',
-          'lost': ':no_entry: Persi',
-          'dormant': ':zzz: Dormienti',
-        };
-        var pipelineFields = [];
-        for (var status in statusLabels) {
-          if (byStatus[status]) {
-            pipelineFields.push('*' + statusLabels[status] + ':*\n' + byStatus[status]);
-          }
-        }
-        if (pipelineFields.length > 0) {
-          blocks.push(fields(pipelineFields.slice(0, 10)));
-        }
-        blocks.push(context(['Totale lead attivi: ' + leads.length + ' — Usa `/giuno leads` per dettagli']));
-      } else {
-        blocks.push(section('_Nessun lead attivo nel CRM._'));
+        var pipelineText = '*Pipeline:* ';
+        var parts = [];
+        if (byStatus.new) parts.push(byStatus.new + ' nuovi');
+        if (byStatus.contacted) parts.push(byStatus.contacted + ' contattati');
+        if (byStatus.proposal_sent) parts.push(byStatus.proposal_sent + ' proposta');
+        if (byStatus.negotiating) parts.push(byStatus.negotiating + ' trattativa');
+        if (byStatus.won) parts.push(byStatus.won + ' vinti');
+        blocks.push(section(pipelineText + parts.join(' · ') + ' (' + leads.length + ' totali)'));
+        blocks.push(divider());
       }
-    } catch(e) {
-      blocks.push(section('_Dati CRM non disponibili._'));
-    }
-    blocks.push(divider());
+    } catch(e) { /* ignore */ }
   }
 
-  // ── Quick tips ───────────────────────────────────────────────────────────
-
-  blocks.push(header('Cosa posso fare'));
+  // ── Quick actions ───────────────────────────────────────────────────────
+  blocks.push(header('Chiedimi'));
   blocks.push(section(
-    ':mag: *Cerca ovunque* — _"Cerca info su Aitho"_\n' +
-    ':email: *Email* — _"Mail non lette di oggi"_\n' +
-    ':calendar: *Calendario* — _"Cosa ho in agenda domani?"_\n' +
-    ':file_folder: *Drive* — _"Trova il deck di Elfo su Drive"_\n' +
-    ':bar_chart: *CRM* — _"Stato pipeline"_\n' +
-    ':busts_in_silhouette: *Fornitori* — _"Chi è Andrea Lo Pinzi?"_'
-  ));
-  blocks.push(section(
-    ':speech_balloon: *Slack* — _"Cosa si dice nel canale operation?"_\n' +
-    ':bulb: *Knowledge* — _"Qual è la rate card?"_\n' +
-    ':pencil: *Review* — _"Rivedi questa email prima che la mandi"_\n' +
-    ':globe_with_meridians: *Web* — _"Cerca info su azienda X"_'
+    '🔍 _"Info su Aitho"_  ·  📧 _"Mail non lette"_  ·  📅 _"Agenda domani"_\n' +
+    '📂 _"Trova il deck su Drive"_  ·  📊 _"Stato pipeline"_  ·  🌐 _"Cerca azienda X"_'
   ));
 
   blocks.push(divider());
-  blocks.push(context([
-    'Giuno v2 — Katania Studio · Scrivi `/giuno help` per i comandi · Powered by Claude'
-  ]));
+  blocks.push(context(['Giuno v2 · `/giuno help` per i comandi']));
 
   return blocks;
 }
