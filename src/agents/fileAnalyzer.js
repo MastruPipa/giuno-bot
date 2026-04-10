@@ -58,7 +58,6 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
     if (/^text\/|application\/json|application\/csv/i.test(mimeType) || /\.(txt|csv|json|md|html|xml)$/i.test(fileName)) {
       if (file.url_private) {
         try {
-          var fetch = require('node-fetch');
           var res = await fetch(file.url_private, { headers: { 'Authorization': 'Bearer ' + process.env.SLACK_BOT_TOKEN } });
           contentText = await res.text();
           contentText = contentText.substring(0, 5000);
@@ -69,11 +68,10 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
     // ─── Images (jpg, png, gif, webp) — Vision AI analysis ────────────
     if (/^image\/(jpeg|jpg|png|gif|webp)/i.test(mimeType)) {
       try {
-        var fetch = require('node-fetch');
         var imgRes = await fetch(file.url_private, {
           headers: { 'Authorization': 'Bearer ' + process.env.SLACK_BOT_TOKEN },
         });
-        var imgBuffer = await imgRes.buffer();
+        var imgBuffer = Buffer.from(await imgRes.arrayBuffer());
         var base64Image = imgBuffer.toString('base64');
         var mediaType = mimeType.replace('image/jpg', 'image/jpeg'); // normalize
 

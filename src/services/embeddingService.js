@@ -22,7 +22,6 @@ async function generateEmbedding(text) {
 
   try {
     if (provider === 'voyage') {
-      var fetch = require('node-fetch');
       var res = await fetch('https://api.voyageai.com/v1/embeddings', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + VOYAGE_KEY, 'Content-Type': 'application/json' },
@@ -33,7 +32,6 @@ async function generateEmbedding(text) {
     }
 
     if (provider === 'openai') {
-      var fetch = require('node-fetch');
       var res = await fetch('https://api.openai.com/v1/embeddings', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + OPENAI_KEY, 'Content-Type': 'application/json' },
@@ -102,31 +100,48 @@ async function backfillEmbeddings() {
 
   logger.info('[EMBEDDING] Starting backfill...');
   var processed = 0;
+  var BATCH_SIZE = 500;
 
-  // KB entries without embeddings — process all in batches
-  var { data: kbEntries } = await supabase.from('knowledge_base')
-    .select('id, content').is('embedding', null).limit(500);
+  // KB entries without embeddings — loop in batches until all are processed
+  var hasMore = true;
+  while (hasMore) {
+    var { data: kbEntries } = await supabase.from('knowledge_base')
+      .select('id, content').is('embedding', null).limit(BATCH_SIZE);
 
-  for (var i = 0; i < (kbEntries || []).length; i++) {
-    var emb = await generateEmbedding(kbEntries[i].content);
-    if (emb) {
-      await supabase.from('knowledge_base').update({ embedding: emb }).eq('id', kbEntries[i].id);
-      processed++;
+    if (!kbEntries || kbEntries.length === 0) { hasMore = false; break; }
+
+    for (var i = 0; i < kbEntries.length; i++) {
+      var emb = await generateEmbedding(kbEntries[i].content);
+      if (emb) {
+        await supabase.from('knowledge_base').update({ embedding: emb }).eq('id', kbEntries[i].id);
+        processed++;
+      }
+      await new Promise(function(r) { setTimeout(r, 100); });
     }
-    await new Promise(function(r) { setTimeout(r, 100); });
+
+    logger.info('[EMBEDDING] KB batch done, processed so far:', processed);
+    if (kbEntries.length < BATCH_SIZE) hasMore = false;
   }
 
-  // Memories without embeddings
-  var { data: memEntries } = await supabase.from('memories')
-    .select('id, content').is('embedding', null).is('superseded_by', null).limit(500);
+  // Memories without embeddings — loop in batches
+  hasMore = true;
+  while (hasMore) {
+    var { data: memEntries } = await supabase.from('memories')
+      .select('id, content').is('embedding', null).is('superseded_by', null).limit(BATCH_SIZE);
 
-  for (var j = 0; j < (memEntries || []).length; j++) {
-    var emb2 = await generateEmbedding(memEntries[j].content);
-    if (emb2) {
-      await supabase.from('memories').update({ embedding: emb2 }).eq('id', memEntries[j].id);
-      processed++;
+    if (!memEntries || memEntries.length === 0) { hasMore = false; break; }
+
+    for (var j = 0; j < memEntries.length; j++) {
+      var emb2 = await generateEmbedding(memEntries[j].content);
+      if (emb2) {
+        await supabase.from('memories').update({ embedding: emb2 }).eq('id', memEntries[j].id);
+        processed++;
+      }
+      await new Promise(function(r) { setTimeout(r, 100); });
     }
-    await new Promise(function(r) { setTimeout(r, 100); });
+
+    logger.info('[EMBEDDING] Memories batch done, processed so far:', processed);
+    if (memEntries.length < BATCH_SIZE) hasMore = false;
   }
 
   logger.info('[EMBEDDING] Backfill done. Processed:', processed);

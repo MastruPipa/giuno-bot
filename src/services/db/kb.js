@@ -145,6 +145,20 @@ async function addKBEntry(content, tags, addedBy, options) {
       source_channel_id: entry.source_channel_id, source_channel_type: entry.source_channel_type,
       validation_status: entry.validation_status, expires_at: entry.expires_at, usage_count: 0,
     });
+
+    // Fire-and-forget: generate embedding for semantic search
+    try {
+      var embService = require('../embeddingService');
+      if (embService.getProvider() && content.length > 20) {
+        embService.generateEmbedding(content).then(function(emb) {
+          if (emb) {
+            c.getClient().from('knowledge_base').update({ embedding: emb }).eq('id', entry.id)
+              .then(function() {})
+              .catch(function(e2) { c.logErr('addKBEntry.embedding', e2); });
+          }
+        }).catch(function() {});
+      }
+    } catch(e2) { /* embedding not available */ }
   } catch(e) { c.logErr('addKBEntry', e); }
   return entry;
 }
