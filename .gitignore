@@ -4,3 +4,4 @@ credentials.json
 credentials-web.json
 token.json
 user_tokens.json
+.metrics-cache.json
