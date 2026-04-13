@@ -11,6 +11,17 @@ var { acquireCronLock, releaseCronLock } = require('../../supabase');
 
 var DAILY_CHANNEL_ID = process.env.DAILY_CHANNEL_ID || 'C05846AEV6D';
 
+// ─── Exclusions ──────────────────────────────────────────────────────────────
+// Persone che NON partecipano al daily (niente richiesta, niente push, niente
+// "mancano all'appello"). Match case-insensitive su substring del real_name.
+var DAILY_EXCLUDED_NAME_PATTERNS = ['antonio', 'gloria', 'corrado', 'cellulare', 'telefono'];
+
+function isExcludedFromDaily(utente) {
+  var n = (utente && utente.name ? utente.name : '').toLowerCase();
+  if (!n) return false;
+  return DAILY_EXCLUDED_NAME_PATTERNS.some(function(p) { return n.indexOf(p) !== -1; });
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getPrefs(userId) {
@@ -51,6 +62,7 @@ async function sendDailyRequests() {
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
+      if (isExcludedFromDaily(utente)) continue;
       try {
         standupInAttesa.add(utente.id);
         var nome = utente.name.split(' ')[0];
@@ -105,6 +117,7 @@ async function pushMissingResponders(pushNumber) {
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
+      if (isExcludedFromDaily(utente)) continue;
       if (sd.risposte && sd.risposte[utente.id]) continue; // Already responded
 
       try {
@@ -231,69 +244,74 @@ async function publishDailySummary() {
     }
 
     var risposte = sd.risposte || {};
-    var respondedIds = Object.keys(risposte);
 
-    // Get all team members to find who's missing
+    // Get all team members (excluded users are out of the daily flow entirely)
     var utenti = await getUtenti();
-    var enabledUsers = utenti.filter(function(u) { return getPrefs(u.id).standup_enabled; });
+    var enabledUsers = utenti.filter(function(u) {
+      return getPrefs(u.id).standup_enabled && !isExcludedFromDaily(u);
+    });
     var missingUsers = enabledUsers.filter(function(u) { return !risposte[u.id]; });
 
     // Clear standup state
     getStandupInAttesa().clear();
 
-    // Build unified message
-    var msg = '*Daily Standup — ' + todayStr + '*\n\n';
-
-    if (respondedIds.length > 0) {
-      for (var i = 0; i < respondedIds.length; i++) {
-        var uid = respondedIds[i];
-        var r = risposte[uid];
-        msg += '<@' + uid + '>:\n' + (r.testo || '_nessun dettaglio_') + '\n\n';
-      }
-    } else {
-      msg += '_Nessuna risposta ricevuta oggi._\n\n';
+    // If everyone responded, nothing to do — individual responses are already
+    // in #daily (posted by handleDailyResponse) so no recap is needed.
+    if (missingUsers.length === 0) {
+      logger.info('[DAILY-V2] Tutti hanno risposto, nessun follow-up necessario.');
+      return;
     }
 
-    // Tag missing users
-    if (missingUsers.length > 0) {
-      msg += '*Mancano all\'appello:* ' + missingUsers.map(function(u) {
-        return '<@' + u.id + '>';
-      }).join(', ') + '\n';
-    }
+    // Public tag in #daily
+    var publicMsg = '*Mancano all\'appello per il daily di ' + todayStr + ':* ' +
+      missingUsers.map(function(u) { return '<@' + u.id + '>'; }).join(', ');
 
-    // Post to #daily channel
     try {
-      // Try joining the channel first (in case bot was removed)
       try { await app.client.conversations.join({ channel: DAILY_CHANNEL_ID }); } catch(e) {
         logger.debug('[DAILY-V2] join canale ignorato:', e.message);
       }
-
       await app.client.chat.postMessage({
         channel: DAILY_CHANNEL_ID,
-        text: formatPerSlack(msg),
+        text: formatPerSlack(publicMsg),
         unfurl_links: false,
         unfurl_media: false,
       });
-      logger.info('[DAILY-V2] Recap pubblicato in #daily con', respondedIds.length, 'risposte,', missingUsers.length, 'mancanti.');
+      logger.info('[DAILY-V2] Push pubblico inviato per', missingUsers.length, 'mancanti.');
     } catch(e) {
-      logger.error('[DAILY-V2] Errore pubblicazione in #daily:', e.message);
-      // Fallback: try finding channel by name
+      logger.error('[DAILY-V2] Errore push pubblico:', e.message);
       try {
         var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
         var target = (channelsRes.channels || []).find(function(c) { return c.name === 'daily' || c.id === DAILY_CHANNEL_ID; });
         if (target) {
           await app.client.chat.postMessage({
             channel: target.id,
-            text: formatPerSlack(msg),
+            text: formatPerSlack(publicMsg),
             unfurl_links: false,
             unfurl_media: false,
           });
-          logger.info('[DAILY-V2] Recap pubblicato in #' + target.name + ' (fallback).');
+          logger.info('[DAILY-V2] Push pubblico inviato in #' + target.name + ' (fallback).');
         }
       } catch(e2) {
-        logger.error('[DAILY-V2] Errore fallback recap:', e2.message);
+        logger.error('[DAILY-V2] Errore fallback push pubblico:', e2.message);
       }
     }
+
+    // Private DM to each missing user
+    var dmSent = 0;
+    for (var pi = 0; pi < missingUsers.length; pi++) {
+      var u = missingUsers[pi];
+      var primo = (u.name || '').split(' ')[0] || 'ciao';
+      try {
+        await app.client.chat.postMessage({
+          channel: u.id,
+          text: 'Ehi ' + primo + ', non ho ancora ricevuto il tuo daily. Quando hai un momento mandamelo — anche solo 2 righe vanno bene.',
+        });
+        dmSent++;
+      } catch(e) {
+        logger.warn('[DAILY-V2] DM follow-up fallito per', u.id, ':', e.message);
+      }
+    }
+    logger.info('[DAILY-V2] DM follow-up inviati:', dmSent, '/', missingUsers.length);
   } finally {
     await releaseCronLock('daily_standup_v2_recap');
   }
