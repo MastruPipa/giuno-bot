@@ -1365,6 +1365,30 @@ function scheduleCrons() {
       logger.info('[BOOT] Embedding backfill completato:', processed, 'entry processate');
     } catch(e) { logger.error('[BOOT] Embedding backfill error:', e.message); }
 
+    // Self-heal: if bot boots on a weekday between 09:00 and 11:30 Europe/Rome
+    // and the daily standup hasn't been sent yet today, send it now.
+    // This recovers from crashes/restarts that missed the 09:00 cron.
+    try {
+      var nowRome = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+      var dow = nowRome.getDay(); // 0=Sun, 6=Sat
+      var hhmm = nowRome.getHours() * 100 + nowRome.getMinutes();
+      var isWeekday = dow >= 1 && dow <= 5;
+      var isStandupWindow = hhmm >= 900 && hhmm < 1130;
+      if (isWeekday && isStandupWindow) {
+        var todayStr = nowRome.toISOString().slice(0, 10);
+        var sd = db.getStandupCache();
+        if (!sd || sd.oggi !== todayStr) {
+          logger.info('[BOOT] Daily standup non inviato oggi (' + todayStr + ') — invio di recupero...');
+          var dailyStandup = require('./dailyStandupV2');
+          dailyStandup.sendDailyRequests().catch(function(e) {
+            logger.error('[BOOT] Daily recovery error:', e.message);
+          });
+        } else {
+          logger.info('[BOOT] Daily standup già inviato oggi (' + todayStr + '), skip recovery.');
+        }
+      }
+    } catch(e) { logger.warn('[BOOT] Daily recovery check error:', e.message); }
+
     // Also run consolidation if it hasn't run in >3 days
     try {
       var supabase = db.getClient ? db.getClient() : null;
