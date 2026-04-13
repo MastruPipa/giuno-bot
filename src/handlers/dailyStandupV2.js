@@ -156,12 +156,15 @@ async function handleDailyResponse(userId, text, structured) {
         entry.total_hours_ieri = structured.totalIeri || 0;
         entry.total_hours_oggi = structured.totalOggi || 0;
       }
-      await supabase.from('standup_entries').upsert(entry, { onConflict: 'slack_user_id,date' }).catch(function() {
-        // If upsert fails (no unique constraint), just insert
-        supabase.from('standup_entries').insert(entry).catch(function() {});
-      });
+      var saveRes = await supabase.from('standup_entries')
+        .upsert(entry, { onConflict: 'slack_user_id,date' });
+      if (saveRes && saveRes.error) {
+        logger.warn('[DAILY-V2] Upsert standup_entries fallito:', saveRes.error.message);
+      } else {
+        logger.info('[DAILY-V2] Entry salvata per', userId, todayStr);
+      }
     }
-  } catch(e) { logger.debug('[DAILY-V2] Save entry error:', e.message); }
+  } catch(e) { logger.warn('[DAILY-V2] Save entry error:', e.message); }
 
   logger.info('[DAILY-V2] Risposta ricevuta da:', userId);
 
