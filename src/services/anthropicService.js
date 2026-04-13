@@ -621,15 +621,15 @@ async function askGiuno(userId, userMessage, options) {
       var supabaseForThreadCtx = require('./db/client').getClient();
       if (supabaseForThreadCtx) {
         var recentThreadRes = await supabaseForThreadCtx.from('conversation_summaries')
-          .select('conv_key, summary_text, updated_at')
+          .select('conv_key, summary, updated_at')
           .like('conv_key', userId + ':%')
           .order('updated_at', { ascending: false })
           .limit(1);
         if (recentThreadRes.data && recentThreadRes.data.length > 0) {
           var threadSummary = recentThreadRes.data[0];
-          if (threadSummary.summary_text) {
+          if (threadSummary.summary) {
             contextData += '\n[CONTESTO DA ULTIMO THREAD]\n' +
-              threadSummary.summary_text.substring(0, 400) + '\n';
+              threadSummary.summary.substring(0, 400) + '\n';
           }
         }
       }
@@ -655,15 +655,15 @@ async function askGiuno(userId, userMessage, options) {
     var supabaseSess = require('./db/client').getClient();
     if (supabaseSess) {
       var { data: lastSession } = await supabaseSess.from('conversation_summaries')
-        .select('summary_text, updated_at')
+        .select('summary, updated_at')
         .like('conv_key', userId + '%')
         .order('updated_at', { ascending: false })
         .limit(1);
-      if (lastSession && lastSession.length > 0 && lastSession[0].summary_text) {
+      if (lastSession && lastSession.length > 0 && lastSession[0].summary) {
         var sessionAge = (Date.now() - new Date(lastSession[0].updated_at).getTime()) / 3600000;
         if (sessionAge < 48) { // Only inject if <48h old
           contextData += '\nCONTESTO PRECEDENTE (ultima conversazione, ' + Math.round(sessionAge) + 'h fa):\n' +
-            lastSession[0].summary_text.substring(0, 300) + '\n';
+            lastSession[0].summary.substring(0, 300) + '\n';
         }
       }
     }
