@@ -1019,15 +1019,27 @@ app.view('daily_standup_submit', async function(args) {
     };
 
     var dailyStandup = require('./dailyStandupV2');
-    await dailyStandup.handleDailyResponse(userId, formattedText, structured);
-
-    // Confirm with total hours
-    var confirmMsg = 'Daily registrato! ✅';
-    if (totalIeri > 0 || totalOggi > 0) {
-      confirmMsg += '\n_Ieri: ' + totalIeri + 'h | Oggi: ' + totalOggi + 'h stimate_';
+    var saved = false;
+    try {
+      saved = await dailyStandup.handleDailyResponse(userId, formattedText, structured);
+    } catch(e) {
+      logger.error('[DAILY-MODAL] handleDailyResponse ha throwato:', e.message);
     }
-    await app.client.chat.postMessage({ channel: userId, text: confirmMsg });
-    logger.info('[DAILY-MODAL] Risposta da', userId, '| Ieri:', totalIeri + 'h | Oggi:', totalOggi + 'h');
+
+    if (saved) {
+      var confirmMsg = 'Daily registrato! ✅';
+      if (totalIeri > 0 || totalOggi > 0) {
+        confirmMsg += '\n_Ieri: ' + totalIeri + 'h | Oggi: ' + totalOggi + 'h stimate_';
+      }
+      await app.client.chat.postMessage({ channel: userId, text: confirmMsg });
+      logger.info('[DAILY-MODAL] Risposta da', userId, '| Ieri:', totalIeri + 'h | Oggi:', totalOggi + 'h');
+    } else {
+      await app.client.chat.postMessage({
+        channel: userId,
+        text: 'Non sono riuscito a registrare il daily — riprova tra un attimo. Se il problema persiste avvisa Antonio.',
+      });
+      logger.error('[DAILY-MODAL] Save fallito per', userId);
+    }
   }
 });
 

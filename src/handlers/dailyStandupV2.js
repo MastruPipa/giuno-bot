@@ -46,13 +46,15 @@ async function sendDailyRequests() {
     logger.info('[DAILY-V2] Invio richieste daily per', todayStr);
 
     var sd = db.getStandupCache();
+    // Only reset risposte when we're starting a genuinely new day.
+    // sd.oggi is persisted in standup_data, so it survives restarts — use it
+    // as the source of truth instead of sd.lastDay (which is process-local
+    // and always undefined on restart, causing accidental wipes).
+    if (sd.oggi !== todayStr) {
+      sd.risposte = {};
+    }
     sd.oggi = todayStr;
     sd.risposte = sd.risposte || {};
-    // Clear old responses if from a different day
-    if (sd.lastDay !== todayStr) {
-      sd.risposte = {};
-      sd.lastDay = todayStr;
-    }
     db.saveStandup(sd);
 
     var utenti = await getUtenti();
@@ -142,7 +144,13 @@ async function pushMissingResponders(pushNumber) {
 async function handleDailyResponse(userId, text, structured) {
   var todayStr = oggi();
   var sd = db.getStandupCache();
-  if (sd.oggi !== todayStr) return false;
+  // Self-heal: if sd.oggi is stale (bot restart after 09:00 cron, etc.),
+  // bootstrap today in-place instead of silently dropping the submission.
+  if (sd.oggi !== todayStr) {
+    logger.warn('[DAILY-V2] sd.oggi stale (' + (sd.oggi || 'null') + '), self-heal a ' + todayStr);
+    sd.oggi = todayStr;
+    sd.risposte = {};
+  }
 
   sd.risposte = sd.risposte || {};
   sd.risposte[userId] = { testo: text, timestamp: Date.now() };
