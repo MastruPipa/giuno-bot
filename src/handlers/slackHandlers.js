@@ -361,17 +361,39 @@ app.message(async function(args) {
   // ── DM ─────────────────────────────────────────────────────────────────────
 
   // Standup replies (V2 — routes through dailyStandupV2)
+  // Strict detection: only accept messages that CLEARLY look like a daily report.
+  // Plain length > 30 is not enough (it catches complaints/questions to the bot).
   if (standupInAttesa.has(message.user)) {
     var dailyV2Oggi = new Date().toISOString().slice(0, 10);
     var dailyV2Sd = db.getStandupCache();
     if (dailyV2Sd.oggi === dailyV2Oggi) {
-      // Check if message looks like a daily update
-      var dailyV2MsgLow = (message.text || '').toLowerCase();
-      if (dailyV2MsgLow.includes('ieri') || dailyV2MsgLow.includes('oggi') || dailyV2MsgLow.includes('fatto') || dailyV2MsgLow.includes('farò') || dailyV2MsgLow.includes('faro') || dailyV2MsgLow.includes('blocco') || dailyV2MsgLow.includes('blocchi') || message.text.length > 30) {
+      var txt = (message.text || '').trim();
+      var txtLow = txt.toLowerCase();
+
+      // Rejection: messages addressing the bot or asking/complaining are NOT daily reports
+      var looksLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt) ||
+        /[?¿]/.test(txt);
+
+      // Positive detection: structured header or multiple standup keywords
+      var looksStructured = /^\s*\*?(ieri|oggi|blocchi)\*?\s*:/im.test(txt);
+      var keywordHits = (txtLow.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
+      var looksLikeDaily = looksStructured || keywordHits >= 2;
+
+      if (!looksLikeRequest && looksLikeDaily) {
         var dailyStandupV2 = require('./dailyStandupV2');
-        await dailyStandupV2.handleDailyResponse(message.user, message.text);
-        await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il riepilogo uscirà alle 11:30 in #daily.' });
-        logger.info('[STANDUP-V2] Risposta ricevuta da:', message.user);
+        var saved = false;
+        try {
+          saved = await dailyStandupV2.handleDailyResponse(message.user, message.text);
+        } catch(e) {
+          logger.error('[STANDUP-V2] handleDailyResponse ha throwato:', e.message);
+        }
+        if (saved) {
+          await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il riepilogo uscirà alle 11:30 in #daily.' });
+          logger.info('[STANDUP-V2] Risposta testuale ricevuta da:', message.user);
+        } else {
+          await app.client.chat.postMessage({ channel: message.channel, text: 'Non sono riuscito a registrare il daily — riprova con il bottone *✏️ Compila daily* o avvisa Antonio.' });
+          logger.error('[STANDUP-V2] Save testuale fallito per:', message.user);
+        }
         return;
       }
     }
