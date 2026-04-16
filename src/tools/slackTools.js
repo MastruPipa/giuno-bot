@@ -830,9 +830,23 @@ async function execute(toolName, input, userId) {
         if (!author && rm.user) {
           author = await resolveUserName(app, rm.user, userCache);
         }
+        // Resolve <@USER_ID> mentions in message text to real names
+        var msgText = (rm.text || '').substring(0, 500);
+        var mentionIds = [];
+        var mentionRe = /<@([A-Z0-9]+)>/g;
+        var mentionMatch;
+        while ((mentionMatch = mentionRe.exec(msgText)) !== null) {
+          if (mentionIds.indexOf(mentionMatch[1]) === -1) mentionIds.push(mentionMatch[1]);
+        }
+        for (var mi = 0; mi < mentionIds.length; mi++) {
+          var mentionName = await resolveUserName(app, mentionIds[mi], userCache);
+          if (mentionName && mentionName !== mentionIds[mi]) {
+            msgText = msgText.split('<@' + mentionIds[mi] + '>').join('@' + mentionName);
+          }
+        }
         formatted.push({
           author: author || 'unknown',
-          text: (rm.text || '').substring(0, 500),
+          text: msgText,
           ts: rm.ts,
           is_bot: !!rm.bot_id,
           thread_reply_count: rm.reply_count || 0,

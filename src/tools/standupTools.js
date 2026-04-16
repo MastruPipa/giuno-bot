@@ -191,6 +191,16 @@ async function queryStandup(input) {
     byUser[uid].days_count += Object.keys(daySet).length;
   });
 
+  // Resolve user IDs to names for the response
+  var { getUtenti } = require('../services/slackService');
+  var nameMap = {};
+  try {
+    var utenti = await getUtenti();
+    utenti.forEach(function(u) { nameMap[u.id] = u.name; });
+  } catch(e) {
+    logger.warn('[STANDUP-TOOL] getUtenti failed, user names will be missing:', e.message);
+  }
+
   // Format output
   var userList = Object.keys(byUser).map(function(uid) {
     var u = byUser[uid];
@@ -199,6 +209,7 @@ async function queryStandup(input) {
     }).sort(function(a, b) { return b.minutes - a.minutes; });
     return {
       slack_user_id: uid,
+      user_name: nameMap[uid] || uid,
       hours_formatted: formatHours(u.minutes),
       minutes: u.minutes,
       days_count: u.days_count,
@@ -209,6 +220,18 @@ async function queryStandup(input) {
   var projectList = Object.values(byProject).map(function(p) {
     return { project: p.project, hours_formatted: formatHours(p.minutes), minutes: p.minutes, tasks: p.tasks };
   }).sort(function(a, b) { return b.minutes - a.minutes; });
+
+  // Add user names to sample tasks
+  var namedTasks = sampleTasks.slice(0, 20).map(function(t) {
+    return {
+      user: t.user,
+      user_name: nameMap[t.user] || t.user,
+      date: t.date,
+      scope: t.scope,
+      task: t.task,
+      hours_formatted: t.hours_formatted,
+    };
+  });
 
   return {
     found: rows.length,
@@ -221,7 +244,7 @@ async function queryStandup(input) {
     total_minutes: totalMinutes,
     by_user: userList,
     by_project: projectList.slice(0, 15),
-    sample_tasks: sampleTasks.slice(0, 20),
+    sample_tasks: namedTasks,
   };
 }
 
