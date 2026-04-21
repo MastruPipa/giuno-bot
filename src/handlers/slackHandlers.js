@@ -890,7 +890,7 @@ function buildDailyModalBlocks(ieriCount, oggiCount) {
 
   for (var j = 1; j <= oggiCount; j++) {
     blocks.push({
-      type: 'input', block_id: 'oggi_task_' + j, optional: j > 1,
+      type: 'input', block_id: 'oggi_task_' + j, optional: true,
       label: { type: 'plain_text', text: 'Task ' + j },
       element: { type: 'plain_text_input', action_id: 'task_input',
         placeholder: { type: 'plain_text', text: j === 1 ? 'Es. Mockup sito cliente' : 'Altra attività...' } },
@@ -950,7 +950,15 @@ app.action('open_daily_modal', async function(args) {
         blocks: buildDailyModalBlocks(2, 2),
       },
     });
-  } catch(e) { logger.error('[DAILY-MODAL] Errore apertura:', e.message); }
+  } catch(e) {
+    logger.error('[DAILY-MODAL] Errore apertura:', e.message);
+    try {
+      await app.client.chat.postMessage({
+        channel: args.body.user.id,
+        text: 'Non sono riuscito ad aprire il form. Riprova tra qualche secondo oppure rispondi direttamente con un messaggio testuale.',
+      });
+    } catch(e2) { /* ignore */ }
+  }
 });
 
 // "Aggiungi task" buttons — update the modal with more rows
@@ -996,72 +1004,87 @@ app.view('daily_standup_submit', async function(args) {
   var view = args.view;
   await args.ack();
   var userId = args.body.user.id;
-  var values = view.state.values;
 
-  function extractTasks(section) {
-    var tasks = [];
-    for (var i = 1; i <= 6; i++) {
-      var taskKey = section + '_task_' + i;
-      var durKey = section + '_durata_' + i;
-      var taskVal = values[taskKey] && values[taskKey].task_input ? values[taskKey].task_input.value : null;
-      if (!taskVal) continue;
-      var durVal = values[durKey] && values[durKey].durata_select && values[durKey].durata_select.selected_option ? values[durKey].durata_select.selected_option : null;
-      var hours = durVal ? parseFloat(durVal.value) : 0;
-      var durLabel = durVal ? durVal.text.text : '';
-      tasks.push({ task: taskVal, hours: hours, label: durLabel });
-    }
-    return tasks;
-  }
+  try {
+    var values = (view.state && view.state.values) || {};
 
-  var ieriTasks = extractTasks('ieri');
-  var oggiTasks = extractTasks('oggi');
-  var blocchi = values.blocchi && values.blocchi.blocchi_input ? values.blocchi.blocchi_input.value : null;
-
-  var totalIeri = 0; ieriTasks.forEach(function(t) { totalIeri += t.hours; });
-  var totalOggi = 0; oggiTasks.forEach(function(t) { totalOggi += t.hours; });
-
-  // Format text for recap
-  var formattedText = '';
-  if (ieriTasks.length > 0) {
-    formattedText += '*Ieri:* ' + ieriTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
-  }
-  if (oggiTasks.length > 0) {
-    formattedText += '*Oggi:* ' + oggiTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
-  }
-  if (blocchi) formattedText += '*Blocchi:* ' + blocchi;
-  formattedText = formattedText.trim();
-
-  if (formattedText) {
-    var structured = {
-      ieri: ieriTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
-      oggi: oggiTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
-      blocchi: blocchi || null,
-      totalIeri: totalIeri,
-      totalOggi: totalOggi,
-    };
-
-    var dailyStandup = require('./dailyStandupV2');
-    var saved = false;
-    try {
-      saved = await dailyStandup.handleDailyResponse(userId, formattedText, structured);
-    } catch(e) {
-      logger.error('[DAILY-MODAL] handleDailyResponse ha throwato:', e.message);
-    }
-
-    if (saved) {
-      var confirmMsg = 'Daily registrato! ✅';
-      if (totalIeri > 0 || totalOggi > 0) {
-        confirmMsg += '\n_Ieri: ' + totalIeri + 'h | Oggi: ' + totalOggi + 'h stimate_';
+    function extractTasks(section) {
+      var tasks = [];
+      for (var i = 1; i <= 6; i++) {
+        var taskKey = section + '_task_' + i;
+        var durKey = section + '_durata_' + i;
+        var taskVal = values[taskKey] && values[taskKey].task_input ? values[taskKey].task_input.value : null;
+        if (!taskVal) continue;
+        var durVal = values[durKey] && values[durKey].durata_select && values[durKey].durata_select.selected_option ? values[durKey].durata_select.selected_option : null;
+        var hours = durVal ? parseFloat(durVal.value) : 0;
+        var durLabel = durVal ? durVal.text.text : '';
+        tasks.push({ task: taskVal, hours: hours, label: durLabel });
       }
-      await app.client.chat.postMessage({ channel: userId, text: confirmMsg });
-      logger.info('[DAILY-MODAL] Risposta da', userId, '| Ieri:', totalIeri + 'h | Oggi:', totalOggi + 'h');
+      return tasks;
+    }
+
+    var ieriTasks = extractTasks('ieri');
+    var oggiTasks = extractTasks('oggi');
+    var blocchi = values.blocchi && values.blocchi.blocchi_input ? values.blocchi.blocchi_input.value : null;
+
+    var totalIeri = 0; ieriTasks.forEach(function(t) { totalIeri += t.hours; });
+    var totalOggi = 0; oggiTasks.forEach(function(t) { totalOggi += t.hours; });
+
+    var formattedText = '';
+    if (ieriTasks.length > 0) {
+      formattedText += '*Ieri:* ' + ieriTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
+    }
+    if (oggiTasks.length > 0) {
+      formattedText += '*Oggi:* ' + oggiTasks.map(function(t) { return t.task + (t.label ? ' ' + t.label : ''); }).join(', ') + '\n';
+    }
+    if (blocchi) formattedText += '*Blocchi:* ' + blocchi;
+    formattedText = formattedText.trim();
+
+    if (formattedText) {
+      var structured = {
+        ieri: ieriTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
+        oggi: oggiTasks.map(function(t) { return { task: t.task, hours: Math.floor(t.hours), minutes: Math.round((t.hours % 1) * 60) }; }),
+        blocchi: blocchi || null,
+        totalIeri: totalIeri,
+        totalOggi: totalOggi,
+      };
+
+      var dailyStandup = require('./dailyStandupV2');
+      var saved = false;
+      try {
+        saved = await dailyStandup.handleDailyResponse(userId, formattedText, structured);
+      } catch(e) {
+        logger.error('[DAILY-MODAL] handleDailyResponse ha throwato:', e.message);
+      }
+
+      if (saved) {
+        var confirmMsg = 'Daily registrato! ✅';
+        if (totalIeri > 0 || totalOggi > 0) {
+          confirmMsg += '\n_Ieri: ' + totalIeri + 'h | Oggi: ' + totalOggi + 'h stimate_';
+        }
+        await app.client.chat.postMessage({ channel: userId, text: confirmMsg });
+        logger.info('[DAILY-MODAL] Risposta da', userId, '| Ieri:', totalIeri + 'h | Oggi:', totalOggi + 'h');
+      } else {
+        await app.client.chat.postMessage({
+          channel: userId,
+          text: 'Non sono riuscito a registrare il daily — riprova tra un attimo. Se il problema persiste avvisa Antonio.',
+        });
+        logger.error('[DAILY-MODAL] Save fallito per', userId);
+      }
     } else {
       await app.client.chat.postMessage({
         channel: userId,
-        text: 'Non sono riuscito a registrare il daily — riprova tra un attimo. Se il problema persiste avvisa Antonio.',
+        text: 'Il daily sembra vuoto — compila almeno un task e riprova.',
       });
-      logger.error('[DAILY-MODAL] Save fallito per', userId);
     }
+  } catch(e) {
+    logger.error('[DAILY-MODAL] Errore submit:', e.message);
+    try {
+      await app.client.chat.postMessage({
+        channel: userId,
+        text: 'Si è verificato un errore nel salvataggio del daily. Riprova o rispondi direttamente con un messaggio testuale.',
+      });
+    } catch(e2) { /* ignore */ }
   }
 });
 
