@@ -242,71 +242,6 @@ async function inviaRoutineGiornaliera() {
   finally { await releaseCronLock('briefing_giornaliero'); }
 }
 
-// ─── Standup ───────────────────────────────────────────────────────────────────
-
-async function inviaStandupDomande() {
-  var locked = await acquireCronLock('standup_domande', 10);
-  if (!locked) return;
-  try {
-    var oggi = new Date().toISOString().slice(0, 10);
-    logger.info('[STANDUP] Invio domande standup per', oggi);
-    var sd = db.getStandupCache();
-    sd.oggi = oggi;
-    sd.risposte = {};
-    db.saveStandup(sd);
-
-    var utenti = await getUtenti();
-    var inviati = 0;
-    var standupInAttesa = getStandupInAttesa();
-    for (var utente of utenti) {
-      if (!getPrefs(utente.id).standup_enabled) continue;
-      try {
-        standupInAttesa.add(utente.id);
-        await app.client.chat.postMessage({
-          channel: utente.id,
-          text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
-            'Rispondi a questo messaggio con:\n' +
-            '1. Su cosa lavori oggi?\n' +
-            '2. Hai blocchi o serve aiuto?\n\n' +
-            '_Scrivi tutto in un unico messaggio, il recap uscirà alle 10:00._',
-        });
-        inviati++;
-      } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
-    }
-    logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
-  } finally { await releaseCronLock('standup_domande'); }
-}
-
-async function pubblicaRecapStandup() {
-  var locked = await acquireCronLock('standup_recap', 10);
-  if (!locked) return;
-  try {
-    var oggi = new Date().toISOString().slice(0, 10);
-    var sd = db.getStandupCache();
-    if (sd.oggi !== oggi) { logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.'); return; }
-    var risposte = sd.risposte;
-    var userIds = Object.keys(risposte);
-    if (userIds.length === 0) { logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.'); return; }
-    getStandupInAttesa().clear();
-
-    var msg = '*Standup ' + oggi + '*\n\n';
-    for (var userId of userIds) {
-      var r = risposte[userId];
-      msg += '<@' + userId + '>:\n' + (r.testo || '') + '\n\n';
-    }
-    try {
-      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
-      var target = (channelsRes.channels || []).find(function(c) { return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL; });
-      if (!target) { logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.'); return; }
-      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {
-        logger.debug('[CRON] join canale ignorato:', e.message);
-      }
-      await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
-      logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
-    } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
-  } finally { await releaseCronLock('standup_recap'); }
-}
-
 // ─── Recap settimanale ─────────────────────────────────────────────────────────
 
 async function getSlackWeekData() {
@@ -1036,6 +971,140 @@ async function monitoraDomandeInSospeso() {
   }
 }
 
+// ─── Proactive follow-ups ─────────────────────────────────────────────────────
+// For each team member, look at the rolling DM summary's open action items
+// and ping them in DM if an item has been open for more than 2 days and we
+// haven't already pinged for that exact item in the last 3 days.
+// Max 1 follow-up per user per run, max 3 follow-ups ever per item.
+
+async function sendProactiveFollowups() {
+  var locked = await acquireCronLock('proactive_followups', 20);
+  if (!locked) return;
+  try {
+    var supabase = db.getClient && db.getClient();
+    if (!supabase) return;
+
+    var now = Date.now();
+    var twoDaysAgo = new Date(now - 2 * 86400000).toISOString();
+    var threeDaysAgo = new Date(now - 3 * 86400000).toISOString();
+
+    var sumRes = await supabase.from('conversation_summaries')
+      .select('conv_key, proposed_actions, updated_at')
+      .not('proposed_actions', 'is', null)
+      .lt('updated_at', twoDaysAgo)
+      .order('updated_at', { ascending: true })
+      .limit(50);
+
+    var rows = (sumRes && sumRes.data) || [];
+    var sent = 0;
+
+    for (var ri = 0; ri < rows.length; ri++) {
+      var row = rows[ri];
+      // Only touch DM main summaries (conv_key = userId, no colon)
+      if (!row.conv_key || row.conv_key.indexOf(':') !== -1) continue;
+      var userId = row.conv_key;
+      var openItems = (row.proposed_actions || []).filter(function(a) {
+        return a && a.type === 'open_item' && a.description;
+      });
+      if (openItems.length === 0) continue;
+
+      // Pick first item not recently followed up on
+      var crypto = require('crypto');
+      var picked = null;
+      for (var ii = 0; ii < openItems.length; ii++) {
+        var desc = openItems[ii].description;
+        var itemHash = crypto.createHash('sha1').update(desc.toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
+        var logRes = await supabase.from('followup_log')
+          .select('sent_at, attempts')
+          .eq('slack_user_id', userId)
+          .eq('item_hash', itemHash)
+          .maybeSingle();
+        var log = logRes && logRes.data;
+        if (log && new Date(log.sent_at).toISOString() > threeDaysAgo) continue;
+        if (log && (log.attempts || 1) >= 3) continue;
+        picked = { description: desc, hash: itemHash, attempts: (log && log.attempts) || 0 };
+        break;
+      }
+      if (!picked) continue;
+
+      try {
+        var primo = 'ciao';
+        try {
+          var info = await app.client.users.info({ user: userId });
+          var realName = (info && info.user && (info.user.real_name || info.user.name)) || '';
+          primo = realName.split(' ')[0] || 'ciao';
+        } catch(e) { /* ignore */ }
+
+        var msg = 'Ehi ' + primo + ', volevo sapere com\'è andata con:\n' +
+          '> ' + picked.description + '\n\n' +
+          '_(Se non serve più fammi sapere e me ne dimentico.)_';
+        await app.client.chat.postMessage({ channel: userId, text: msg });
+
+        await supabase.from('followup_log').upsert({
+          slack_user_id: userId,
+          item_hash: picked.hash,
+          item_description: picked.description.substring(0, 300),
+          sent_at: new Date().toISOString(),
+          attempts: picked.attempts + 1,
+        }, { onConflict: 'slack_user_id,item_hash' });
+        sent++;
+        logger.info('[FOLLOWUP] inviato a', userId, '— item:', picked.description.substring(0, 60));
+      } catch(e) {
+        logger.warn('[FOLLOWUP] send failed per', userId, ':', e.message);
+      }
+
+      // Be polite: cap at 10 DMs per run
+      if (sent >= 10) break;
+    }
+
+    logger.info('[FOLLOWUP] run done — inviati:', sent);
+  } catch(e) {
+    logger.error('[FOLLOWUP] Errore:', e.message);
+  } finally { await releaseCronLock('proactive_followups'); }
+}
+
+// ─── Memory Decay ─────────────────────────────────────────────────────────────
+// Degrade old, unused episodic/intent memories so they stop polluting the
+// context. Cheaper than consolidaMemorie (no LLM call) — just SQL.
+
+async function decayStaleMemories() {
+  var locked = await acquireCronLock('memory_decay', 30);
+  if (!locked) return;
+  try {
+    var supabase = db.getClient && db.getClient();
+    if (!supabase) { logger.debug('[MEM-DECAY] No supabase client, skip'); return; }
+
+    var cutoff30d = new Date(Date.now() - 30 * 86400000).toISOString();
+    var cutoff90d = new Date(Date.now() - 90 * 86400000).toISOString();
+
+    // 1) Unused episodic/intent older than 30d → mark expired now.
+    //    usage_count=0 means no retrieval ever scored them relevant.
+    var r1 = await supabase.from('memories')
+      .update({ expires_at: new Date().toISOString() })
+      .lt('created_at', cutoff30d)
+      .eq('usage_count', 0)
+      .in('memory_type', ['episodic', 'intent'])
+      .is('superseded_by', null)
+      .is('expires_at', null)
+      .select('id');
+    var expired1 = (r1.data || []).length;
+
+    // 2) Any low-confidence row older than 90d → expire (preferences/semantic included).
+    var r2 = await supabase.from('memories')
+      .update({ expires_at: new Date().toISOString() })
+      .lt('created_at', cutoff90d)
+      .lt('confidence_score', 0.3)
+      .is('superseded_by', null)
+      .is('expires_at', null)
+      .select('id');
+    var expired2 = (r2.data || []).length;
+
+    logger.info('[MEM-DECAY] Invalidate:', expired1, 'unused episodic/intent >30d |', expired2, 'low-confidence >90d');
+  } catch(e) {
+    logger.error('[MEM-DECAY] Errore:', e.message);
+  } finally { await releaseCronLock('memory_decay'); }
+}
+
 // ─── Memory Consolidation ─────────────────────────────────────────────────────
 
 async function consolidaMemorie() {
@@ -1259,6 +1328,21 @@ function scheduleCrons() {
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
   });
   cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
+  cron.schedule('0 4 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 4:00
+  // Proactive DM follow-ups — 10:00 Mon-Fri on items open >2 days, max 3 nudges per item.
+  cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
+  // Personal daily digest — 08:30 Mon-Fri, runs before the daily standup so each
+  // member sees what Giuno remembers about them before writing the new entry.
+  cron.schedule('30 8 * * 1-5', function() {
+    var { sendPersonalDigests } = require('../agents/personalDigestAgent');
+    sendPersonalDigests().catch(function(e) { logger.error('[PERSONAL-DIGEST] cron error:', e.message); });
+  }, { timezone: 'Europe/Rome' });
+  // Memory backup — Sunday 02:30 Rome, uploads a JSON snapshot to the admin's
+  // Drive and keeps the last 4 weekly backups. Requires MEMORY_BACKUP_ADMIN_USER_ID.
+  cron.schedule('30 2 * * 0', function() {
+    var { runWeeklyBackup } = require('../jobs/memoryBackupJob');
+    runWeeklyBackup().catch(function(e) { logger.error('[MEM-BACKUP] cron error:', e.message); });
+  }, { timezone: 'Europe/Rome' });
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();
@@ -1411,8 +1495,6 @@ function scheduleCrons() {
 module.exports = {
   scheduleCrons: scheduleCrons,
   inviaRoutineGiornaliera: inviaRoutineGiornaliera,
-  inviaStandupDomande: inviaStandupDomande,
-  pubblicaRecapStandup: pubblicaRecapStandup,
   inviaRecapSettimanale: inviaRecapSettimanale,
   indicizzaDriveTutti: indicizzaDriveTutti,
   indicizzaDriveUtente: indicizzaDriveUtente,

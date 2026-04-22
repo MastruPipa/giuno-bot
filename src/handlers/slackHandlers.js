@@ -149,15 +149,40 @@ app.event('app_mention', async function(args) {
     try {
       var recentMsgs;
       if (event.thread_ts) {
-        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 15 });
-        recentMsgs = (threadRes.messages || []).slice(-15);
+        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 30 });
+        recentMsgs = (threadRes.messages || []).slice(-30);
       } else {
-        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 10 });
+        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 30 });
         recentMsgs = (histRes.messages || []).reverse();
       }
       if (recentMsgs.length > 0) {
+        // For substantive chatter (>=10 real messages, excluding bots + current
+        // event) ask Haiku for a one-paragraph topic recap BEFORE dumping the
+        // raw transcript. Stops Giuno from answering off-topic when dropped
+        // into a long conversation mid-thread.
+        var realMsgs = recentMsgs.filter(function(m) { return m.ts !== event.ts && !m.bot_id && m.text; });
+        if (realMsgs.length >= 10) {
+          try {
+            var { askGemini: _unused } = require('../services/geminiService'); // lazy check Anthropic availability
+            var Anthropic = require('@anthropic-ai/sdk');
+            var haiku = new Anthropic();
+            var topicTranscript = realMsgs.slice(-20).map(function(m) {
+              return (m.user ? '<@' + m.user + '>' : 'bot') + ': ' + (m.text || '').substring(0, 250);
+            }).join('\n');
+            var topicRes = await haiku.messages.create({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 200,
+              system: 'Sei un osservatore silenzioso in un canale Slack. In 2-3 frasi italiane descrivi: (1) di cosa si sta parlando adesso, (2) chi sta facendo cosa, (3) qual è la domanda/decisione aperta se esiste. Niente saluti, niente meta-commenti.',
+              messages: [{ role: 'user', content: topicTranscript }],
+            });
+            var topic = topicRes.content && topicRes.content[0] && topicRes.content[0].text ? topicRes.content[0].text.trim() : '';
+            if (topic) channelContext += '\nTOPIC ATTUALE DEL ' + (event.thread_ts ? 'THREAD' : 'CANALE') + ':\n' + topic + '\n';
+          } catch(topicErr) {
+            logger.debug('[SLACK-HANDLER] topic autosummary skipped:', topicErr.message);
+          }
+        }
         channelContext += '\nCONVERSAZIONE RECENTE NEL CANALE:\n';
-        for (var rm of recentMsgs) {
+        for (var rm of recentMsgs.slice(-15)) {
           if (rm.ts === event.ts) continue;
           var who = rm.user ? '<@' + rm.user + '>' : 'bot';
           channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
@@ -667,10 +692,54 @@ app.command('/giuno', async function(args) {
       var utenti = await getUtenti();
       var me = utenti.find(function(u) { return u.id === command.user_id; });
       var myName = me ? me.name : 'Utente';
-      await respond({
-        text: 'Ciao ' + myName + '!\n• Slack ID: `' + command.user_id + '`\n• Livello di accesso: *' + myRole.toUpperCase() + '*\n• ' + roleDesc,
-        response_type: 'ephemeral',
-      });
+
+      var sections = [
+        'Ciao ' + myName + '!',
+        '• Slack ID: `' + command.user_id + '`',
+        '• Livello di accesso: *' + myRole.toUpperCase() + '*',
+        '• ' + roleDesc,
+      ];
+
+      // What Giuno remembers about this person — transparency panel.
+      try {
+        var facts = await db.getUserFacts(command.user_id, 20);
+        if (facts && facts.length > 0) {
+          var byCat = {};
+          facts.forEach(function(f) {
+            if (!byCat[f.category]) byCat[f.category] = [];
+            byCat[f.category].push(f.fact);
+          });
+          var factLines = Object.keys(byCat).map(function(cat) {
+            return '_' + cat + ':_ ' + byCat[cat].join('; ');
+          });
+          sections.push('\n*Cosa ricordo di te:*\n' + factLines.join('\n'));
+        }
+      } catch(e) { /* user_facts table may not exist */ }
+
+      try {
+        var supabaseForMe = db.getClient && db.getClient();
+        if (supabaseForMe) {
+          var summaryRes = await supabaseForMe.from('conversation_summaries')
+            .select('summary, updated_at, messages_count, proposed_actions')
+            .eq('conv_key', command.user_id)
+            .limit(1);
+          if (summaryRes.data && summaryRes.data.length > 0) {
+            var row = summaryRes.data[0];
+            var ageH = row.updated_at ? Math.round((Date.now() - new Date(row.updated_at).getTime()) / 3600000) : null;
+            if (row.summary) {
+              sections.push('\n*Memoria della nostra chat* (aggiornata ' + (ageH != null ? ageH + 'h fa' : 'di recente') + ', ' + (row.messages_count || 0) + ' messaggi totali):\n' + row.summary);
+            }
+            var openItems = (row.proposed_actions || []).filter(function(a) { return a && a.type === 'open_item' && a.description; });
+            if (openItems.length > 0) {
+              sections.push('\n*Cose aperte tra noi:*\n' + openItems.slice(0, 5).map(function(a) { return '• ' + a.description; }).join('\n'));
+            }
+          }
+        }
+      } catch(e) { /* non-blocking */ }
+
+      sections.push('\n_Se qualcosa non è corretto, dimmelo in DM e lo aggiorno._');
+
+      await respond({ text: sections.join('\n'), response_type: 'ephemeral' });
     } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
@@ -721,6 +790,21 @@ app.command('/giuno', async function(args) {
     var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
     runKnowledgeEngine(command.user_id).catch(function(e) { logger.error('[KB-ENGINE]', e.message); });
     await respond({ text: 'Studio avviato — ricevi il report quando finisco.', response_type: 'ephemeral' });
+    return;
+  }
+
+  if (text === 'export' || text === 'esporta' || text === 'export memory' || text === 'export memoria') {
+    try {
+      await respond({ text: 'Sto preparando l\'export nel tuo Drive...', response_type: 'ephemeral' });
+      var { exportForUser } = require('../jobs/memoryBackupJob');
+      var result = await exportForUser(command.user_id);
+      var msg = 'Export caricato nel tuo Drive.\n' +
+        '• Memorie: ' + result.rows.memories + '\n' +
+        '• Fatti stabili: ' + result.rows.facts + '\n' +
+        '• Riassunti conversazione: ' + result.rows.summaries + '\n' +
+        (result.link ? '<' + result.link + '|Apri il file>' : '');
+      await respond({ text: msg, response_type: 'ephemeral' });
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }
 
@@ -1262,7 +1346,86 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  if (sub === 'team') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo admin possono gestire il team roster.', response_type: 'ephemeral' }); return; }
+    var teamSub = (args[1] || 'list').toLowerCase();
+    var roster = db.getTeamRoster ? db.getTeamRoster() : [];
+
+    if (teamSub === 'list') {
+      if (!roster || roster.length === 0) {
+        await respond({ text: 'Roster vuoto. Lancia `node scripts/seed-team-roster.js` per popolarlo.', response_type: 'ephemeral' });
+        return;
+      }
+      var listMsg = '*Roster team (' + roster.length + '):*\n' + roster.map(function(m) {
+        var alias = (m.aliases && m.aliases.length > 0) ? ' _(alias: ' + m.aliases.join(', ') + ')_' : '';
+        var role = m.role ? ' — ' + m.role : '';
+        var proj = (m.primary_projects && m.primary_projects.length > 0) ? ' | progetti: ' + m.primary_projects.join(', ') : '';
+        return '• <@' + m.slack_user_id + '> *' + m.canonical_name + '*' + alias + role + proj;
+      }).join('\n');
+      await respond({ text: listMsg, response_type: 'ephemeral' });
+      return;
+    }
+
+    if (teamSub === 'refresh') {
+      try {
+        await db.loadTeamRoster();
+        var fresh = db.getTeamRoster() || [];
+        await respond({ text: 'Roster ricaricato da DB: ' + fresh.length + ' membri.', response_type: 'ephemeral' });
+      } catch(e) { await respond({ text: 'Errore refresh: ' + e.message, response_type: 'ephemeral' }); }
+      return;
+    }
+
+    if (teamSub === 'set' && args[2]) {
+      var targetId = args[2].replace(/<@|>/g, '').split('|')[0];
+      // Parse key="value" or key=value[,value] pairs
+      var raw = command.text.substring(command.text.indexOf('set') + 3).trim();
+      raw = raw.replace(/^\s*<@[^>]+>\s*/, '');
+      var parsed = {};
+      var kvRe = /(\w+)\s*=\s*(?:"([^"]*)"|([^\s]+))/g;
+      var match;
+      while ((match = kvRe.exec(raw)) !== null) { parsed[match[1].toLowerCase()] = match[2] != null ? match[2] : match[3]; }
+
+      var existing = roster.find(function(m) { return m.slack_user_id === targetId; }) || {};
+      var aliases = parsed.aliases != null ? parsed.aliases.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.aliases || []);
+      var projects = parsed.progetti != null ? parsed.progetti.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.primary_projects || []);
+      var clients = parsed.clienti != null ? parsed.clienti.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.primary_clients || []);
+      var canonical = parsed.nome || existing.canonical_name || null;
+      if (!canonical) { await respond({ text: 'Manca `nome="..."` (serve alla prima volta).', response_type: 'ephemeral' }); return; }
+      var role = parsed.role != null ? parsed.role : (existing.role || null);
+
+      var saved = await db.upsertTeamMember({
+        slack_user_id: targetId,
+        canonical_name: canonical,
+        aliases: aliases,
+        role: role,
+        primary_projects: projects,
+        primary_clients: clients,
+        active: parsed.active === 'false' ? false : true,
+      });
+      if (saved) await respond({ text: 'Aggiornato <@' + targetId + '> → *' + canonical + '* (' + aliases.length + ' alias, ' + projects.length + ' progetti).', response_type: 'ephemeral' });
+      else await respond({ text: 'Salvataggio fallito.', response_type: 'ephemeral' });
+      return;
+    }
+
+    if (teamSub === 'remove' && args[2]) {
+      var rmId = args[2].replace(/<@|>/g, '').split('|')[0];
+      var ok = await db.deactivateTeamMember(rmId);
+      await respond({ text: ok ? 'Disattivato <@' + rmId + '>.' : 'Non trovato.', response_type: 'ephemeral' });
+      return;
+    }
+
+    await respond({
+      text: '*Comandi team:*\n' +
+        '• `admin team list` — mostra roster\n' +
+        '• `admin team refresh` — ricarica da DB\n' +
+        '• `admin team set @utente nome="Peppe" aliases="giuseppe,peppino" role="Logistica" progetti="OffKatania" clienti=""`\n' +
+        '• `admin team remove @utente` — disattiva',
+      response_type: 'ephemeral',
+    });
+    return;
+  }
+
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove]` — gestisci il roster del team (disambiguazione nomi)\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

@@ -1,9 +1,23 @@
 // ─── Memories ────────────────────────────────────────────────────────────────
 'use strict';
 
+var crypto = require('crypto');
 var c = require('./client');
 var search = require('./search');
 var logger = require('../../utils/logger');
+var { scrubPII } = require('../../utils/piiScrub');
+
+// 16-char SHA-1 of a normalized content string — stable across whitespace/case changes
+// so that "X ha detto Y." and "x ha detto Y" collide in dedup.
+function contentHash(content) {
+  var normalized = String(content || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\p{L}\p{N} ]+/gu, '')
+    .trim();
+  if (!normalized) return null;
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 16);
+}
 
 // ─── Memory type classification ───────────────────────────────────────────────
 
@@ -146,12 +160,61 @@ async function loadMemories() {
 
 async function addMemory(userId, content, tags, options) {
   options = options || {};
+  // Scrub PII before anything else so dedup / classify / embedding all run on
+  // the clean string. Keeps personal data out of long-term storage.
+  content = scrubPII(content);
   var classification = options.memory_type
     ? { type: options.memory_type, confidence: options.confidence_score || 0.5, expiresIn: options.expiresIn || null, shared: options.shared || false }
     : classifyMemoryType(content);
 
   var expiresAt = classification.expiresIn ? new Date(Date.now() + classification.expiresIn).toISOString() : null;
   var slackUserId = classification.shared ? null : userId;
+  var hash = contentHash(content);
+  var threadTs = options.threadTs || null;
+
+  // Content-level dedup: if we've already stored the same normalized content
+  // for this user in the last 30 days, skip the write. Prevents the bot from
+  // parroting the same memory across threads (fixes "ripetitivo").
+  if (hash && c.useSupabase) {
+    try {
+      var dupQuery = c.getClient().from('memories')
+        .select('id')
+        .eq('content_hash', hash)
+        .is('superseded_by', null)
+        .gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString())
+        .limit(1);
+      if (slackUserId) dupQuery = dupQuery.eq('slack_user_id', slackUserId);
+      else dupQuery = dupQuery.is('slack_user_id', null);
+      var dupRes = await dupQuery;
+      if (dupRes.data && dupRes.data.length > 0) {
+        logger.debug('[DB-MEMORIES] Skip duplicate content_hash', hash, 'for user', slackUserId || 'shared');
+        return { id: dupRes.data[0].id, duplicate: true };
+      }
+    } catch(e) {
+      // Column may not exist yet (migration pending) — fall through silently
+      if (!/content_hash/i.test(String(e && e.message || ''))) {
+        logger.debug('[DB-MEMORIES] dedup check skipped:', e.message);
+      }
+    }
+  }
+
+  // Semantic dedup — only for SHARED memories (team-wide knowledge). Stops
+  // paraphrased duplicates like "X è nostro partner" vs "X è partner" from
+  // piling up in the shared pool. Limited scope keeps embedding cost low.
+  if (classification.shared && c.useSupabase && content.length > 30) {
+    try {
+      var emb = require('../embeddingService');
+      if (emb.getProvider()) {
+        var semDup = await emb.semanticSearchMemories(content, null, { threshold: 0.95, limit: 1 });
+        if (semDup && semDup.length > 0) {
+          logger.debug('[DB-MEMORIES] Skip semantic duplicate (similarity >0.95) for shared memory');
+          return { id: semDup[0].id, duplicate: true, reason: 'semantic' };
+        }
+      }
+    } catch(e) {
+      // Embedding/RPC not available — fall through
+    }
+  }
 
   var entry = {
     id: 'mn' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
@@ -160,6 +223,8 @@ async function addMemory(userId, content, tags, options) {
     created: new Date().toISOString(),
     memory_type: classification.type,
     expires_at: expiresAt,
+    thread_ts: threadTs,
+    content_hash: hash,
   };
   if (!_memCache) _memCache = {};
   if (!_memCache[userId]) _memCache[userId] = [];
@@ -171,29 +236,56 @@ async function addMemory(userId, content, tags, options) {
   }
 
   var entityRefs = [];
+  var teamRefs = [];
   try {
     var entData = _getEntityCache();
     if (!entData) {
-      var entRes = await c.getClient().from('kb_entities').select('canonical_name, aliases').limit(500);
+      var entRes = await c.getClient().from('kb_entities').select('canonical_name, aliases, entity_category').limit(500);
       entData = entRes.data || [];
       _setEntityCache(entData);
     }
     if (entData) {
       var contentLow = content.toLowerCase();
-      entityRefs = entData.filter(function(e) {
-        if (e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase())) return true;
-        // Also match aliases
-        if (e.aliases && Array.isArray(e.aliases)) {
-          return e.aliases.some(function(alias) {
-            return alias.length > 3 && contentLow.includes(alias.toLowerCase());
+      entData.forEach(function(e) {
+        var hit = false;
+        if (e.canonical_name && e.canonical_name.length > 2 && contentLow.includes(e.canonical_name.toLowerCase())) hit = true;
+        if (!hit && e.aliases && Array.isArray(e.aliases)) {
+          hit = e.aliases.some(function(alias) {
+            return alias && alias.length > 2 && contentLow.includes(alias.toLowerCase());
           });
         }
-        return false;
-      }).map(function(e) { return e.canonical_name; });
+        if (!hit) return;
+        entityRefs.push(e.canonical_name);
+        if (e.entity_category === 'team') teamRefs.push(e.canonical_name);
+      });
     }
   } catch(e) {
     logger.warn('[DB-MEMORIES] operazione fallita:', e.message);
   }
+
+  // Also resolve against the authoritative team roster so that team members
+  // get tagged with their Slack user_id (team:<@U...>) regardless of whether
+  // kb_entities has a matching row — this is what stops "Peppe/Giusy/Claudia"
+  // from being attributed to a client with the same short name.
+  try {
+    var teamMod = require('./team');
+    var teamHits = teamMod.findTeamMembersInText(content);
+    for (var thI = 0; thI < teamHits.length; thI++) {
+      var tm = teamHits[thI];
+      if (!tm || !tm.slack_user_id) continue;
+      var idTag = 'team:' + tm.slack_user_id;
+      if (tags.indexOf(idTag) === -1) tags.push(idTag);
+      if (entityRefs.indexOf(tm.canonical_name) === -1) entityRefs.push(tm.canonical_name);
+      if (teamRefs.indexOf(tm.canonical_name) === -1) teamRefs.push(tm.canonical_name);
+    }
+  } catch(_) {}
+
+  // Deduplicate entityRefs (team + kb_entities can overlap on the same name)
+  if (entityRefs.length > 1) {
+    var seenRef = {};
+    entityRefs = entityRefs.filter(function(n) { if (seenRef[n]) return false; seenRef[n] = true; return true; });
+  }
+  entry.tags = tags;
 
   // Generate embedding for semantic search (fire-and-forget)
   var embedding = null;
@@ -217,9 +309,23 @@ async function addMemory(userId, content, tags, options) {
       source_channel_id: options.channelId || null,
       entity_refs: entityRefs.length > 0 ? entityRefs : null,
       expires_at: expiresAt,
+      thread_ts: threadTs,
+      content_hash: hash,
     };
     if (embedding) insertData.embedding = embedding;
-    await c.getClient().from('memories').insert(insertData);
+    try {
+      await c.getClient().from('memories').insert(insertData);
+    } catch(insertErr) {
+      // Graceful fallback if thread_ts / content_hash columns are not yet applied
+      var msg = String(insertErr && insertErr.message || '');
+      if (/thread_ts|content_hash/i.test(msg)) {
+        delete insertData.thread_ts;
+        delete insertData.content_hash;
+        await c.getClient().from('memories').insert(insertData);
+      } else {
+        throw insertErr;
+      }
+    }
 
     if (entityRefs.length > 0) {
       var graphRows = entityRefs.map(function(name) {
@@ -463,4 +569,5 @@ module.exports = {
   deleteMemory: deleteMemory,
   searchMemories: searchMemories,
   getMemCache: getMemCache,
+  contentHash: contentHash,
 };

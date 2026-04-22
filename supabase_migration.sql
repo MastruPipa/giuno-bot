@@ -189,3 +189,58 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_metrics_updated_at ON runtime_metrics(updated_at);
+
+-- 16. Learning/context hardening (Round 2 — thread awareness & dedup)
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS thread_ts TEXT;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_hash TEXT;
+CREATE INDEX IF NOT EXISTS memories_thread_ts_idx ON memories(thread_ts) WHERE thread_ts IS NOT NULL;
+CREATE INDEX IF NOT EXISTS memories_content_hash_idx ON memories(slack_user_id, content_hash) WHERE content_hash IS NOT NULL;
+
+ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS source_thread_ts TEXT;
+CREATE INDEX IF NOT EXISTS kb_source_thread_ts_idx ON knowledge_base(source_thread_ts) WHERE source_thread_ts IS NOT NULL;
+
+-- 17. Per-user sticky facts (Round 3B — durable 1:1 memory).
+-- Stable truths about each team member: role, style, recurring projects, etc.
+-- Extracted asynchronously from the DM rolling summary.
+CREATE TABLE IF NOT EXISTS user_facts (
+  id TEXT PRIMARY KEY,
+  slack_user_id TEXT NOT NULL,
+  fact TEXT NOT NULL,
+  category TEXT,
+  confidence NUMERIC DEFAULT 0.6,
+  source TEXT DEFAULT 'dm_summary',
+  last_confirmed_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS user_facts_user_idx ON user_facts(slack_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS user_facts_unique_idx ON user_facts(slack_user_id, category, fact);
+
+-- 18. Proactive followups (one row per sent nudge, per user+item).
+-- Used to avoid spamming: at most one follow-up per item, cooldown 3 days.
+CREATE TABLE IF NOT EXISTS followup_log (
+  slack_user_id TEXT NOT NULL,
+  item_hash TEXT NOT NULL,
+  item_description TEXT,
+  sent_at TIMESTAMPTZ DEFAULT NOW(),
+  attempts INT DEFAULT 1,
+  PRIMARY KEY (slack_user_id, item_hash)
+);
+CREATE INDEX IF NOT EXISTS followup_log_sent_idx ON followup_log(sent_at);
+
+-- 19. Team roster — authoritative source of truth on who's in the team.
+-- Aliases (nicknames, diminutivi) are stored explicitly so the model can
+-- resolve "Peppe"/"Giusy"/"Clà" to the right Slack user and never confuse
+-- a team member with a client that shares the same short name.
+CREATE TABLE IF NOT EXISTS team_members (
+  slack_user_id TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  aliases TEXT[] DEFAULT '{}',
+  role TEXT,
+  primary_projects TEXT[] DEFAULT '{}',
+  primary_clients TEXT[] DEFAULT '{}',
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS team_members_active_idx ON team_members(active) WHERE active = TRUE;

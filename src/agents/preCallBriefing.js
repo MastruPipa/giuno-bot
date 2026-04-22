@@ -19,7 +19,35 @@ async function buildBriefing(userId, event) {
     : 'tutto il giorno';
 
   // Collect raw data
-  var rawData = { title: title, time: startTime, attendees: [], crmData: null, channelDigest: null, projectInfo: null };
+  var rawData = { title: title, time: startTime, attendees: [], crmData: null, channelDigest: null, projectInfo: null, ownerFacts: null, ownerMemory: null, ownerOpenItems: null };
+
+  // Owner context — what do we already know about the person whose calendar
+  // this is? Helps Haiku tailor the briefing ("Gianna, tu stai seguendo X, ricorda che...").
+  try {
+    var userFacts = await db.getUserFacts(userId, 8);
+    if (userFacts && userFacts.length > 0) {
+      var byCat = {};
+      userFacts.forEach(function(f) { (byCat[f.category] = byCat[f.category] || []).push(f.fact); });
+      rawData.ownerFacts = byCat;
+    }
+  } catch(e) { /* user_facts may not exist */ }
+
+  try {
+    var supabase = db.getClient && db.getClient();
+    if (supabase) {
+      var summ = await supabase.from('conversation_summaries')
+        .select('summary, proposed_actions')
+        .eq('conv_key', userId)
+        .limit(1);
+      if (summ.data && summ.data.length > 0) {
+        if (summ.data[0].summary) rawData.ownerMemory = summ.data[0].summary.substring(0, 600);
+        var openItems = (summ.data[0].proposed_actions || []).filter(function(a) {
+          return a && a.type === 'open_item' && a.description;
+        });
+        if (openItems.length > 0) rawData.ownerOpenItems = openItems.slice(0, 3).map(function(a) { return a.description; });
+      }
+    }
+  } catch(e) { /* non-blocking */ }
 
   // Attendees
   if (event.attendees) {
@@ -88,13 +116,18 @@ async function buildBriefing(userId, event) {
     var res = await llmClient.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
-      system: 'Briefing pre-call per agenzia marketing. Max 5 righe, tono naturale.\n' +
+      system: 'Briefing pre-call per agenzia marketing. Max 6 righe, tono naturale.\n' +
         'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +
         'Non usare CAPS. Non dire "BRIEFING CALL". Non mostrare status CRM tecnici ("lost", "won").\n' +
         'Non inventare valori in € se non sono nei dati.\n' +
         'Se c\'è un partecipante esterno, metti solo il nome (no email gmail/hotmail).\n' +
+        'Se ownerFacts/ownerMemory/ownerOpenItems sono presenti, usali per ricordare al destinatario ' +
+        '(che è l\'owner del calendario) cosa stava facendo con questo cliente/progetto: cita 1 fatto pertinente ' +
+        'o 1 open item se aiuta. NON riferire tutto il contenuto di ownerMemory, solo quello rilevante al meeting.\n' +
+        'Quando citi un collega usa il tag <@U...> dal ROSTER TEAM. Non confondere membri del team con clienti che hanno nomi simili.\n' +
         'Formato: frasi normali, *grassetto* solo per nomi. Conciso.',
-      messages: [{ role: 'user', content: JSON.stringify(rawData).substring(0, 2000) }],
+      messages: [{ role: 'user',
+        content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + JSON.stringify(rawData).substring(0, 2000) }],
     });
     var briefingText = res.content[0].text.trim();
 

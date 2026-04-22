@@ -22,6 +22,8 @@ var feedback     = require('./feedback');
 var entities     = require('./entities');
 var unifiedSearch = require('./unifiedSearch');
 var projects     = require('./projects');
+var userFacts    = require('./userFacts');
+var team         = require('./team');
 
 async function initAll() {
   var results = await Promise.all([
@@ -36,6 +38,7 @@ async function initAll() {
     channels.loadChannelMap(),
     channels.loadChannelDigests(),
     glossary.loadGlossary(),
+    team.loadTeamRoster(),
   ]);
   return {
     tokens:        results[0],
@@ -77,6 +80,7 @@ module.exports = {
   deleteMemory:   memories.deleteMemory,
   searchMemories: memories.searchMemories,
   getMemCache:    memories.getMemCache,
+  memoryContentHash: memories.contentHash,
 
   // Profiles
   saveProfile:     profiles.saveProfile,
@@ -149,6 +153,20 @@ module.exports = {
   searchDriveContent:   unifiedSearch.searchDriveContent,
   upsertEntity:         unifiedSearch.upsertEntity,
   addGraphEdge:         unifiedSearch.addGraphEdge,
+
+  // User facts (sticky per-person memory)
+  upsertUserFact: userFacts.upsertUserFact,
+  getUserFacts:   userFacts.getUserFacts,
+  touchUserFact:  userFacts.touchUserFact,
+
+  // Team roster (authoritative)
+  loadTeamRoster:        team.loadTeamRoster,
+  getTeamRoster:         team.getTeamRoster,
+  findTeamMemberByName:  team.findTeamMemberByName,
+  findTeamMembersInText: team.findTeamMembersInText,
+  upsertTeamMember:      team.upsertTeamMember,
+  deactivateTeamMember:  team.deactivateTeamMember,
+  formatTeamRosterForPrompt: team.formatRosterForPrompt,
 
   // Projects
   createProject:        projects.createProject,

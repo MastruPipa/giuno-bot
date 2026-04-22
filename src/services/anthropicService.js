@@ -23,6 +23,33 @@ var rateLimits = new Map();
 var RATE_LIMIT  = 20;
 var RATE_WINDOW = 60 * 1000;
 
+// ─── Response fingerprints ──────────────────────────────────────────────────
+// Keep the last 3 replies per user (truncated + TTL 10min) so we can inject a
+// "do not repeat" hint into the system prompt and catch obvious parroting.
+var _responseFingerprints = new Map(); // userId -> [{ ts, preview }]
+var FINGERPRINT_TTL_MS = 10 * 60 * 1000;
+var FINGERPRINT_MAX = 3;
+
+function pruneFingerprints(arr) {
+  var cutoff = Date.now() - FINGERPRINT_TTL_MS;
+  return (arr || []).filter(function(f) { return f.ts > cutoff; });
+}
+
+function getRecentReplies(userId) {
+  var arr = pruneFingerprints(_responseFingerprints.get(userId));
+  _responseFingerprints.set(userId, arr);
+  return arr;
+}
+
+function recordReply(userId, reply) {
+  var preview = String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+  if (!preview) return;
+  var arr = getRecentReplies(userId);
+  arr.push({ ts: Date.now(), preview: preview });
+  while (arr.length > FINGERPRINT_MAX) arr.shift();
+  _responseFingerprints.set(userId, arr);
+}
+
 function checkRateLimit(userId) {
   var now   = Date.now();
   var entry = rateLimits.get(userId);
@@ -251,6 +278,107 @@ async function compressConversation(messages, convKey) {
   }
 }
 
+// ─── DM rolling summary ──────────────────────────────────────────────────────
+// The compressConversation path only fires above 20 messages, which is way too
+// late for a 1:1 DM where Giuno should already remember the last few turns the
+// next morning. Keep a lightweight, debounced Haiku summary per user.
+
+var _dmSummaryState = new Map(); // userId -> { lastUpdateAt, lastMsgCount }
+var DM_SUMMARY_MIN_MESSAGES = 4;
+var DM_SUMMARY_MIN_GROWTH = 4;
+var DM_SUMMARY_COOLDOWN_MS = 3 * 60 * 1000;
+
+async function maybeUpdateDmSummary(userId, messages) {
+  if (!userId || !Array.isArray(messages) || messages.length < DM_SUMMARY_MIN_MESSAGES) return;
+  var state = _dmSummaryState.get(userId) || { lastUpdateAt: 0, lastMsgCount: 0 };
+  var now = Date.now();
+  var growth = messages.length - (state.lastMsgCount || 0);
+  var cooledDown = (now - state.lastUpdateAt) > DM_SUMMARY_COOLDOWN_MS;
+  if (!cooledDown && growth < DM_SUMMARY_MIN_GROWTH) return;
+
+  // Keep the last ~16 turns so Haiku has enough context without blowing tokens.
+  var slice = messages.slice(-16);
+  var transcript = slice.map(function(m) {
+    var role = m.role === 'user' ? 'Utente' : 'Giuno';
+    var text = typeof m.content === 'string' ? m.content : '';
+    return role + ': ' + text.replace(/\s+/g, ' ').substring(0, 400);
+  }).join('\n');
+
+  try {
+    var res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 500,
+      system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
+        'Produci DUE blocchi in italiano, in questo formato ESATTO:\n\n' +
+        'SUMMARY:\n<4-6 frasi su cosa sta cercando di fare, topic/clienti/progetti ricorrenti, preferenze, cosa resta in sospeso. Se domani l\'utente scrive "riprendiamo", deve bastare per ripartire.>\n\n' +
+        'OPEN_ITEMS:\n<0-5 bullet di action item aperti, uno per riga, prefisso "- ". Vuoto se nessuno.>\n\n' +
+        'FACTS:\n<0-8 fatti stabili, uno per riga, formato "category: fact". ' +
+        'category ammesse: role, style, current_client, current_project, preference, schedule, tool. ' +
+        'Fact breve (max ~100 char), asserivo, senza speculation. Esempio "style: conciso, diretto". ' +
+        'Vuoto se nulla di chiaro.>\n\n' +
+        'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team. ' +
+        'Quando citi altri membri del team usa il tag <@U...> preso dal ROSTER. Non confondere i nomi (Peppe ≠ Giusy, Claudia ≠ Clà di un cliente).',
+      messages: [{ role: 'user', content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + transcript }],
+    });
+    var raw = (res.content[0] && res.content[0].text || '').trim();
+    if (!raw) return;
+
+    var summary = '';
+    var openItems = [];
+    var facts = [];
+
+    var summaryMatch = raw.match(/SUMMARY:\s*([\s\S]*?)(?=\n\s*OPEN_ITEMS:|\n\s*FACTS:|$)/i);
+    if (summaryMatch) summary = summaryMatch[1].trim();
+
+    var openMatch = raw.match(/OPEN_ITEMS:\s*([\s\S]*?)(?=\n\s*FACTS:|$)/i);
+    if (openMatch) {
+      openItems = openMatch[1].split(/\n/).map(function(l) {
+        return l.replace(/^\s*[-•*]\s*/, '').trim();
+      }).filter(function(l) { return l.length > 2; });
+    }
+
+    var factsMatch = raw.match(/FACTS:\s*([\s\S]*)$/i);
+    if (factsMatch) {
+      factsMatch[1].split(/\n/).forEach(function(line) {
+        var clean = line.replace(/^\s*[-•*]\s*/, '').trim();
+        if (!clean) return;
+        var colonIdx = clean.indexOf(':');
+        if (colonIdx <= 0) return;
+        var category = clean.slice(0, colonIdx).trim().toLowerCase();
+        var fact = clean.slice(colonIdx + 1).trim();
+        if (category && fact && /^(role|style|current_client|current_project|preference|schedule|tool)$/.test(category)) {
+          facts.push({ category: category, fact: fact });
+        }
+      });
+    }
+
+    if (!summary) summary = raw; // fallback: raw text is the summary
+
+    var topicTokens = summary.toLowerCase().split(/\W+/).filter(function(w) { return w.length > 4; });
+    var seenTopics = {};
+    var topics = [];
+    for (var ti = 0; ti < topicTokens.length && topics.length < 10; ti++) {
+      if (!seenTopics[topicTokens[ti]]) { seenTopics[topicTokens[ti]] = true; topics.push(topicTokens[ti]); }
+    }
+
+    var proposedActions = openItems.map(function(item) {
+      return { type: 'open_item', description: item, proposed_at: new Date().toISOString() };
+    });
+
+    await db.saveConversationSummary(userId, summary, messages.length, topics, proposedActions);
+
+    // Fire-and-forget: upsert extracted facts so they survive summary rewrites.
+    for (var fi = 0; fi < facts.length; fi++) {
+      db.upsertUserFact(userId, facts[fi].category, facts[fi].fact, 0.7).catch(function() {});
+    }
+
+    _dmSummaryState.set(userId, { lastUpdateAt: now, lastMsgCount: messages.length });
+    logger.info('[DM-SUMMARY] aggiornata per', userId, '— messaggi:', messages.length, '| open:', openItems.length, '| facts:', facts.length);
+  } catch(e) {
+    logger.debug('[DM-SUMMARY] update skipped:', e.message);
+  }
+}
+
 // ─── Auto-learn ────────────────────────────────────────────────────────────────
 
 var { askGemini } = require('./geminiService');
@@ -359,7 +487,11 @@ async function autoLearn(userId, userMessage, botReply, context) {
             enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
           }
           var tags = (m.tags || []).concat(['data:' + dateTag]);
-          db.addMemory(userId, enrichedContent, tags);
+          var memOpts = {};
+          if (context && context.threadTs) memOpts.threadTs = context.threadTs;
+          if (context && context.channelId) memOpts.channelId = context.channelId;
+          if (context && context.channelType) memOpts.channelType = context.channelType;
+          db.addMemory(userId, enrichedContent, tags, memOpts);
           logger.info('[AUTO-LEARN] Memoria:', enrichedContent.substring(0, 60));
         }
       }
@@ -606,20 +738,61 @@ async function askGiuno(userId, userMessage, options) {
   // DM summary in thread context (fix #11, #19)
   if (options.threadTs && options.isDM) {
     try {
-      var convSummaries = db.getConversationSummary ? db.getConversationSummary(conversationKey(userId, options.threadTs)) : null;
-      if (convSummaries) {
-        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries + '\n';
+      var convSummaries = db.getConversationSummary
+        ? await db.getConversationSummary(conversationKey(userId, options.threadTs))
+        : null;
+      if (convSummaries && convSummaries.summary) {
+        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries.summary + '\n';
       }
     } catch(e) {
       logger.debug('[CONTEXT] DM summary non disponibile:', e.message);
     }
   }
 
-  // Reverse context: if in DM, fetch latest thread context for this user (fix #19 completion)
+  // Reverse context: if we're in a DM, always pull the rolling 1:1 summary
+  // (conv_key = userId, no thread suffix) plus the most recent thread summary
+  // for this user, so a new turn after hours/days lands on real continuity.
   if (!options.threadTs && (!options.channelId || options.isDM)) {
     try {
       var supabaseForThreadCtx = require('./db/client').getClient();
       if (supabaseForThreadCtx) {
+        // 0) Sticky facts per-user — durable truths that survive summary rewrites.
+        try {
+          var facts = await db.getUserFacts(userId, 12);
+          if (facts && facts.length > 0) {
+            var factsByCat = {};
+            facts.forEach(function(f) {
+              if (!factsByCat[f.category]) factsByCat[f.category] = [];
+              factsByCat[f.category].push(f.fact);
+            });
+            var factsLines = Object.keys(factsByCat).map(function(cat) {
+              return '- ' + cat + ': ' + factsByCat[cat].join('; ');
+            }).join('\n');
+            contextData += '\nFATTI STABILI SU QUESTO UTENTE:\n' + factsLines + '\n';
+          }
+        } catch(factsErr) { /* user_facts may not exist yet */ }
+
+        // 1) Main DM rolling summary — this is the bot's persistent memory of
+        // this team member. Injected verbatim with a clear header.
+        var dmMainRes = await supabaseForThreadCtx.from('conversation_summaries')
+          .select('summary, updated_at, messages_count, proposed_actions')
+          .eq('conv_key', userId)
+          .limit(1);
+        if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
+          var dmAgeH = (Date.now() - new Date(dmMainRes.data[0].updated_at).getTime()) / 3600000;
+          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + Math.round(dmAgeH) + 'h fa, ' +
+            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali):\n' +
+            dmMainRes.data[0].summary + '\n';
+          var openActions = (dmMainRes.data[0].proposed_actions || [])
+            .filter(function(a) { return a && a.type === 'open_item' && a.description; });
+          if (openActions.length > 0) {
+            contextData += 'ACTION ITEMS APERTI CON QUESTO UTENTE:\n' +
+              openActions.slice(0, 5).map(function(a) { return '- ' + a.description; }).join('\n') + '\n';
+          }
+        }
+
+        // 2) Most recent thread summary for this user (if any) — useful if the
+        // user had a side-thread recently.
         var recentThreadRes = await supabaseForThreadCtx.from('conversation_summaries')
           .select('conv_key, summary, updated_at')
           .like('conv_key', userId + ':%')
@@ -718,6 +891,27 @@ async function askGiuno(userId, userMessage, options) {
     contextData += '\n' + options.preflightInstruction + '\n';
   }
 
+  // Cross-user redaction rule — always on. Each team member's DMs are private:
+  // never quote verbatim what user A said in DM when answering user B, and
+  // never attribute sensitive info to a specific colleague by name unless the
+  // current user was part of that conversation.
+  contextData += '\n[PRIVACY] Le chat 1:1 tra Giuno e ogni membro del team sono private. ' +
+    'Se riferisci info emerse in DM con un\'altra persona, NON citare virgolettato, ' +
+    'NON attribuire per nome ("Antonio mi ha detto..."), e NON ripetere dettagli personali. ' +
+    'Rielabora a livello di fatto utile, senza fonte, oppure di\' "non posso dirtelo" se è manifestamente privato.\n';
+
+  // Team roster — authoritative disambiguation for short names like Peppe /
+  // Giusy / Claudia (which otherwise get confused with clients/leads).
+  try {
+    var rosterBlock = db.formatTeamRosterForPrompt && db.formatTeamRosterForPrompt();
+    if (rosterBlock) {
+      contextData += '\n' + rosterBlock + '\n' +
+        '[REGOLA TEAM] Quando citi un membro del team USA SEMPRE il tag <@U...> preso dal ROSTER qui sopra. ' +
+        'Se un nome è ambiguo tra membro team e cliente/lead, preferisci il membro team quando siamo in DM o canale interno. ' +
+        'Se non sei sicuro di chi sia, chiedi invece di tirare a indovinare.\n';
+    }
+  } catch(_) {}
+
   // Error pattern warnings — if this topic has known mistakes, warn the LLM
   try {
     var errorTracker = require('./errorTracker');
@@ -730,6 +924,17 @@ async function askGiuno(userId, userMessage, options) {
       contextData += 'PRIMA di rispondere, verifica i dati con un tool. Se non sei sicuro, chiedi conferma.\n';
     }
   } catch(e) { /* errorTracker not available */ }
+
+  // Anti-repetition: inject the last 3 replies we sent to this user so the
+  // model knows what NOT to parrot (fixes "tende ad essere ripetitivo").
+  var recentReplies = getRecentReplies(userId);
+  if (recentReplies.length > 0) {
+    contextData += '\n[ULTIME RISPOSTE CHE HAI GIÀ DATO A QUESTO UTENTE (non ripeterle parola per parola, e se la domanda è la stessa di una di queste fai una variazione utile o chiedi precisazione):\n';
+    recentReplies.forEach(function(r, idx) {
+      contextData += (idx + 1) + '. "' + r.preview + '"\n';
+    });
+    contextData += ']\n';
+  }
 
   // Weekly priorities injection
   try {
@@ -813,6 +1018,20 @@ async function askGiuno(userId, userMessage, options) {
     finalReply = validator.fallbackResponse(finalReply, validation.issue);
   }
 
+  // Soft signal: capitalized names that don't appear in user message or
+  // contextData are candidates for hallucination. Log only — too many false
+  // positives (e.g. fresh entity names) to block on this alone.
+  try {
+    var ungrounded = validator.findUngroundedEntities(finalReply, [resolvedMessage, contextData]);
+    if (ungrounded.length > 0) {
+      logger.warn('[VALIDATOR] Entità non ancorate nel contesto:', ungrounded.join(', '),
+        '| user:', userId, '| reply:', finalReply.substring(0, 120));
+      try {
+        require('./errorTracker').recordError('ungrounded_entities:' + ungrounded.slice(0, 3).join(','), 'ungrounded_entity', userId);
+      } catch(_) {}
+    }
+  } catch(_) {}
+
   // Response cleanup — strip tool names and technical jargon from output
   finalReply = finalReply
     .replace(/\bread_channel\b|\bsearch_kb\b|\brecall_memory\b|\bsearch_leads\b|\bfind_emails\b|\bsearch_drive\b|\bsummarize_channel\b|\bget_channel_digest\b|\bentity_card\b|\bsearch_everywhere\b|\bupdate_lead\b|\bcreate_lead\b|\bask_gemini\b/gi, '')
@@ -828,11 +1047,21 @@ async function askGiuno(userId, userMessage, options) {
     convCache[convKey] = await compressConversation(convCache[convKey], convKey);
   }
   db.saveConversation(convKey, convCache[convKey]);
+  recordReply(userId, finalReply);
+
+  // Keep the 1:1 DM memory fresh (debounced, Haiku — see maybeUpdateDmSummary).
+  var isDmPrincipal = !options.threadTs && (options.isDM || !options.channelId || (options.channelId && options.channelId.startsWith('D')));
+  if (isDmPrincipal) {
+    maybeUpdateDmSummary(userId, convCache[convKey]).catch(function(e) {
+      logger.debug('[DM-SUMMARY] background error:', e.message);
+    });
+  }
 
   var learnContext = {
     channelId: options.channelId || null,
     channelType: options.channelType || 'dm',
     isDM: !options.channelId || (options.channelId && options.channelId.startsWith('D')),
+    threadTs: options.threadTs || null,
   };
   if (options.channelType) learnContext.channelType = options.channelType;
   if (options.isDM != null) learnContext.isDM = options.isDM;
