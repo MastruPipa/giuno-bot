@@ -189,3 +189,12 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_metrics_updated_at ON runtime_metrics(updated_at);
+
+-- 16. Learning/context hardening (Round 2 — thread awareness & dedup)
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS thread_ts TEXT;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_hash TEXT;
+CREATE INDEX IF NOT EXISTS memories_thread_ts_idx ON memories(thread_ts) WHERE thread_ts IS NOT NULL;
+CREATE INDEX IF NOT EXISTS memories_content_hash_idx ON memories(slack_user_id, content_hash) WHERE content_hash IS NOT NULL;
+
+ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS source_thread_ts TEXT;
+CREATE INDEX IF NOT EXISTS kb_source_thread_ts_idx ON knowledge_base(source_thread_ts) WHERE source_thread_ts IS NOT NULL;

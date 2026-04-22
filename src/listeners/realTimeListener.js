@@ -21,13 +21,20 @@ var _stats = { buffered: 0, flushed: 0, saved: 0 };
 
 var VALUE_PATTERNS = [
   /preventivo|proposta|offerta|contratto|€\s*\d/i,
-  /deadline|scadenza|consegna|entro il|entro le/i,
-  /approvato|confermato|ok procedi|firmato/i,
-  /problema|critico|urgente|bloccato|bug/i,
-  /decisione|deciso|si fa così|procediamo con/i,
-  /feedback|revisione|va bene|non va bene/i,
-  /task|da fare|todo|azione|action item/i,
-  /budget|costo|prezzo|tariffa|fee/i,
+  /deadline|scadenza|consegna|entro (il|le|oggi|domani|luned|marted|mercoled|gioved|venerd)/i,
+  /approvato|confermato|ok procedi|firmato|accettat[oa]/i,
+  /problema|critico|urgente|bloccat[oi]|bug|errore|non funziona/i,
+  /decisione|deciso|si fa così|procediamo con|andiamo con|optiamo per/i,
+  /feedback|revisione|va bene|non va bene|da rifare|da correggere/i,
+  /task|da fare|todo|azione|action item|responsabile|si occupa/i,
+  /budget|costo|prezzo|tariffa|fee|fattur|pagamento|incasso/i,
+  // Client & project signals (named entities often appear without other keywords)
+  /cliente|progetto|brief|campagna|lancio|rilascio|release/i,
+  /meeting|call|riunione|appuntamento|presentazione|demo|brainstorm/i,
+  // Question patterns — users often share context while asking
+  /\b(chi|cosa|come|dove|quando|perch[eé]|quanto|quanti|quale|quali)\b.{10,}\?/i,
+  // Substantive discussions (long-form) in channels are usually worth capturing
+  /^.{180,}$/,
 ];
 
 function hasValueSignal(text) {
@@ -53,9 +60,9 @@ function register(app) {
     // Quick check: does this message have any value signal?
     if (!hasValueSignal(text)) return;
 
-    // Buffer the message
+    // Buffer the message (keep thread_ts so we can group a thread into one unit)
     if (!_buffers[channelId]) _buffers[channelId] = [];
-    _buffers[channelId].push({ text: text, user: event.user, ts: event.ts });
+    _buffers[channelId].push({ text: text, user: event.user, ts: event.ts, thread_ts: event.thread_ts || null });
     _stats.buffered++;
 
     // Cache channel metadata (lazy, once)
@@ -100,6 +107,14 @@ async function flushChannel(channelId) {
   if (!supabase) return;
 
   var meta = _channelMeta[channelId] || {};
+  // If every buffered message belongs to the same thread we tag the whole batch
+  // so downstream retrieval can fetch it as a cohesive unit (fixes "non impara dai thread").
+  var threadTsSet = messages.reduce(function(acc, m) {
+    if (m.thread_ts) acc[m.thread_ts] = true;
+    return acc;
+  }, {});
+  var threadTsKeys = Object.keys(threadTsSet);
+  var batchThreadTs = threadTsKeys.length === 1 ? threadTsKeys[0] : null;
   var batchText = messages.map(function(m) {
     return '[' + (m.user || '?') + ']: ' + m.text;
   }).join('\n').substring(0, 4000);
@@ -133,7 +148,7 @@ async function flushChannel(channelId) {
       var kbId = 'kb_rt_' + Date.now().toString(36) + '_' + i;
       var confidence = { 'decisione': 0.7, 'scadenza': 0.75, 'prezzo': 0.7, 'problema': 0.65, 'task': 0.6, 'feedback': 0.55 }[item.type] || 0.5;
 
-      await supabase.from('knowledge_base').insert({
+      var row = {
         id: kbId,
         content: '#' + (meta.name || '?') + ' — ' + item.content,
         source_type: 'slack_realtime',
@@ -143,8 +158,16 @@ async function flushChannel(channelId) {
         confidence_tier: meta.is_private ? 'slack_private' : 'slack_public',
         validation_status: 'approved',
         added_by: 'realtime_listener',
-        tags: [meta.name, item.type, meta.cliente].filter(Boolean),
-      }).catch(function(e) {});
+        tags: [meta.name, item.type, meta.cliente, batchThreadTs ? 'thread:' + batchThreadTs : null].filter(Boolean),
+      };
+      if (batchThreadTs) row.source_thread_ts = batchThreadTs;
+      await supabase.from('knowledge_base').insert(row).catch(function(err) {
+        // Retry without source_thread_ts if migration is not yet applied
+        if (row.source_thread_ts && /source_thread_ts/i.test(String(err && err.message || ''))) {
+          delete row.source_thread_ts;
+          return supabase.from('knowledge_base').insert(row).catch(function() {});
+        }
+      });
 
       // Entity linking
       if (item.entities && item.entities.length > 0) {

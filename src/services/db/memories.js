@@ -1,9 +1,22 @@
 // ─── Memories ────────────────────────────────────────────────────────────────
 'use strict';
 
+var crypto = require('crypto');
 var c = require('./client');
 var search = require('./search');
 var logger = require('../../utils/logger');
+
+// 16-char SHA-1 of a normalized content string — stable across whitespace/case changes
+// so that "X ha detto Y." and "x ha detto Y" collide in dedup.
+function contentHash(content) {
+  var normalized = String(content || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\p{L}\p{N} ]+/gu, '')
+    .trim();
+  if (!normalized) return null;
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 16);
+}
 
 // ─── Memory type classification ───────────────────────────────────────────────
 
@@ -152,6 +165,34 @@ async function addMemory(userId, content, tags, options) {
 
   var expiresAt = classification.expiresIn ? new Date(Date.now() + classification.expiresIn).toISOString() : null;
   var slackUserId = classification.shared ? null : userId;
+  var hash = contentHash(content);
+  var threadTs = options.threadTs || null;
+
+  // Content-level dedup: if we've already stored the same normalized content
+  // for this user in the last 30 days, skip the write. Prevents the bot from
+  // parroting the same memory across threads (fixes "ripetitivo").
+  if (hash && c.useSupabase) {
+    try {
+      var dupQuery = c.getClient().from('memories')
+        .select('id')
+        .eq('content_hash', hash)
+        .is('superseded_by', null)
+        .gte('created_at', new Date(Date.now() - 30 * 86400000).toISOString())
+        .limit(1);
+      if (slackUserId) dupQuery = dupQuery.eq('slack_user_id', slackUserId);
+      else dupQuery = dupQuery.is('slack_user_id', null);
+      var dupRes = await dupQuery;
+      if (dupRes.data && dupRes.data.length > 0) {
+        logger.debug('[DB-MEMORIES] Skip duplicate content_hash', hash, 'for user', slackUserId || 'shared');
+        return { id: dupRes.data[0].id, duplicate: true };
+      }
+    } catch(e) {
+      // Column may not exist yet (migration pending) — fall through silently
+      if (!/content_hash/i.test(String(e && e.message || ''))) {
+        logger.debug('[DB-MEMORIES] dedup check skipped:', e.message);
+      }
+    }
+  }
 
   var entry = {
     id: 'mn' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
@@ -160,6 +201,8 @@ async function addMemory(userId, content, tags, options) {
     created: new Date().toISOString(),
     memory_type: classification.type,
     expires_at: expiresAt,
+    thread_ts: threadTs,
+    content_hash: hash,
   };
   if (!_memCache) _memCache = {};
   if (!_memCache[userId]) _memCache[userId] = [];
@@ -217,9 +260,23 @@ async function addMemory(userId, content, tags, options) {
       source_channel_id: options.channelId || null,
       entity_refs: entityRefs.length > 0 ? entityRefs : null,
       expires_at: expiresAt,
+      thread_ts: threadTs,
+      content_hash: hash,
     };
     if (embedding) insertData.embedding = embedding;
-    await c.getClient().from('memories').insert(insertData);
+    try {
+      await c.getClient().from('memories').insert(insertData);
+    } catch(insertErr) {
+      // Graceful fallback if thread_ts / content_hash columns are not yet applied
+      var msg = String(insertErr && insertErr.message || '');
+      if (/thread_ts|content_hash/i.test(msg)) {
+        delete insertData.thread_ts;
+        delete insertData.content_hash;
+        await c.getClient().from('memories').insert(insertData);
+      } else {
+        throw insertErr;
+      }
+    }
 
     if (entityRefs.length > 0) {
       var graphRows = entityRefs.map(function(name) {
@@ -463,4 +520,5 @@ module.exports = {
   deleteMemory: deleteMemory,
   searchMemories: searchMemories,
   getMemCache: getMemCache,
+  contentHash: contentHash,
 };

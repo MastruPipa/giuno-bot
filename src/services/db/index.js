@@ -77,6 +77,7 @@ module.exports = {
   deleteMemory:   memories.deleteMemory,
   searchMemories: memories.searchMemories,
   getMemCache:    memories.getMemCache,
+  memoryContentHash: memories.contentHash,
 
   // Profiles
   saveProfile:     profiles.saveProfile,

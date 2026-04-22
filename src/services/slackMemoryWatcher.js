@@ -89,6 +89,7 @@ async function processSlackMessage(message, channelId) {
       if (found) {
         db.addMemory(userId, 'Segnale completamento: "' + text.substring(0, 100) + '"', ['signal:completion'], {
           memory_type: 'episodic', channelType: 'public', channelId: channelId, confidence_score: 0.4,
+          threadTs: message.thread_ts || null,
         });
         logger.debug('[MEM-WATCHER] Completion signal detected');
       }
@@ -113,13 +114,17 @@ async function processSlackMessage(message, channelId) {
     if (chMapping.cliente) tags.push('cliente:' + chMapping.cliente.toLowerCase());
     if (chMapping.progetto) tags.push('progetto:' + chMapping.progetto.toLowerCase());
 
-    // Save as KB entry (low confidence, auto_learn tier)
+    // Save as KB entry (low confidence, auto_learn tier). Carry thread_ts so
+    // replies inside the same thread stay linked together instead of fanning
+    // out as disconnected entries.
     var content = '[#' + channelName + '] ' + text.substring(0, 300);
+    if (message.thread_ts) tags.push('thread:' + message.thread_ts);
     db.addKBEntry(content, tags, userId || 'slack-watcher', {
       confidenceTier: 'auto_learn',
       sourceType: 'slack',
       sourceChannelId: channelId,
-      sourceChannelType: 'public',
+      sourceChannelType: chMapping.is_private ? 'private' : 'public',
+      sourceThreadTs: message.thread_ts || null,
     });
 
     // Only react 📝 for high-value patterns (decisions, deadlines, blockers) — not for every match

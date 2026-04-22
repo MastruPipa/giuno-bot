@@ -23,6 +23,33 @@ var rateLimits = new Map();
 var RATE_LIMIT  = 20;
 var RATE_WINDOW = 60 * 1000;
 
+// ─── Response fingerprints ──────────────────────────────────────────────────
+// Keep the last 3 replies per user (truncated + TTL 10min) so we can inject a
+// "do not repeat" hint into the system prompt and catch obvious parroting.
+var _responseFingerprints = new Map(); // userId -> [{ ts, preview }]
+var FINGERPRINT_TTL_MS = 10 * 60 * 1000;
+var FINGERPRINT_MAX = 3;
+
+function pruneFingerprints(arr) {
+  var cutoff = Date.now() - FINGERPRINT_TTL_MS;
+  return (arr || []).filter(function(f) { return f.ts > cutoff; });
+}
+
+function getRecentReplies(userId) {
+  var arr = pruneFingerprints(_responseFingerprints.get(userId));
+  _responseFingerprints.set(userId, arr);
+  return arr;
+}
+
+function recordReply(userId, reply) {
+  var preview = String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+  if (!preview) return;
+  var arr = getRecentReplies(userId);
+  arr.push({ ts: Date.now(), preview: preview });
+  while (arr.length > FINGERPRINT_MAX) arr.shift();
+  _responseFingerprints.set(userId, arr);
+}
+
 function checkRateLimit(userId) {
   var now   = Date.now();
   var entry = rateLimits.get(userId);
@@ -359,7 +386,11 @@ async function autoLearn(userId, userMessage, botReply, context) {
             enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
           }
           var tags = (m.tags || []).concat(['data:' + dateTag]);
-          db.addMemory(userId, enrichedContent, tags);
+          var memOpts = {};
+          if (context && context.threadTs) memOpts.threadTs = context.threadTs;
+          if (context && context.channelId) memOpts.channelId = context.channelId;
+          if (context && context.channelType) memOpts.channelType = context.channelType;
+          db.addMemory(userId, enrichedContent, tags, memOpts);
           logger.info('[AUTO-LEARN] Memoria:', enrichedContent.substring(0, 60));
         }
       }
@@ -731,6 +762,17 @@ async function askGiuno(userId, userMessage, options) {
     }
   } catch(e) { /* errorTracker not available */ }
 
+  // Anti-repetition: inject the last 3 replies we sent to this user so the
+  // model knows what NOT to parrot (fixes "tende ad essere ripetitivo").
+  var recentReplies = getRecentReplies(userId);
+  if (recentReplies.length > 0) {
+    contextData += '\n[ULTIME RISPOSTE CHE HAI GIÀ DATO A QUESTO UTENTE (non ripeterle parola per parola, e se la domanda è la stessa di una di queste fai una variazione utile o chiedi precisazione):\n';
+    recentReplies.forEach(function(r, idx) {
+      contextData += (idx + 1) + '. "' + r.preview + '"\n';
+    });
+    contextData += ']\n';
+  }
+
   // Weekly priorities injection
   try {
     var supabaseForPrio = require('./db/client').getClient();
@@ -828,11 +870,13 @@ async function askGiuno(userId, userMessage, options) {
     convCache[convKey] = await compressConversation(convCache[convKey], convKey);
   }
   db.saveConversation(convKey, convCache[convKey]);
+  recordReply(userId, finalReply);
 
   var learnContext = {
     channelId: options.channelId || null,
     channelType: options.channelType || 'dm',
     isDM: !options.channelId || (options.channelId && options.channelId.startsWith('D')),
+    threadTs: options.threadTs || null,
   };
   if (options.channelType) learnContext.channelType = options.channelType;
   if (options.isDM != null) learnContext.isDM = options.isDM;

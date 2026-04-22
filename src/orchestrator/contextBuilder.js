@@ -86,6 +86,47 @@ async function buildContext(params) {
   var channelProfile = null;
   var teamContext = null;
 
+  // Thread-aware preflight: if we're in a known thread, pull memories/KB entries
+  // tagged to it so Giuno doesn't keep re-fetching the same Slack context.
+  // Runs before unified_search so thread hits always win.
+  var supabaseForThread = db.isSupabase && db.isSupabase() ? db.getClient() : null;
+  if (options.threadTs && supabaseForThread) {
+    try {
+      var threadMemRes = await withTimeout(function() {
+        return supabaseForThread.from('memories')
+          .select('id, content, memory_type, tags, created_at, confidence_score')
+          .eq('thread_ts', options.threadTs)
+          .is('superseded_by', null)
+          .order('created_at', { ascending: false })
+          .limit(5);
+      }, 2000, 'CTX.threadMemories');
+      if (threadMemRes && threadMemRes.data) {
+        threadMemRes.data.forEach(function(m) {
+          relevantMemories.push({ content: m.content, type: m.memory_type, tags: m.tags, created: m.created_at, _fromThread: true });
+        });
+      }
+
+      var threadKbRes = await withTimeout(function() {
+        return supabaseForThread.from('knowledge_base')
+          .select('id, content, tags, confidence_tier, confidence_score')
+          .eq('source_thread_ts', options.threadTs)
+          .order('created_at', { ascending: false })
+          .limit(5);
+      }, 2000, 'CTX.threadKB');
+      if (threadKbRes && threadKbRes.data) {
+        threadKbRes.data.forEach(function(k) {
+          kbResults.push({ content: k.content, tags: k.tags, confidence_tier: k.confidence_tier, _fromThread: true });
+        });
+      }
+    } catch(threadErr) {
+      // thread_ts / source_thread_ts columns may not exist yet (migration pending) —
+      // degrade silently unless it's something else worth investigating.
+      if (!/thread_ts|source_thread_ts/i.test(String(threadErr && threadErr.message || ''))) {
+        logger.warn('[CTX-V2] Thread preflight failed:', threadErr.message);
+      }
+    }
+  }
+
   var unifiedWorked = false;
   if (!isTrivialMessage(message) && message.length > 5 && (needs.memories || needs.kb || needs.entities || needs.drive)) {
     try {
@@ -117,7 +158,8 @@ async function buildContext(params) {
         }
       }
     } catch(e) {
-      logger.warn('[CTX-V2] Unified search error, using fallback:', e.message);
+      logger.warn('[CTX-V2] Unified search error, using fallback:', e.message, { threadTs: options.threadTs, channelId: options.channelId });
+      try { require('../services/errorTracker').recordError(e.message || String(e), 'unified_search', userId); } catch(_) {}
     }
 
     // Post-filter: boost recent results, penalize old ones

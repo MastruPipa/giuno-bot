@@ -138,13 +138,25 @@ async function addKBEntry(content, tags, addedBy, options) {
     return entry;
   }
   try {
-    await c.getClient().from('knowledge_base').insert({
+    var kbRow = {
       id: entry.id, content: content, tags: tags || [], added_by: addedBy,
       created_at: entry.created, confidence_score: entry.confidence_score,
       confidence_tier: entry.confidence_tier, source_type: entry.source_type,
       source_channel_id: entry.source_channel_id, source_channel_type: entry.source_channel_type,
       validation_status: entry.validation_status, expires_at: entry.expires_at, usage_count: 0,
-    });
+    };
+    if (options.sourceThreadTs) kbRow.source_thread_ts = options.sourceThreadTs;
+    try {
+      await c.getClient().from('knowledge_base').insert(kbRow);
+    } catch(kbInsertErr) {
+      // Graceful fallback if source_thread_ts column is not yet applied
+      if (kbRow.source_thread_ts && /source_thread_ts/i.test(String(kbInsertErr && kbInsertErr.message || ''))) {
+        delete kbRow.source_thread_ts;
+        await c.getClient().from('knowledge_base').insert(kbRow);
+      } else {
+        throw kbInsertErr;
+      }
+    }
 
     // Fire-and-forget: generate embedding for semantic search
     try {
