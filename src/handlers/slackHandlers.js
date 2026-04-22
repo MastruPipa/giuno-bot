@@ -25,6 +25,7 @@ var { isDegradedReply } = require('../utils/degradedReply');
 var appHome = require('./appHomeHandler');
 var behaviorTracker = require('../services/behaviorTracker');
 var sentimentClassifier = require('../services/sentimentClassifier');
+var { withTimeout, withRetry } = require('../utils/retryPolicy');
 
 // Register App Home tab
 appHome.register();
@@ -37,16 +38,20 @@ var lastBotMessageByChannel = new Map(); // channelId -> { ts, userId, timestamp
 var stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
 var standupInAttesa = new Set();
 
-// Restore standup state from DB on startup
-try {
-  var _sd = db.getStandupCache();
-  var _oggi = new Date().toISOString().slice(0, 10);
-  if (_sd.oggi === _oggi && _sd.risposte) {
-    // Re-populate standupInAttesa from utenti who haven't responded yet
-    // (actual population happens in dailyStandupV2.sendDailyRequests)
-    logger.info('[STARTUP] Standup state restored for', _oggi);
+// Called from app.js after db.initAll() has populated the standup cache.
+function rehydrateStandupInAttesa() {
+  try {
+    var sd = db.getStandupCache();
+    var today = require('./dailyStandupV2').oggi();
+    standupInAttesa.clear();
+    if (sd.oggi === today && Array.isArray(sd.inattesa)) {
+      sd.inattesa.forEach(function(uid) { standupInAttesa.add(uid); });
+    }
+    logger.info('[STARTUP] Standup state rehydrated for', today, '— inattesa:', standupInAttesa.size);
+  } catch(e) {
+    logger.warn('[STARTUP] rehydrateStandupInAttesa:', e.message);
   }
-} catch(e) { /* ignore — first boot */ }
+}
 
 // Periodic cleanup
 setInterval(function() {
@@ -364,20 +369,23 @@ app.message(async function(args) {
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
   if (standupInAttesa.has(message.user)) {
-    var dailyV2Oggi = new Date().toISOString().slice(0, 10);
+    var dailyV2Oggi = require('./dailyStandupV2').oggi();
     var dailyV2Sd = db.getStandupCache();
     if (dailyV2Sd.oggi === dailyV2Oggi) {
       var txt = (message.text || '').trim();
       var txtLow = txt.toLowerCase();
 
-      // Rejection: messages addressing the bot or asking/complaining are NOT daily reports
-      var looksLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt) ||
-        /[?¿]/.test(txt);
-
       // Positive detection: structured header or multiple standup keywords
       var looksStructured = /^\s*\*?(ieri|oggi|blocchi)\*?\s*:/im.test(txt);
       var keywordHits = (txtLow.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
       var looksLikeDaily = looksStructured || keywordHits >= 2;
+
+      // Hard rejection: message opens with a request/complaint addressed to the bot.
+      // Soft rejection: a question mark alone rejects ONLY when there's no strong daily
+      // signal ("Ieri? design. Oggi? mockup. Blocchi? niente." is a valid daily).
+      var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
+      var hasQuestionMark = /[?¿]/.test(txt);
+      var looksLikeRequest = startsLikeRequest || (hasQuestionMark && !looksLikeDaily);
 
       if (!looksLikeRequest && looksLikeDaily) {
         var dailyStandupV2 = require('./dailyStandupV2');
@@ -629,6 +637,15 @@ app.command('/giuno', async function(args) {
     var nomeTest = meTest ? meTest.name.split(' ')[0] : 'Test';
     try {
       standupInAttesa.add(command.user_id);
+      var testSd = db.getStandupCache();
+      var testOggi = dailyStandupTest.oggi();
+      if (testSd.oggi !== testOggi) {
+        testSd.oggi = testOggi;
+        testSd.risposte = {};
+      }
+      testSd.risposte = testSd.risposte || {};
+      testSd.inattesa = Array.from(standupInAttesa);
+      await db.saveStandup(testSd);
       await app.client.chat.postMessage({
         channel: command.user_id,
         text: 'Ciao ' + nomeTest + ', è il momento del daily!',
@@ -937,20 +954,44 @@ app.action('open_dm_from_home', async function(args) {
 });
 
 app.action('open_daily_modal', async function(args) {
+  var ackStart = Date.now();
   await args.ack();
+  var triggerId = args.body.trigger_id;
+  // Slack trigger_id is valid for ~3s after the click. Retry on transient
+  // network errors but bail out immediately if Slack says the trigger expired.
   try {
-    await app.client.views.open({
-      trigger_id: args.body.trigger_id,
-      view: {
-        type: 'modal', callback_id: 'daily_standup_submit',
-        private_metadata: JSON.stringify({ ieri: 2, oggi: 2 }),
-        title: { type: 'plain_text', text: 'Daily Standup' },
-        submit: { type: 'plain_text', text: '✅ Invia' },
-        close: { type: 'plain_text', text: 'Chiudi' },
-        blocks: buildDailyModalBlocks(2, 2),
-      },
+    await withTimeout(function() {
+      return withRetry(function() {
+        return app.client.views.open({
+          trigger_id: triggerId,
+          view: {
+            type: 'modal', callback_id: 'daily_standup_submit',
+            private_metadata: JSON.stringify({ ieri: 2, oggi: 2 }),
+            title: { type: 'plain_text', text: 'Daily Standup' },
+            submit: { type: 'plain_text', text: '✅ Invia' },
+            close: { type: 'plain_text', text: 'Chiudi' },
+            blocks: buildDailyModalBlocks(2, 2),
+          },
+        });
+      }, {
+        retries: 1,
+        baseDelayMs: 100,
+        shouldRetry: function(err) {
+          var code = err && ((err.data && err.data.error) || err.code || '');
+          if (/expired_trigger_id|invalid_trigger_id|invalid_blocks/i.test(String(code))) return false;
+          return true;
+        },
+      });
+    }, 2500, 'views.open daily modal');
+  } catch(e) {
+    var slackCode = e && ((e.data && e.data.error) || e.code || e.name || '');
+    logger.error('[DAILY-MODAL] views.open fallita', {
+      code: String(slackCode),
+      message: e && e.message,
+      triggerIdPresent: !!triggerId,
+      elapsedMs: Date.now() - ackStart,
     });
-  } catch(e) { logger.error('[DAILY-MODAL] Errore apertura:', e.message); }
+  }
 });
 
 // "Aggiungi task" buttons — update the modal with more rows
@@ -1228,6 +1269,7 @@ module.exports = {
   botMessages: botMessages,
   lastBotMessageByChannel: lastBotMessageByChannel,
   standupInAttesa: standupInAttesa,
+  rehydrateStandupInAttesa: rehydrateStandupInAttesa,
   stats: stats,
   MANSIONI_TEAM: MANSIONI_TEAM,
 };

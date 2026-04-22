@@ -32,8 +32,11 @@ function getStandupInAttesa() {
   return require('./slackHandlers').standupInAttesa;
 }
 
+// YYYY-MM-DD in Europe/Rome — the standup cron schedule is Rome TZ, so the
+// storage key must match; otherwise a response submitted late at night (Rome)
+// can be written under the next UTC day and silently wipe sd.risposte.
 function oggi() {
-  return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Rome' }).format(new Date());
 }
 
 // ─── 09:00 — Send DM to all team members ────────────────────────────────────
@@ -52,10 +55,12 @@ async function sendDailyRequests() {
     // and always undefined on restart, causing accidental wipes).
     if (sd.oggi !== todayStr) {
       sd.risposte = {};
+      sd.inattesa = [];
     }
     sd.oggi = todayStr;
     sd.risposte = sd.risposte || {};
-    db.saveStandup(sd);
+    sd.inattesa = Array.isArray(sd.inattesa) ? sd.inattesa : [];
+    await db.saveStandup(sd);
 
     var utenti = await getUtenti();
     var inviati = 0;
@@ -96,6 +101,8 @@ async function sendDailyRequests() {
         logger.error('[DAILY-V2] Errore invio a', utente.id + ':', e.message);
       }
     }
+    sd.inattesa = Array.from(standupInAttesa);
+    await db.saveStandup(sd);
     logger.info('[DAILY-V2] Richieste inviate a', inviati, 'utenti.');
   } finally {
     await releaseCronLock('daily_standup_v2_send');
@@ -133,6 +140,8 @@ async function pushMissingResponders(pushNumber) {
         logger.error('[DAILY-V2] Errore push a', utente.id + ':', e.message);
       }
     }
+    sd.inattesa = Array.from(standupInAttesa);
+    await db.saveStandup(sd);
     logger.info('[DAILY-V2] Push #' + pushNumber + ' inviato a', pushed, 'utenti.');
   } finally {
     await releaseCronLock('daily_standup_v2_push_' + pushNumber);
@@ -150,14 +159,16 @@ async function handleDailyResponse(userId, text, structured) {
     logger.warn('[DAILY-V2] sd.oggi stale (' + (sd.oggi || 'null') + '), self-heal a ' + todayStr);
     sd.oggi = todayStr;
     sd.risposte = {};
+    sd.inattesa = [];
   }
 
   sd.risposte = sd.risposte || {};
   sd.risposte[userId] = { testo: text, timestamp: Date.now() };
-  db.saveStandup(sd);
 
   var standupInAttesa = getStandupInAttesa();
   standupInAttesa.delete(userId);
+  sd.inattesa = Array.from(standupInAttesa);
+  await db.saveStandup(sd);
 
   // Save permanently to standup_entries
   try {
@@ -260,8 +271,10 @@ async function publishDailySummary() {
     });
     var missingUsers = enabledUsers.filter(function(u) { return !risposte[u.id]; });
 
-    // Clear standup state
+    // Clear standup state (both in-memory Set and persisted list)
     getStandupInAttesa().clear();
+    sd.inattesa = [];
+    await db.saveStandup(sd);
 
     // If everyone responded, nothing to do — individual responses are already
     // in #daily (posted by handleDailyResponse) so no recap is needed.
@@ -357,4 +370,5 @@ module.exports = {
   sendDailyRequests: sendDailyRequests,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
+  oggi: oggi,
 };
