@@ -22,6 +22,7 @@ var feedback     = require('./feedback');
 var entities     = require('./entities');
 var unifiedSearch = require('./unifiedSearch');
 var projects     = require('./projects');
+var userFacts    = require('./userFacts');
 
 async function initAll() {
   var results = await Promise.all([
@@ -150,6 +151,11 @@ module.exports = {
   searchDriveContent:   unifiedSearch.searchDriveContent,
   upsertEntity:         unifiedSearch.upsertEntity,
   addGraphEdge:         unifiedSearch.addGraphEdge,
+
+  // User facts (sticky per-person memory)
+  upsertUserFact: userFacts.upsertUserFact,
+  getUserFacts:   userFacts.getUserFacts,
+  touchUserFact:  userFacts.touchUserFact,
 
   // Projects
   createProject:        projects.createProject,

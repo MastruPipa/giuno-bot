@@ -307,17 +307,51 @@ async function maybeUpdateDmSummary(userId, messages) {
   try {
     var res = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 260,
+      max_tokens: 500,
       system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
-        'Riassumi in 4-6 frasi italiane cosa questo utente sta cercando di fare, cosa ha chiesto di recente, ' +
-        'quali topic / clienti / progetti ricorrono, quali preferenze e stile di comunicazione emergono, e cosa resta in sospeso. ' +
-        'Obiettivo: se domani l\'utente scrive "riprendiamo", Giuno deve poter ripartire senza chiedere. ' +
-        'Niente saluti, niente meta-commenti, solo il contenuto utile. ' +
-        'NON citare testualmente frasi di altre persone del team — questa memoria è privata di questo utente.',
+        'Produci DUE blocchi in italiano, in questo formato ESATTO:\n\n' +
+        'SUMMARY:\n<4-6 frasi su cosa sta cercando di fare, topic/clienti/progetti ricorrenti, preferenze, cosa resta in sospeso. Se domani l\'utente scrive "riprendiamo", deve bastare per ripartire.>\n\n' +
+        'OPEN_ITEMS:\n<0-5 bullet di action item aperti, uno per riga, prefisso "- ". Vuoto se nessuno.>\n\n' +
+        'FACTS:\n<0-8 fatti stabili, uno per riga, formato "category: fact". ' +
+        'category ammesse: role, style, current_client, current_project, preference, schedule, tool. ' +
+        'Fact breve (max ~100 char), asserivo, senza speculation. Esempio "style: conciso, diretto". ' +
+        'Vuoto se nulla di chiaro.>\n\n' +
+        'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team.',
       messages: [{ role: 'user', content: transcript }],
     });
-    var summary = (res.content[0] && res.content[0].text || '').trim();
-    if (!summary) return;
+    var raw = (res.content[0] && res.content[0].text || '').trim();
+    if (!raw) return;
+
+    var summary = '';
+    var openItems = [];
+    var facts = [];
+
+    var summaryMatch = raw.match(/SUMMARY:\s*([\s\S]*?)(?=\n\s*OPEN_ITEMS:|\n\s*FACTS:|$)/i);
+    if (summaryMatch) summary = summaryMatch[1].trim();
+
+    var openMatch = raw.match(/OPEN_ITEMS:\s*([\s\S]*?)(?=\n\s*FACTS:|$)/i);
+    if (openMatch) {
+      openItems = openMatch[1].split(/\n/).map(function(l) {
+        return l.replace(/^\s*[-•*]\s*/, '').trim();
+      }).filter(function(l) { return l.length > 2; });
+    }
+
+    var factsMatch = raw.match(/FACTS:\s*([\s\S]*)$/i);
+    if (factsMatch) {
+      factsMatch[1].split(/\n/).forEach(function(line) {
+        var clean = line.replace(/^\s*[-•*]\s*/, '').trim();
+        if (!clean) return;
+        var colonIdx = clean.indexOf(':');
+        if (colonIdx <= 0) return;
+        var category = clean.slice(0, colonIdx).trim().toLowerCase();
+        var fact = clean.slice(colonIdx + 1).trim();
+        if (category && fact && /^(role|style|current_client|current_project|preference|schedule|tool)$/.test(category)) {
+          facts.push({ category: category, fact: fact });
+        }
+      });
+    }
+
+    if (!summary) summary = raw; // fallback: raw text is the summary
 
     var topicTokens = summary.toLowerCase().split(/\W+/).filter(function(w) { return w.length > 4; });
     var seenTopics = {};
@@ -326,9 +360,19 @@ async function maybeUpdateDmSummary(userId, messages) {
       if (!seenTopics[topicTokens[ti]]) { seenTopics[topicTokens[ti]] = true; topics.push(topicTokens[ti]); }
     }
 
-    await db.saveConversationSummary(userId, summary, messages.length, topics, []);
+    var proposedActions = openItems.map(function(item) {
+      return { type: 'open_item', description: item, proposed_at: new Date().toISOString() };
+    });
+
+    await db.saveConversationSummary(userId, summary, messages.length, topics, proposedActions);
+
+    // Fire-and-forget: upsert extracted facts so they survive summary rewrites.
+    for (var fi = 0; fi < facts.length; fi++) {
+      db.upsertUserFact(userId, facts[fi].category, facts[fi].fact, 0.7).catch(function() {});
+    }
+
     _dmSummaryState.set(userId, { lastUpdateAt: now, lastMsgCount: messages.length });
-    logger.info('[DM-SUMMARY] aggiornata per', userId, '— messaggi:', messages.length);
+    logger.info('[DM-SUMMARY] aggiornata per', userId, '— messaggi:', messages.length, '| open:', openItems.length, '| facts:', facts.length);
   } catch(e) {
     logger.debug('[DM-SUMMARY] update skipped:', e.message);
   }
@@ -711,10 +755,26 @@ async function askGiuno(userId, userMessage, options) {
     try {
       var supabaseForThreadCtx = require('./db/client').getClient();
       if (supabaseForThreadCtx) {
+        // 0) Sticky facts per-user — durable truths that survive summary rewrites.
+        try {
+          var facts = await db.getUserFacts(userId, 12);
+          if (facts && facts.length > 0) {
+            var factsByCat = {};
+            facts.forEach(function(f) {
+              if (!factsByCat[f.category]) factsByCat[f.category] = [];
+              factsByCat[f.category].push(f.fact);
+            });
+            var factsLines = Object.keys(factsByCat).map(function(cat) {
+              return '- ' + cat + ': ' + factsByCat[cat].join('; ');
+            }).join('\n');
+            contextData += '\nFATTI STABILI SU QUESTO UTENTE:\n' + factsLines + '\n';
+          }
+        } catch(factsErr) { /* user_facts may not exist yet */ }
+
         // 1) Main DM rolling summary — this is the bot's persistent memory of
         // this team member. Injected verbatim with a clear header.
         var dmMainRes = await supabaseForThreadCtx.from('conversation_summaries')
-          .select('summary, updated_at, messages_count')
+          .select('summary, updated_at, messages_count, proposed_actions')
           .eq('conv_key', userId)
           .limit(1);
         if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
@@ -722,6 +782,12 @@ async function askGiuno(userId, userMessage, options) {
           contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + Math.round(dmAgeH) + 'h fa, ' +
             (dmMainRes.data[0].messages_count || 0) + ' messaggi totali):\n' +
             dmMainRes.data[0].summary + '\n';
+          var openActions = (dmMainRes.data[0].proposed_actions || [])
+            .filter(function(a) { return a && a.type === 'open_item' && a.description; });
+          if (openActions.length > 0) {
+            contextData += 'ACTION ITEMS APERTI CON QUESTO UTENTE:\n' +
+              openActions.slice(0, 5).map(function(a) { return '- ' + a.description; }).join('\n') + '\n';
+          }
         }
 
         // 2) Most recent thread summary for this user (if any) — useful if the

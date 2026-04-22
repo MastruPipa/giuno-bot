@@ -971,6 +971,98 @@ async function monitoraDomandeInSospeso() {
   }
 }
 
+// ─── Proactive follow-ups ─────────────────────────────────────────────────────
+// For each team member, look at the rolling DM summary's open action items
+// and ping them in DM if an item has been open for more than 2 days and we
+// haven't already pinged for that exact item in the last 3 days.
+// Max 1 follow-up per user per run, max 3 follow-ups ever per item.
+
+async function sendProactiveFollowups() {
+  var locked = await acquireCronLock('proactive_followups', 20);
+  if (!locked) return;
+  try {
+    var supabase = db.getClient && db.getClient();
+    if (!supabase) return;
+
+    var now = Date.now();
+    var twoDaysAgo = new Date(now - 2 * 86400000).toISOString();
+    var threeDaysAgo = new Date(now - 3 * 86400000).toISOString();
+
+    var sumRes = await supabase.from('conversation_summaries')
+      .select('conv_key, proposed_actions, updated_at')
+      .not('proposed_actions', 'is', null)
+      .lt('updated_at', twoDaysAgo)
+      .order('updated_at', { ascending: true })
+      .limit(50);
+
+    var rows = (sumRes && sumRes.data) || [];
+    var sent = 0;
+
+    for (var ri = 0; ri < rows.length; ri++) {
+      var row = rows[ri];
+      // Only touch DM main summaries (conv_key = userId, no colon)
+      if (!row.conv_key || row.conv_key.indexOf(':') !== -1) continue;
+      var userId = row.conv_key;
+      var openItems = (row.proposed_actions || []).filter(function(a) {
+        return a && a.type === 'open_item' && a.description;
+      });
+      if (openItems.length === 0) continue;
+
+      // Pick first item not recently followed up on
+      var crypto = require('crypto');
+      var picked = null;
+      for (var ii = 0; ii < openItems.length; ii++) {
+        var desc = openItems[ii].description;
+        var itemHash = crypto.createHash('sha1').update(desc.toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
+        var logRes = await supabase.from('followup_log')
+          .select('sent_at, attempts')
+          .eq('slack_user_id', userId)
+          .eq('item_hash', itemHash)
+          .maybeSingle();
+        var log = logRes && logRes.data;
+        if (log && new Date(log.sent_at).toISOString() > threeDaysAgo) continue;
+        if (log && (log.attempts || 1) >= 3) continue;
+        picked = { description: desc, hash: itemHash, attempts: (log && log.attempts) || 0 };
+        break;
+      }
+      if (!picked) continue;
+
+      try {
+        var primo = 'ciao';
+        try {
+          var info = await app.client.users.info({ user: userId });
+          var realName = (info && info.user && (info.user.real_name || info.user.name)) || '';
+          primo = realName.split(' ')[0] || 'ciao';
+        } catch(e) { /* ignore */ }
+
+        var msg = 'Ehi ' + primo + ', volevo sapere com\'è andata con:\n' +
+          '> ' + picked.description + '\n\n' +
+          '_(Se non serve più fammi sapere e me ne dimentico.)_';
+        await app.client.chat.postMessage({ channel: userId, text: msg });
+
+        await supabase.from('followup_log').upsert({
+          slack_user_id: userId,
+          item_hash: picked.hash,
+          item_description: picked.description.substring(0, 300),
+          sent_at: new Date().toISOString(),
+          attempts: picked.attempts + 1,
+        }, { onConflict: 'slack_user_id,item_hash' });
+        sent++;
+        logger.info('[FOLLOWUP] inviato a', userId, '— item:', picked.description.substring(0, 60));
+      } catch(e) {
+        logger.warn('[FOLLOWUP] send failed per', userId, ':', e.message);
+      }
+
+      // Be polite: cap at 10 DMs per run
+      if (sent >= 10) break;
+    }
+
+    logger.info('[FOLLOWUP] run done — inviati:', sent);
+  } catch(e) {
+    logger.error('[FOLLOWUP] Errore:', e.message);
+  } finally { await releaseCronLock('proactive_followups'); }
+}
+
 // ─── Memory Decay ─────────────────────────────────────────────────────────────
 // Degrade old, unused episodic/intent memories so they stop polluting the
 // context. Cheaper than consolidaMemorie (no LLM call) — just SQL.
@@ -1237,6 +1329,8 @@ function scheduleCrons() {
   });
   cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
   cron.schedule('0 4 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 4:00
+  // Proactive DM follow-ups — 10:00 Mon-Fri on items open >2 days, max 3 nudges per item.
+  cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();

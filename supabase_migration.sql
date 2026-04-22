@@ -198,3 +198,32 @@ CREATE INDEX IF NOT EXISTS memories_content_hash_idx ON memories(slack_user_id, 
 
 ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS source_thread_ts TEXT;
 CREATE INDEX IF NOT EXISTS kb_source_thread_ts_idx ON knowledge_base(source_thread_ts) WHERE source_thread_ts IS NOT NULL;
+
+-- 17. Per-user sticky facts (Round 3B — durable 1:1 memory).
+-- Stable truths about each team member: role, style, recurring projects, etc.
+-- Extracted asynchronously from the DM rolling summary.
+CREATE TABLE IF NOT EXISTS user_facts (
+  id TEXT PRIMARY KEY,
+  slack_user_id TEXT NOT NULL,
+  fact TEXT NOT NULL,
+  category TEXT,
+  confidence NUMERIC DEFAULT 0.6,
+  source TEXT DEFAULT 'dm_summary',
+  last_confirmed_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS user_facts_user_idx ON user_facts(slack_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS user_facts_unique_idx ON user_facts(slack_user_id, category, fact);
+
+-- 18. Proactive followups (one row per sent nudge, per user+item).
+-- Used to avoid spamming: at most one follow-up per item, cooldown 3 days.
+CREATE TABLE IF NOT EXISTS followup_log (
+  slack_user_id TEXT NOT NULL,
+  item_hash TEXT NOT NULL,
+  item_description TEXT,
+  sent_at TIMESTAMPTZ DEFAULT NOW(),
+  attempts INT DEFAULT 1,
+  PRIMARY KEY (slack_user_id, item_hash)
+);
+CREATE INDEX IF NOT EXISTS followup_log_sent_idx ON followup_log(sent_at);
