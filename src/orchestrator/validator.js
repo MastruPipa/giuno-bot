@@ -53,10 +53,57 @@ function validate(responseText, toolsCalled) {
   return { valid: true, issue: null };
 }
 
+// ─── Hallucinated entity detection ─────────────────────────────────────────────
+// Best-effort check: extract capitalized multi-char tokens from the reply and
+// flag those that don't appear in the knowledge base entities, the current
+// context, nor the user's own message. This is a SOFT signal — we log it but
+// don't suppress the reply (too many false positives on common Italian nouns).
+
+var COMMON_WORDS = new Set([
+  'giuno', 'slack', 'google', 'drive', 'gmail', 'calendar', 'anthropic', 'claude',
+  'ok', 'sì', 'no', 'ciao', 'ieri', 'oggi', 'domani', 'lunedì', 'martedì',
+  'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica', 'gennaio', 'febbraio',
+  'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre',
+  'ottobre', 'novembre', 'dicembre', 'katania', 'studio',
+]);
+
+function extractNamedEntities(text) {
+  if (!text || typeof text !== 'string') return [];
+  var tokens = text.match(/\b[A-Z][a-zA-Zàèéìòù']{2,}(?:\s+[A-Z][a-zA-Zàèéìòù']{2,})?\b/g) || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < tokens.length; i++) {
+    var t = tokens[i].trim();
+    var low = t.toLowerCase();
+    if (seen[low]) continue;
+    if (COMMON_WORDS.has(low)) continue;
+    seen[low] = true;
+    out.push(t);
+  }
+  return out;
+}
+
+// Returns a list of names that appear in `reply` but are NOT grounded in the
+// provided evidence strings (userMessage, contextData, known entity list).
+// Empty list = all names grounded.
+function findUngroundedEntities(reply, evidence) {
+  var names = extractNamedEntities(reply);
+  if (names.length === 0) return [];
+  var blob = (evidence || []).filter(Boolean).join(' ').toLowerCase();
+  return names.filter(function(n) {
+    return blob.indexOf(n.toLowerCase()) === -1;
+  });
+}
+
 function fallbackResponse(originalResponse, issue) {
   logger.error('[VALIDATOR] HALLUCINATION:', issue);
   logger.error('[VALIDATOR] Risposta soppressa:', originalResponse.substring(0, 200));
   return 'Non sono riuscito a completare l\'azione. Riprova o dimmi esattamente cosa devo fare.';
 }
 
-module.exports = { validate: validate, fallbackResponse: fallbackResponse };
+module.exports = {
+  validate: validate,
+  fallbackResponse: fallbackResponse,
+  extractNamedEntities: extractNamedEntities,
+  findUngroundedEntities: findUngroundedEntities,
+};

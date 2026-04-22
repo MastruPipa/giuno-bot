@@ -1005,6 +1005,20 @@ async function askGiuno(userId, userMessage, options) {
     finalReply = validator.fallbackResponse(finalReply, validation.issue);
   }
 
+  // Soft signal: capitalized names that don't appear in user message or
+  // contextData are candidates for hallucination. Log only — too many false
+  // positives (e.g. fresh entity names) to block on this alone.
+  try {
+    var ungrounded = validator.findUngroundedEntities(finalReply, [resolvedMessage, contextData]);
+    if (ungrounded.length > 0) {
+      logger.warn('[VALIDATOR] Entità non ancorate nel contesto:', ungrounded.join(', '),
+        '| user:', userId, '| reply:', finalReply.substring(0, 120));
+      try {
+        require('./errorTracker').recordError('ungrounded_entities:' + ungrounded.slice(0, 3).join(','), 'ungrounded_entity', userId);
+      } catch(_) {}
+    }
+  } catch(_) {}
+
   // Response cleanup — strip tool names and technical jargon from output
   finalReply = finalReply
     .replace(/\bread_channel\b|\bsearch_kb\b|\brecall_memory\b|\bsearch_leads\b|\bfind_emails\b|\bsearch_drive\b|\bsummarize_channel\b|\bget_channel_digest\b|\bentity_card\b|\bsearch_everywhere\b|\bupdate_lead\b|\bcreate_lead\b|\bask_gemini\b/gi, '')

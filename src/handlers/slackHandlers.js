@@ -149,15 +149,40 @@ app.event('app_mention', async function(args) {
     try {
       var recentMsgs;
       if (event.thread_ts) {
-        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 15 });
-        recentMsgs = (threadRes.messages || []).slice(-15);
+        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 30 });
+        recentMsgs = (threadRes.messages || []).slice(-30);
       } else {
-        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 10 });
+        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 30 });
         recentMsgs = (histRes.messages || []).reverse();
       }
       if (recentMsgs.length > 0) {
+        // For substantive chatter (>=10 real messages, excluding bots + current
+        // event) ask Haiku for a one-paragraph topic recap BEFORE dumping the
+        // raw transcript. Stops Giuno from answering off-topic when dropped
+        // into a long conversation mid-thread.
+        var realMsgs = recentMsgs.filter(function(m) { return m.ts !== event.ts && !m.bot_id && m.text; });
+        if (realMsgs.length >= 10) {
+          try {
+            var { askGemini: _unused } = require('../services/geminiService'); // lazy check Anthropic availability
+            var Anthropic = require('@anthropic-ai/sdk');
+            var haiku = new Anthropic();
+            var topicTranscript = realMsgs.slice(-20).map(function(m) {
+              return (m.user ? '<@' + m.user + '>' : 'bot') + ': ' + (m.text || '').substring(0, 250);
+            }).join('\n');
+            var topicRes = await haiku.messages.create({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 200,
+              system: 'Sei un osservatore silenzioso in un canale Slack. In 2-3 frasi italiane descrivi: (1) di cosa si sta parlando adesso, (2) chi sta facendo cosa, (3) qual è la domanda/decisione aperta se esiste. Niente saluti, niente meta-commenti.',
+              messages: [{ role: 'user', content: topicTranscript }],
+            });
+            var topic = topicRes.content && topicRes.content[0] && topicRes.content[0].text ? topicRes.content[0].text.trim() : '';
+            if (topic) channelContext += '\nTOPIC ATTUALE DEL ' + (event.thread_ts ? 'THREAD' : 'CANALE') + ':\n' + topic + '\n';
+          } catch(topicErr) {
+            logger.debug('[SLACK-HANDLER] topic autosummary skipped:', topicErr.message);
+          }
+        }
         channelContext += '\nCONVERSAZIONE RECENTE NEL CANALE:\n';
-        for (var rm of recentMsgs) {
+        for (var rm of recentMsgs.slice(-15)) {
           if (rm.ts === event.ts) continue;
           var who = rm.user ? '<@' + rm.user + '>' : 'bot';
           channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';

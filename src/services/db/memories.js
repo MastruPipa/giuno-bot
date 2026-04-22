@@ -198,6 +198,24 @@ async function addMemory(userId, content, tags, options) {
     }
   }
 
+  // Semantic dedup — only for SHARED memories (team-wide knowledge). Stops
+  // paraphrased duplicates like "X è nostro partner" vs "X è partner" from
+  // piling up in the shared pool. Limited scope keeps embedding cost low.
+  if (classification.shared && c.useSupabase && content.length > 30) {
+    try {
+      var emb = require('../embeddingService');
+      if (emb.getProvider()) {
+        var semDup = await emb.semanticSearchMemories(content, null, { threshold: 0.95, limit: 1 });
+        if (semDup && semDup.length > 0) {
+          logger.debug('[DB-MEMORIES] Skip semantic duplicate (similarity >0.95) for shared memory');
+          return { id: semDup[0].id, duplicate: true, reason: 'semantic' };
+        }
+      }
+    } catch(e) {
+      // Embedding/RPC not available — fall through
+    }
+  }
+
   var entry = {
     id: 'mn' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
     content: content,
