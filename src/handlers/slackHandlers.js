@@ -793,6 +793,21 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (text === 'export' || text === 'esporta' || text === 'export memory' || text === 'export memoria') {
+    try {
+      await respond({ text: 'Sto preparando l\'export nel tuo Drive...', response_type: 'ephemeral' });
+      var { exportForUser } = require('../jobs/memoryBackupJob');
+      var result = await exportForUser(command.user_id);
+      var msg = 'Export caricato nel tuo Drive.\n' +
+        '• Memorie: ' + result.rows.memories + '\n' +
+        '• Fatti stabili: ' + result.rows.facts + '\n' +
+        '• Riassunti conversazione: ' + result.rows.summaries + '\n' +
+        (result.link ? '<' + result.link + '|Apri il file>' : '');
+      await respond({ text: msg, response_type: 'ephemeral' });
+    } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (text === 'preventivo' || text.startsWith('preventivo ')) {
     try {
       var prevText = text.replace(/^preventivo\s*/, '').trim();

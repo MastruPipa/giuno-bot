@@ -1337,6 +1337,12 @@ function scheduleCrons() {
     var { sendPersonalDigests } = require('../agents/personalDigestAgent');
     sendPersonalDigests().catch(function(e) { logger.error('[PERSONAL-DIGEST] cron error:', e.message); });
   }, { timezone: 'Europe/Rome' });
+  // Memory backup — Sunday 02:30 Rome, uploads a JSON snapshot to the admin's
+  // Drive and keeps the last 4 weekly backups. Requires MEMORY_BACKUP_ADMIN_USER_ID.
+  cron.schedule('30 2 * * 0', function() {
+    var { runWeeklyBackup } = require('../jobs/memoryBackupJob');
+    runWeeklyBackup().catch(function(e) { logger.error('[MEM-BACKUP] cron error:', e.message); });
+  }, { timezone: 'Europe/Rome' });
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();
