@@ -692,10 +692,54 @@ app.command('/giuno', async function(args) {
       var utenti = await getUtenti();
       var me = utenti.find(function(u) { return u.id === command.user_id; });
       var myName = me ? me.name : 'Utente';
-      await respond({
-        text: 'Ciao ' + myName + '!\n• Slack ID: `' + command.user_id + '`\n• Livello di accesso: *' + myRole.toUpperCase() + '*\n• ' + roleDesc,
-        response_type: 'ephemeral',
-      });
+
+      var sections = [
+        'Ciao ' + myName + '!',
+        '• Slack ID: `' + command.user_id + '`',
+        '• Livello di accesso: *' + myRole.toUpperCase() + '*',
+        '• ' + roleDesc,
+      ];
+
+      // What Giuno remembers about this person — transparency panel.
+      try {
+        var facts = await db.getUserFacts(command.user_id, 20);
+        if (facts && facts.length > 0) {
+          var byCat = {};
+          facts.forEach(function(f) {
+            if (!byCat[f.category]) byCat[f.category] = [];
+            byCat[f.category].push(f.fact);
+          });
+          var factLines = Object.keys(byCat).map(function(cat) {
+            return '_' + cat + ':_ ' + byCat[cat].join('; ');
+          });
+          sections.push('\n*Cosa ricordo di te:*\n' + factLines.join('\n'));
+        }
+      } catch(e) { /* user_facts table may not exist */ }
+
+      try {
+        var supabaseForMe = db.getClient && db.getClient();
+        if (supabaseForMe) {
+          var summaryRes = await supabaseForMe.from('conversation_summaries')
+            .select('summary, updated_at, messages_count, proposed_actions')
+            .eq('conv_key', command.user_id)
+            .limit(1);
+          if (summaryRes.data && summaryRes.data.length > 0) {
+            var row = summaryRes.data[0];
+            var ageH = row.updated_at ? Math.round((Date.now() - new Date(row.updated_at).getTime()) / 3600000) : null;
+            if (row.summary) {
+              sections.push('\n*Memoria della nostra chat* (aggiornata ' + (ageH != null ? ageH + 'h fa' : 'di recente') + ', ' + (row.messages_count || 0) + ' messaggi totali):\n' + row.summary);
+            }
+            var openItems = (row.proposed_actions || []).filter(function(a) { return a && a.type === 'open_item' && a.description; });
+            if (openItems.length > 0) {
+              sections.push('\n*Cose aperte tra noi:*\n' + openItems.slice(0, 5).map(function(a) { return '• ' + a.description; }).join('\n'));
+            }
+          }
+        }
+      } catch(e) { /* non-blocking */ }
+
+      sections.push('\n_Se qualcosa non è corretto, dimmelo in DM e lo aggiorno._');
+
+      await respond({ text: sections.join('\n'), response_type: 'ephemeral' });
     } catch(err) { await respond({ text: toUserErrorMessage(err), response_type: 'ephemeral' }); }
     return;
   }

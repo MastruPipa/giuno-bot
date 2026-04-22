@@ -1331,6 +1331,12 @@ function scheduleCrons() {
   cron.schedule('0 4 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 4:00
   // Proactive DM follow-ups — 10:00 Mon-Fri on items open >2 days, max 3 nudges per item.
   cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
+  // Personal daily digest — 08:30 Mon-Fri, runs before the daily standup so each
+  // member sees what Giuno remembers about them before writing the new entry.
+  cron.schedule('30 8 * * 1-5', function() {
+    var { sendPersonalDigests } = require('../agents/personalDigestAgent');
+    sendPersonalDigests().catch(function(e) { logger.error('[PERSONAL-DIGEST] cron error:', e.message); });
+  }, { timezone: 'Europe/Rome' });
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();
