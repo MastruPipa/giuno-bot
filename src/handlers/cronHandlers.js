@@ -242,71 +242,6 @@ async function inviaRoutineGiornaliera() {
   finally { await releaseCronLock('briefing_giornaliero'); }
 }
 
-// ─── Standup ───────────────────────────────────────────────────────────────────
-
-async function inviaStandupDomande() {
-  var locked = await acquireCronLock('standup_domande', 10);
-  if (!locked) return;
-  try {
-    var oggi = new Date().toISOString().slice(0, 10);
-    logger.info('[STANDUP] Invio domande standup per', oggi);
-    var sd = db.getStandupCache();
-    sd.oggi = oggi;
-    sd.risposte = {};
-    db.saveStandup(sd);
-
-    var utenti = await getUtenti();
-    var inviati = 0;
-    var standupInAttesa = getStandupInAttesa();
-    for (var utente of utenti) {
-      if (!getPrefs(utente.id).standup_enabled) continue;
-      try {
-        standupInAttesa.add(utente.id);
-        await app.client.chat.postMessage({
-          channel: utente.id,
-          text: 'Buongiorno ' + utente.name.split(' ')[0] + '! Standup time.\n\n' +
-            'Rispondi a questo messaggio con:\n' +
-            '1. Su cosa lavori oggi?\n' +
-            '2. Hai blocchi o serve aiuto?\n\n' +
-            '_Scrivi tutto in un unico messaggio, il recap uscirà alle 10:00._',
-        });
-        inviati++;
-      } catch(e) { logger.error('[STANDUP] Errore invio a', utente.id + ':', e.message); }
-    }
-    logger.info('[STANDUP] Domande inviate a', inviati, 'utenti.');
-  } finally { await releaseCronLock('standup_domande'); }
-}
-
-async function pubblicaRecapStandup() {
-  var locked = await acquireCronLock('standup_recap', 10);
-  if (!locked) return;
-  try {
-    var oggi = new Date().toISOString().slice(0, 10);
-    var sd = db.getStandupCache();
-    if (sd.oggi !== oggi) { logger.info('[STANDUP] Nessun dato standup per oggi, skip recap.'); return; }
-    var risposte = sd.risposte;
-    var userIds = Object.keys(risposte);
-    if (userIds.length === 0) { logger.info('[STANDUP] Nessuna risposta standup ricevuta, skip recap.'); return; }
-    getStandupInAttesa().clear();
-
-    var msg = '*Standup ' + oggi + '*\n\n';
-    for (var userId of userIds) {
-      var r = risposte[userId];
-      msg += '<@' + userId + '>:\n' + (r.testo || '') + '\n\n';
-    }
-    try {
-      var channelsRes = await app.client.conversations.list({ limit: 200, types: 'public_channel,private_channel' });
-      var target = (channelsRes.channels || []).find(function(c) { return c.name === STANDUP_CHANNEL || c.id === STANDUP_CHANNEL; });
-      if (!target) { logger.error('[STANDUP] Canale "' + STANDUP_CHANNEL + '" non trovato.'); return; }
-      try { await app.client.conversations.join({ channel: target.id }); } catch(e) {
-        logger.debug('[CRON] join canale ignorato:', e.message);
-      }
-      await app.client.chat.postMessage({ channel: target.id, text: formatPerSlack(msg), unfurl_links: false, unfurl_media: false });
-      logger.info('[STANDUP] Recap pubblicato in #' + target.name + ' con', userIds.length, 'risposte.');
-    } catch(e) { logger.error('[STANDUP] Errore pubblicazione recap:', e.message); }
-  } finally { await releaseCronLock('standup_recap'); }
-}
-
 // ─── Recap settimanale ─────────────────────────────────────────────────────────
 
 async function getSlackWeekData() {
@@ -1411,8 +1346,6 @@ function scheduleCrons() {
 module.exports = {
   scheduleCrons: scheduleCrons,
   inviaRoutineGiornaliera: inviaRoutineGiornaliera,
-  inviaStandupDomande: inviaStandupDomande,
-  pubblicaRecapStandup: pubblicaRecapStandup,
   inviaRecapSettimanale: inviaRecapSettimanale,
   indicizzaDriveTutti: indicizzaDriveTutti,
   indicizzaDriveUtente: indicizzaDriveUtente,

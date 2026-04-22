@@ -278,6 +278,61 @@ async function compressConversation(messages, convKey) {
   }
 }
 
+// ─── DM rolling summary ──────────────────────────────────────────────────────
+// The compressConversation path only fires above 20 messages, which is way too
+// late for a 1:1 DM where Giuno should already remember the last few turns the
+// next morning. Keep a lightweight, debounced Haiku summary per user.
+
+var _dmSummaryState = new Map(); // userId -> { lastUpdateAt, lastMsgCount }
+var DM_SUMMARY_MIN_MESSAGES = 4;
+var DM_SUMMARY_MIN_GROWTH = 4;
+var DM_SUMMARY_COOLDOWN_MS = 3 * 60 * 1000;
+
+async function maybeUpdateDmSummary(userId, messages) {
+  if (!userId || !Array.isArray(messages) || messages.length < DM_SUMMARY_MIN_MESSAGES) return;
+  var state = _dmSummaryState.get(userId) || { lastUpdateAt: 0, lastMsgCount: 0 };
+  var now = Date.now();
+  var growth = messages.length - (state.lastMsgCount || 0);
+  var cooledDown = (now - state.lastUpdateAt) > DM_SUMMARY_COOLDOWN_MS;
+  if (!cooledDown && growth < DM_SUMMARY_MIN_GROWTH) return;
+
+  // Keep the last ~16 turns so Haiku has enough context without blowing tokens.
+  var slice = messages.slice(-16);
+  var transcript = slice.map(function(m) {
+    var role = m.role === 'user' ? 'Utente' : 'Giuno';
+    var text = typeof m.content === 'string' ? m.content : '';
+    return role + ': ' + text.replace(/\s+/g, ' ').substring(0, 400);
+  }).join('\n');
+
+  try {
+    var res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 260,
+      system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
+        'Riassumi in 4-6 frasi italiane cosa questo utente sta cercando di fare, cosa ha chiesto di recente, ' +
+        'quali topic / clienti / progetti ricorrono, quali preferenze e stile di comunicazione emergono, e cosa resta in sospeso. ' +
+        'Obiettivo: se domani l\'utente scrive "riprendiamo", Giuno deve poter ripartire senza chiedere. ' +
+        'Niente saluti, niente meta-commenti, solo il contenuto utile.',
+      messages: [{ role: 'user', content: transcript }],
+    });
+    var summary = (res.content[0] && res.content[0].text || '').trim();
+    if (!summary) return;
+
+    var topicTokens = summary.toLowerCase().split(/\W+/).filter(function(w) { return w.length > 4; });
+    var seenTopics = {};
+    var topics = [];
+    for (var ti = 0; ti < topicTokens.length && topics.length < 10; ti++) {
+      if (!seenTopics[topicTokens[ti]]) { seenTopics[topicTokens[ti]] = true; topics.push(topicTokens[ti]); }
+    }
+
+    await db.saveConversationSummary(userId, summary, messages.length, topics, []);
+    _dmSummaryState.set(userId, { lastUpdateAt: now, lastMsgCount: messages.length });
+    logger.info('[DM-SUMMARY] aggiornata per', userId, '— messaggi:', messages.length);
+  } catch(e) {
+    logger.debug('[DM-SUMMARY] update skipped:', e.message);
+  }
+}
+
 // ─── Auto-learn ────────────────────────────────────────────────────────────────
 
 var { askGemini } = require('./geminiService');
@@ -637,20 +692,39 @@ async function askGiuno(userId, userMessage, options) {
   // DM summary in thread context (fix #11, #19)
   if (options.threadTs && options.isDM) {
     try {
-      var convSummaries = db.getConversationSummary ? db.getConversationSummary(conversationKey(userId, options.threadTs)) : null;
-      if (convSummaries) {
-        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries + '\n';
+      var convSummaries = db.getConversationSummary
+        ? await db.getConversationSummary(conversationKey(userId, options.threadTs))
+        : null;
+      if (convSummaries && convSummaries.summary) {
+        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries.summary + '\n';
       }
     } catch(e) {
       logger.debug('[CONTEXT] DM summary non disponibile:', e.message);
     }
   }
 
-  // Reverse context: if in DM, fetch latest thread context for this user (fix #19 completion)
+  // Reverse context: if we're in a DM, always pull the rolling 1:1 summary
+  // (conv_key = userId, no thread suffix) plus the most recent thread summary
+  // for this user, so a new turn after hours/days lands on real continuity.
   if (!options.threadTs && (!options.channelId || options.isDM)) {
     try {
       var supabaseForThreadCtx = require('./db/client').getClient();
       if (supabaseForThreadCtx) {
+        // 1) Main DM rolling summary — this is the bot's persistent memory of
+        // this team member. Injected verbatim with a clear header.
+        var dmMainRes = await supabaseForThreadCtx.from('conversation_summaries')
+          .select('summary, updated_at, messages_count')
+          .eq('conv_key', userId)
+          .limit(1);
+        if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
+          var dmAgeH = (Date.now() - new Date(dmMainRes.data[0].updated_at).getTime()) / 3600000;
+          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + Math.round(dmAgeH) + 'h fa, ' +
+            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali):\n' +
+            dmMainRes.data[0].summary + '\n';
+        }
+
+        // 2) Most recent thread summary for this user (if any) — useful if the
+        // user had a side-thread recently.
         var recentThreadRes = await supabaseForThreadCtx.from('conversation_summaries')
           .select('conv_key, summary, updated_at')
           .like('conv_key', userId + ':%')
@@ -871,6 +945,14 @@ async function askGiuno(userId, userMessage, options) {
   }
   db.saveConversation(convKey, convCache[convKey]);
   recordReply(userId, finalReply);
+
+  // Keep the 1:1 DM memory fresh (debounced, Haiku — see maybeUpdateDmSummary).
+  var isDmPrincipal = !options.threadTs && (options.isDM || !options.channelId || (options.channelId && options.channelId.startsWith('D')));
+  if (isDmPrincipal) {
+    maybeUpdateDmSummary(userId, convCache[convKey]).catch(function(e) {
+      logger.debug('[DM-SUMMARY] background error:', e.message);
+    });
+  }
 
   var learnContext = {
     channelId: options.channelId || null,
