@@ -34,6 +34,10 @@ async function main() {
     logger.error('Errore caricamento cache (app parte comunque):', e.message);
   }
 
+  // Rehydrate in-memory standup state from persisted cache. Must run AFTER
+  // db.initAll() otherwise getStandupCache() returns an empty cache.
+  try { slackHandlers.rehydrateStandupInAttesa(); } catch(e) { logger.warn('rehydrateStandupInAttesa:', e.message); }
+
   // Inject Bolt app into googleAuthService (needed for token-expiry DMs)
   googleAuth.setSlackApp(app);
 

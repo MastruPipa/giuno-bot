@@ -67,8 +67,10 @@ CREATE TABLE IF NOT EXISTS standup_data (
   id TEXT PRIMARY KEY DEFAULT 'current',
   oggi TEXT,
   risposte JSONB NOT NULL DEFAULT '{}',
+  inattesa JSONB NOT NULL DEFAULT '[]',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE standup_data ADD COLUMN IF NOT EXISTS inattesa JSONB NOT NULL DEFAULT '[]';
 
 -- 8. Drive index
 CREATE TABLE IF NOT EXISTS drive_index (

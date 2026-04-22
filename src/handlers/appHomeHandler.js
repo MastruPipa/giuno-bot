@@ -67,7 +67,7 @@ function getGoogleStatus(userId) {
 
 function getStandupStatus(userId) {
   var sd = db.getStandupCache();
-  var oggi = new Date().toISOString().slice(0, 10);
+  var oggi = require('./dailyStandupV2').oggi();
   if (sd.oggi !== oggi) return { active: false };
   var hasResponded = !!(sd.risposte && sd.risposte[userId]);
   var totalResponses = sd.risposte ? Object.keys(sd.risposte).length : 0;
