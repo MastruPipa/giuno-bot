@@ -971,6 +971,48 @@ async function monitoraDomandeInSospeso() {
   }
 }
 
+// ─── Memory Decay ─────────────────────────────────────────────────────────────
+// Degrade old, unused episodic/intent memories so they stop polluting the
+// context. Cheaper than consolidaMemorie (no LLM call) — just SQL.
+
+async function decayStaleMemories() {
+  var locked = await acquireCronLock('memory_decay', 30);
+  if (!locked) return;
+  try {
+    var supabase = db.getClient && db.getClient();
+    if (!supabase) { logger.debug('[MEM-DECAY] No supabase client, skip'); return; }
+
+    var cutoff30d = new Date(Date.now() - 30 * 86400000).toISOString();
+    var cutoff90d = new Date(Date.now() - 90 * 86400000).toISOString();
+
+    // 1) Unused episodic/intent older than 30d → mark expired now.
+    //    usage_count=0 means no retrieval ever scored them relevant.
+    var r1 = await supabase.from('memories')
+      .update({ expires_at: new Date().toISOString() })
+      .lt('created_at', cutoff30d)
+      .eq('usage_count', 0)
+      .in('memory_type', ['episodic', 'intent'])
+      .is('superseded_by', null)
+      .is('expires_at', null)
+      .select('id');
+    var expired1 = (r1.data || []).length;
+
+    // 2) Any low-confidence row older than 90d → expire (preferences/semantic included).
+    var r2 = await supabase.from('memories')
+      .update({ expires_at: new Date().toISOString() })
+      .lt('created_at', cutoff90d)
+      .lt('confidence_score', 0.3)
+      .is('superseded_by', null)
+      .is('expires_at', null)
+      .select('id');
+    var expired2 = (r2.data || []).length;
+
+    logger.info('[MEM-DECAY] Invalidate:', expired1, 'unused episodic/intent >30d |', expired2, 'low-confidence >90d');
+  } catch(e) {
+    logger.error('[MEM-DECAY] Errore:', e.message);
+  } finally { await releaseCronLock('memory_decay'); }
+}
+
 // ─── Memory Consolidation ─────────────────────────────────────────────────────
 
 async function consolidaMemorie() {
@@ -1194,6 +1236,7 @@ function scheduleCrons() {
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
   });
   cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
+  cron.schedule('0 4 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 4:00
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();

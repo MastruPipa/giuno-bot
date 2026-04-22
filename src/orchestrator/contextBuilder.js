@@ -141,13 +141,18 @@ async function buildContext(params) {
 
       if (searchResults && searchResults.length > 0) {
         unifiedWorked = true;
+        // Privacy guard: when we're answering in a public channel we must not
+        // surface memories/KB entries sourced from a private channel or a DM.
+        var isPublicAudience = channelType === 'public';
         for (var i = 0; i < searchResults.length; i++) {
           var r = searchResults[i];
           var meta = r.metadata || {};
+          var sourceType = meta.source_channel_type || meta.channel_type;
+          if (isPublicAudience && (sourceType === 'private' || sourceType === 'dm')) continue;
           if (r.source === 'memory') {
-            relevantMemories.push({ content: r.content, type: meta.type, tags: meta.tags, created: meta.created_at });
+            relevantMemories.push({ content: r.content, type: meta.type, tags: meta.tags, created: meta.created_at, source_channel_type: sourceType });
           } else if (r.source === 'kb') {
-            kbResults.push({ content: r.content, tags: meta.tags, confidence_tier: meta.tier });
+            kbResults.push({ content: r.content, tags: meta.tags, confidence_tier: meta.tier, source_channel_type: sourceType });
           } else if (r.source === 'entity') {
             relevantEntities.push({ name: r.content, type: meta.entity_type, aliases: meta.aliases, context: meta.context });
           } else if (r.source === 'drive') {
@@ -305,8 +310,23 @@ function formatContextForPrompt(ctx) {
       return !(/^precall_|^\[TOOL:|^TOOL:|^FEEDBACK_|^tool_result|briefing inviato/i.test(c)) && c.length > 15;
     });
     if (cleanMems.length > 0) {
+      // Memories older than ~60d for episodic/intent types are likely stale: flag
+      // them so the model treats them as "was true then" instead of current truth.
+      var stalenessMs = 60 * 86400000;
+      var nowMs = Date.now();
       parts.push('MEMORIA:\n' + cleanMems.slice(0, 5).map(function(m) {
-        return '- ' + (m.content || '');
+        var body = (m.content || '');
+        var created = m.created || m.created_at;
+        var type = m.type || m.memory_type;
+        var isPerishable = type === 'episodic' || type === 'intent' || !type;
+        if (created && isPerishable) {
+          var ageMs = nowMs - new Date(created).getTime();
+          if (ageMs > stalenessMs) {
+            var months = Math.max(2, Math.round(ageMs / (30 * 86400000)));
+            body = '[info di ~' + months + ' mesi fa — verifica prima di usare] ' + body;
+          }
+        }
+        return '- ' + body;
       }).join('\n'));
     }
   }

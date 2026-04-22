@@ -102,6 +102,8 @@ async function loadKB() {
 async function addKBEntry(content, tags, addedBy, options) {
   options = options || {};
   if (options.sourceChannelType === 'dm') return null;
+  // Scrub PII before storing in the shared KB (read by all tiers of users).
+  content = require('../../utils/piiScrub').scrubPII(content);
   if (options.confidenceTier !== 'official' && isDuplicate(content, tags)) return null;
 
   var tier = options.confidenceTier || 'auto_learn';

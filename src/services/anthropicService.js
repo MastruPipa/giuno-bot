@@ -312,7 +312,8 @@ async function maybeUpdateDmSummary(userId, messages) {
         'Riassumi in 4-6 frasi italiane cosa questo utente sta cercando di fare, cosa ha chiesto di recente, ' +
         'quali topic / clienti / progetti ricorrono, quali preferenze e stile di comunicazione emergono, e cosa resta in sospeso. ' +
         'Obiettivo: se domani l\'utente scrive "riprendiamo", Giuno deve poter ripartire senza chiedere. ' +
-        'Niente saluti, niente meta-commenti, solo il contenuto utile.',
+        'Niente saluti, niente meta-commenti, solo il contenuto utile. ' +
+        'NON citare testualmente frasi di altre persone del team — questa memoria è privata di questo utente.',
       messages: [{ role: 'user', content: transcript }],
     });
     var summary = (res.content[0] && res.content[0].text || '').trim();
@@ -822,6 +823,15 @@ async function askGiuno(userId, userMessage, options) {
   if (options.preflightInstruction) {
     contextData += '\n' + options.preflightInstruction + '\n';
   }
+
+  // Cross-user redaction rule — always on. Each team member's DMs are private:
+  // never quote verbatim what user A said in DM when answering user B, and
+  // never attribute sensitive info to a specific colleague by name unless the
+  // current user was part of that conversation.
+  contextData += '\n[PRIVACY] Le chat 1:1 tra Giuno e ogni membro del team sono private. ' +
+    'Se riferisci info emerse in DM con un\'altra persona, NON citare virgolettato, ' +
+    'NON attribuire per nome ("Antonio mi ha detto..."), e NON ripetere dettagli personali. ' +
+    'Rielabora a livello di fatto utile, senza fonte, oppure di\' "non posso dirtelo" se è manifestamente privato.\n';
 
   // Error pattern warnings — if this topic has known mistakes, warn the LLM
   try {

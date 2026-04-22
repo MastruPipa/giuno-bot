@@ -5,6 +5,7 @@ var crypto = require('crypto');
 var c = require('./client');
 var search = require('./search');
 var logger = require('../../utils/logger');
+var { scrubPII } = require('../../utils/piiScrub');
 
 // 16-char SHA-1 of a normalized content string — stable across whitespace/case changes
 // so that "X ha detto Y." and "x ha detto Y" collide in dedup.
@@ -159,6 +160,9 @@ async function loadMemories() {
 
 async function addMemory(userId, content, tags, options) {
   options = options || {};
+  // Scrub PII before anything else so dedup / classify / embedding all run on
+  // the clean string. Keeps personal data out of long-term storage.
+  content = scrubPII(content);
   var classification = options.memory_type
     ? { type: options.memory_type, confidence: options.confidence_score || 0.5, expiresIn: options.expiresIn || null, shared: options.shared || false }
     : classifyMemoryType(content);
