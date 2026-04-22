@@ -316,8 +316,9 @@ async function maybeUpdateDmSummary(userId, messages) {
         'category ammesse: role, style, current_client, current_project, preference, schedule, tool. ' +
         'Fact breve (max ~100 char), asserivo, senza speculation. Esempio "style: conciso, diretto". ' +
         'Vuoto se nulla di chiaro.>\n\n' +
-        'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team.',
-      messages: [{ role: 'user', content: transcript }],
+        'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team. ' +
+        'Quando citi altri membri del team usa il tag <@U...> preso dal ROSTER. Non confondere i nomi (Peppe ≠ Giusy, Claudia ≠ Clà di un cliente).',
+      messages: [{ role: 'user', content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + transcript }],
     });
     var raw = (res.content[0] && res.content[0].text || '').trim();
     if (!raw) return;
@@ -898,6 +899,18 @@ async function askGiuno(userId, userMessage, options) {
     'Se riferisci info emerse in DM con un\'altra persona, NON citare virgolettato, ' +
     'NON attribuire per nome ("Antonio mi ha detto..."), e NON ripetere dettagli personali. ' +
     'Rielabora a livello di fatto utile, senza fonte, oppure di\' "non posso dirtelo" se è manifestamente privato.\n';
+
+  // Team roster — authoritative disambiguation for short names like Peppe /
+  // Giusy / Claudia (which otherwise get confused with clients/leads).
+  try {
+    var rosterBlock = db.formatTeamRosterForPrompt && db.formatTeamRosterForPrompt();
+    if (rosterBlock) {
+      contextData += '\n' + rosterBlock + '\n' +
+        '[REGOLA TEAM] Quando citi un membro del team USA SEMPRE il tag <@U...> preso dal ROSTER qui sopra. ' +
+        'Se un nome è ambiguo tra membro team e cliente/lead, preferisci il membro team quando siamo in DM o canale interno. ' +
+        'Se non sei sicuro di chi sia, chiedi invece di tirare a indovinare.\n';
+    }
+  } catch(_) {}
 
   // Error pattern warnings — if this topic has known mistakes, warn the LLM
   try {

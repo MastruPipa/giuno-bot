@@ -227,3 +227,20 @@ CREATE TABLE IF NOT EXISTS followup_log (
   PRIMARY KEY (slack_user_id, item_hash)
 );
 CREATE INDEX IF NOT EXISTS followup_log_sent_idx ON followup_log(sent_at);
+
+-- 19. Team roster — authoritative source of truth on who's in the team.
+-- Aliases (nicknames, diminutivi) are stored explicitly so the model can
+-- resolve "Peppe"/"Giusy"/"Clà" to the right Slack user and never confuse
+-- a team member with a client that shares the same short name.
+CREATE TABLE IF NOT EXISTS team_members (
+  slack_user_id TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  aliases TEXT[] DEFAULT '{}',
+  role TEXT,
+  primary_projects TEXT[] DEFAULT '{}',
+  primary_clients TEXT[] DEFAULT '{}',
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS team_members_active_idx ON team_members(active) WHERE active = TRUE;

@@ -236,29 +236,56 @@ async function addMemory(userId, content, tags, options) {
   }
 
   var entityRefs = [];
+  var teamRefs = [];
   try {
     var entData = _getEntityCache();
     if (!entData) {
-      var entRes = await c.getClient().from('kb_entities').select('canonical_name, aliases').limit(500);
+      var entRes = await c.getClient().from('kb_entities').select('canonical_name, aliases, entity_category').limit(500);
       entData = entRes.data || [];
       _setEntityCache(entData);
     }
     if (entData) {
       var contentLow = content.toLowerCase();
-      entityRefs = entData.filter(function(e) {
-        if (e.canonical_name.length > 3 && contentLow.includes(e.canonical_name.toLowerCase())) return true;
-        // Also match aliases
-        if (e.aliases && Array.isArray(e.aliases)) {
-          return e.aliases.some(function(alias) {
-            return alias.length > 3 && contentLow.includes(alias.toLowerCase());
+      entData.forEach(function(e) {
+        var hit = false;
+        if (e.canonical_name && e.canonical_name.length > 2 && contentLow.includes(e.canonical_name.toLowerCase())) hit = true;
+        if (!hit && e.aliases && Array.isArray(e.aliases)) {
+          hit = e.aliases.some(function(alias) {
+            return alias && alias.length > 2 && contentLow.includes(alias.toLowerCase());
           });
         }
-        return false;
-      }).map(function(e) { return e.canonical_name; });
+        if (!hit) return;
+        entityRefs.push(e.canonical_name);
+        if (e.entity_category === 'team') teamRefs.push(e.canonical_name);
+      });
     }
   } catch(e) {
     logger.warn('[DB-MEMORIES] operazione fallita:', e.message);
   }
+
+  // Also resolve against the authoritative team roster so that team members
+  // get tagged with their Slack user_id (team:<@U...>) regardless of whether
+  // kb_entities has a matching row — this is what stops "Peppe/Giusy/Claudia"
+  // from being attributed to a client with the same short name.
+  try {
+    var teamMod = require('./team');
+    var teamHits = teamMod.findTeamMembersInText(content);
+    for (var thI = 0; thI < teamHits.length; thI++) {
+      var tm = teamHits[thI];
+      if (!tm || !tm.slack_user_id) continue;
+      var idTag = 'team:' + tm.slack_user_id;
+      if (tags.indexOf(idTag) === -1) tags.push(idTag);
+      if (entityRefs.indexOf(tm.canonical_name) === -1) entityRefs.push(tm.canonical_name);
+      if (teamRefs.indexOf(tm.canonical_name) === -1) teamRefs.push(tm.canonical_name);
+    }
+  } catch(_) {}
+
+  // Deduplicate entityRefs (team + kb_entities can overlap on the same name)
+  if (entityRefs.length > 1) {
+    var seenRef = {};
+    entityRefs = entityRefs.filter(function(n) { if (seenRef[n]) return false; seenRef[n] = true; return true; });
+  }
+  entry.tags = tags;
 
   // Generate embedding for semantic search (fire-and-forget)
   var embedding = null;

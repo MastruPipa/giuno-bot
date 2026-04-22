@@ -124,8 +124,10 @@ async function buildBriefing(userId, event) {
         'Se ownerFacts/ownerMemory/ownerOpenItems sono presenti, usali per ricordare al destinatario ' +
         '(che è l\'owner del calendario) cosa stava facendo con questo cliente/progetto: cita 1 fatto pertinente ' +
         'o 1 open item se aiuta. NON riferire tutto il contenuto di ownerMemory, solo quello rilevante al meeting.\n' +
+        'Quando citi un collega usa il tag <@U...> dal ROSTER TEAM. Non confondere membri del team con clienti che hanno nomi simili.\n' +
         'Formato: frasi normali, *grassetto* solo per nomi. Conciso.',
-      messages: [{ role: 'user', content: JSON.stringify(rawData).substring(0, 2000) }],
+      messages: [{ role: 'user',
+        content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + JSON.stringify(rawData).substring(0, 2000) }],
     });
     var briefingText = res.content[0].text.trim();
 

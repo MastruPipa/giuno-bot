@@ -1346,7 +1346,86 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  if (sub === 'team') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo admin possono gestire il team roster.', response_type: 'ephemeral' }); return; }
+    var teamSub = (args[1] || 'list').toLowerCase();
+    var roster = db.getTeamRoster ? db.getTeamRoster() : [];
+
+    if (teamSub === 'list') {
+      if (!roster || roster.length === 0) {
+        await respond({ text: 'Roster vuoto. Lancia `node scripts/seed-team-roster.js` per popolarlo.', response_type: 'ephemeral' });
+        return;
+      }
+      var listMsg = '*Roster team (' + roster.length + '):*\n' + roster.map(function(m) {
+        var alias = (m.aliases && m.aliases.length > 0) ? ' _(alias: ' + m.aliases.join(', ') + ')_' : '';
+        var role = m.role ? ' — ' + m.role : '';
+        var proj = (m.primary_projects && m.primary_projects.length > 0) ? ' | progetti: ' + m.primary_projects.join(', ') : '';
+        return '• <@' + m.slack_user_id + '> *' + m.canonical_name + '*' + alias + role + proj;
+      }).join('\n');
+      await respond({ text: listMsg, response_type: 'ephemeral' });
+      return;
+    }
+
+    if (teamSub === 'refresh') {
+      try {
+        await db.loadTeamRoster();
+        var fresh = db.getTeamRoster() || [];
+        await respond({ text: 'Roster ricaricato da DB: ' + fresh.length + ' membri.', response_type: 'ephemeral' });
+      } catch(e) { await respond({ text: 'Errore refresh: ' + e.message, response_type: 'ephemeral' }); }
+      return;
+    }
+
+    if (teamSub === 'set' && args[2]) {
+      var targetId = args[2].replace(/<@|>/g, '').split('|')[0];
+      // Parse key="value" or key=value[,value] pairs
+      var raw = command.text.substring(command.text.indexOf('set') + 3).trim();
+      raw = raw.replace(/^\s*<@[^>]+>\s*/, '');
+      var parsed = {};
+      var kvRe = /(\w+)\s*=\s*(?:"([^"]*)"|([^\s]+))/g;
+      var match;
+      while ((match = kvRe.exec(raw)) !== null) { parsed[match[1].toLowerCase()] = match[2] != null ? match[2] : match[3]; }
+
+      var existing = roster.find(function(m) { return m.slack_user_id === targetId; }) || {};
+      var aliases = parsed.aliases != null ? parsed.aliases.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.aliases || []);
+      var projects = parsed.progetti != null ? parsed.progetti.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.primary_projects || []);
+      var clients = parsed.clienti != null ? parsed.clienti.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : (existing.primary_clients || []);
+      var canonical = parsed.nome || existing.canonical_name || null;
+      if (!canonical) { await respond({ text: 'Manca `nome="..."` (serve alla prima volta).', response_type: 'ephemeral' }); return; }
+      var role = parsed.role != null ? parsed.role : (existing.role || null);
+
+      var saved = await db.upsertTeamMember({
+        slack_user_id: targetId,
+        canonical_name: canonical,
+        aliases: aliases,
+        role: role,
+        primary_projects: projects,
+        primary_clients: clients,
+        active: parsed.active === 'false' ? false : true,
+      });
+      if (saved) await respond({ text: 'Aggiornato <@' + targetId + '> → *' + canonical + '* (' + aliases.length + ' alias, ' + projects.length + ' progetti).', response_type: 'ephemeral' });
+      else await respond({ text: 'Salvataggio fallito.', response_type: 'ephemeral' });
+      return;
+    }
+
+    if (teamSub === 'remove' && args[2]) {
+      var rmId = args[2].replace(/<@|>/g, '').split('|')[0];
+      var ok = await db.deactivateTeamMember(rmId);
+      await respond({ text: ok ? 'Disattivato <@' + rmId + '>.' : 'Non trovato.', response_type: 'ephemeral' });
+      return;
+    }
+
+    await respond({
+      text: '*Comandi team:*\n' +
+        '• `admin team list` — mostra roster\n' +
+        '• `admin team refresh` — ricarica da DB\n' +
+        '• `admin team set @utente nome="Peppe" aliases="giuseppe,peppino" role="Logistica" progetti="OffKatania" clienti=""`\n' +
+        '• `admin team remove @utente` — disattiva',
+      response_type: 'ephemeral',
+    });
+    return;
+  }
+
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove]` — gestisci il roster del team (disambiguazione nomi)\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

@@ -23,6 +23,7 @@ var entities     = require('./entities');
 var unifiedSearch = require('./unifiedSearch');
 var projects     = require('./projects');
 var userFacts    = require('./userFacts');
+var team         = require('./team');
 
 async function initAll() {
   var results = await Promise.all([
@@ -37,6 +38,7 @@ async function initAll() {
     channels.loadChannelMap(),
     channels.loadChannelDigests(),
     glossary.loadGlossary(),
+    team.loadTeamRoster(),
   ]);
   return {
     tokens:        results[0],
@@ -156,6 +158,15 @@ module.exports = {
   upsertUserFact: userFacts.upsertUserFact,
   getUserFacts:   userFacts.getUserFacts,
   touchUserFact:  userFacts.touchUserFact,
+
+  // Team roster (authoritative)
+  loadTeamRoster:        team.loadTeamRoster,
+  getTeamRoster:         team.getTeamRoster,
+  findTeamMemberByName:  team.findTeamMemberByName,
+  findTeamMembersInText: team.findTeamMembersInText,
+  upsertTeamMember:      team.upsertTeamMember,
+  deactivateTeamMember:  team.deactivateTeamMember,
+  formatTeamRosterForPrompt: team.formatRosterForPrompt,
 
   // Projects
   createProject:        projects.createProject,
