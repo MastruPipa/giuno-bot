@@ -218,8 +218,10 @@ function searchKB(query, options) {
       recencyScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
     }
     var normalizedKeyword = Math.min(keywordScore / 20, 1.0);
-    // Recency weighs 30% — recent info strongly preferred over old
-    var finalScore = (normalizedKeyword * 0.4) + (confidenceScore * 0.3) + (recencyScore * 0.3);
+    // Confidence is now the primary signal (50%): a drive_indexed/official
+    // entry should beat a stronger keyword match in auto_learn, otherwise
+    // hallucinated facts win retrieval just by having the right vocabulary.
+    var finalScore = (confidenceScore * 0.5) + (normalizedKeyword * 0.3) + (recencyScore * 0.2);
     scored.push({ entry: entry, score: finalScore });
   }
 
