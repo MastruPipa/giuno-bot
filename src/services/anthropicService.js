@@ -384,6 +384,19 @@ async function maybeUpdateDmSummary(userId, messages) {
 var { askGemini } = require('./geminiService');
 
 var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi|sistema briefing|sistema feedback|sistema di reporting|sistema promemoria|tracking costi api|architettura tecnica|setup operativo|pricing consulenza.*LOW.*MID|backfill|embedding.*processate|cron.*schedulat|deploy.*completat/i;
+
+// Track recent rephrases per user. When a user reformulates the same question,
+// the previous bot answer was probably wrong — don't auto-learn from it.
+// Cleared after the next "clean" exchange or after 10 minutes.
+var _recentRephrases = {};
+function _markRephrase(userId) { _recentRephrases[userId] = Date.now(); }
+function _hasRecentRephrase(userId) {
+  var t = _recentRephrases[userId];
+  if (!t) return false;
+  if (Date.now() - t > 10 * 60 * 1000) { delete _recentRephrases[userId]; return false; }
+  return true;
+}
+function _clearRephrase(userId) { delete _recentRephrases[userId]; }
 var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\/h/i;
 // Block auto-learn of financial/contract data — CRM Sheet is source of truth
 var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale.*confermati|deal|revenue|ricavi|incasso|pagament|scadenza.*contratt|attivo fino|confermato|archiviato/i;
@@ -396,17 +409,25 @@ async function autoLearn(userId, userMessage, botReply, context) {
   // Skip trivial confirmations
   if (/^(ok|sì|si|no|grazie|perfetto|capito|certo|esatto|giusto|bene|fatto|ricevuto|👍|👀)$/i.test(userMessage.trim())) return;
 
-  // Correction handler — detect user corrections (fix #4)
-  try {
-    var correctionHandler = require('./correctionHandler');
-    if (correctionHandler.isCorrection(userMessage)) {
-      await correctionHandler.handleCorrection(userId, userMessage, botReply);
-      logger.info('[AUTO-LEARN] Correzione rilevata e gestita per', userId);
-    }
-  } catch(e) {
-    // correctionHandler may not exist yet, ignore
-    if (e.code !== 'MODULE_NOT_FOUND') logger.warn('[AUTO-LEARN] Correction handler error:', e.message);
+  // C: Don't learn from answers the user is about to (or just did) correct.
+  // If a rephrase happened in the last 10 minutes, this turn is suspect.
+  if (_hasRecentRephrase(userId)) {
+    logger.info('[AUTO-LEARN] Skip (recent rephrase) for', userId);
+    return;
   }
+  // If user is explicitly correcting, route through correctionHandler only —
+  // don't extract "facts" from a turn that's negating something we said.
+  try {
+    var ch = require('./correctionHandler');
+    if (ch.isCorrection(userMessage)) {
+      await ch.handleCorrection(userId, userMessage, botReply);
+      _markRephrase(userId);
+      logger.info('[AUTO-LEARN] Skip (explicit correction) for', userId);
+      return;
+    }
+  } catch(_) {}
+  // Clean exchange — clear any leftover rephrase flag.
+  _clearRephrase(userId);
 
   try {
     // Single LLM call for all auto-learn tasks
@@ -1018,9 +1039,11 @@ async function askGiuno(userId, userMessage, options) {
     finalReply = validator.fallbackResponse(finalReply, validation.issue);
   }
 
-  // Soft signal: capitalized names that don't appear in user message or
-  // contextData are candidates for hallucination. Log only — too many false
-  // positives (e.g. fresh entity names) to block on this alone.
+  // B: Detect capitalized names that don't appear anywhere in the evidence we
+  // gave the model. 1-2 unmatched names → soft hedge appended (the user is
+  // warned but the reply still goes out). 3+ → the reply is replaced with a
+  // hard "non sono sicuro" fallback; suppressing wrong-sounding answers is
+  // better than confidently inventing several names.
   try {
     var ungrounded = validator.findUngroundedEntities(finalReply, [resolvedMessage, contextData]);
     if (ungrounded.length > 0) {
@@ -1029,6 +1052,12 @@ async function askGiuno(userId, userMessage, options) {
       try {
         require('./errorTracker').recordError('ungrounded_entities:' + ungrounded.slice(0, 3).join(','), 'ungrounded_entity', userId);
       } catch(_) {}
+      if (ungrounded.length >= 3) {
+        finalReply = 'Non sono sicuro su alcuni nomi (' + ungrounded.slice(0, 3).join(', ') +
+          '). Preferisco non rispondere a memoria — puoi confermarmi tu di cosa parliamo?';
+      } else {
+        finalReply += '\n\n_(Nota: non ho conferma esplicita su ' + ungrounded.join(', ') + ' — verifica.)_';
+      }
     }
   } catch(_) {}
 
@@ -1098,6 +1127,12 @@ async function askGiuno(userId, userMessage, options) {
             errorTracker.recordError(secondLastUserMsg, 'rephrase_detected', userId);
             logger.info('[FEEDBACK] Rephrase detected — implicit negative feedback');
           } catch(e) { /* ignore */ }
+          // Mark this user as "in rephrase state" so the auto-learn that's
+          // about to fire skips this turn (don't learn from a bad answer).
+          _markRephrase(userId);
+          try {
+            require('./correctionHandler').handleRephrase(userId, secondLastUserMsg, '').catch(function() {});
+          } catch(_) {}
         }
       }
     }

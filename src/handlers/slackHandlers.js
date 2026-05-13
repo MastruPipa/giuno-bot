@@ -448,12 +448,39 @@ app.message(async function(args) {
         var fb = pendingFb[0];
         var fbText = (message.text || '').trim();
 
+        // GUARD: if the message is clearly a new request to the bot (mentions
+        // Giuno, uses an action verb, references a tool/resource), don't
+        // hijack it into the feedback flow — pass through to the main engine.
+        // Without this, "Leggi le mie mail @Giuno novità sui preventivi ?"
+        // gets answered with "Buona domanda! Per chiarire: <feedback question>".
+        var lowFb = fbText.toLowerCase();
+        var mentionsBot = /(@?giuno|<@[a-z0-9]+>)/i.test(fbText);
+        var hasActionVerb = /\b(leggi|cerca|cercami|trova|trovami|mandami|manda|invia|scrivi|fammi|fai|crea|aggiorna|aggiungi|cancella|rimuovi|controlla|verifica|guarda|dimmi|spiegami|aiutami|mostra|mostrami|elenca|riassumi)\b/i.test(lowFb);
+        var refsTool = /\b(mail|email|drive|canale|canali|cliente|clienti|progetto|progetti|kb|knowledge|preventiv|crm|calendar|calendario|reminder|slack|thread|recap|brief|standup)\b/i.test(lowFb);
+        // Interrogative question ("chi/cosa/come/...? ") is almost never a
+        // feedback answer — it's a new query.
+        var isInterrogative = /\b(chi|cosa|come|quando|dove|perché|quanto|quale|quali)\b/i.test(lowFb) && /\?\s*$/.test(fbText);
+        var isPauseRequest = /^(pausa feedback|dopo rispondo|rispondo dopo|metti in pausa|skip feedback)$/i.test(lowFb);
+        var looksLikeNewRequest = mentionsBot || isInterrogative || hasActionVerb || (refsTool && /\?/.test(fbText));
+
+        if (isPauseRequest) {
+          await app.client.chat.postMessage({
+            channel: message.channel,
+            text: 'Ok, metto in pausa il feedback. Riprendiamo quando vuoi — scrivimi "riprendi feedback".',
+          });
+          return;
+        }
+        if (looksLikeNewRequest) {
+          // Let the main engine handle this — don't return, fall through.
+          logger.info('[FEEDBACK] Skipping clarification — looks like a new request:', fbText.substring(0, 60));
+        } else {
+
         // If user is asking a clarification question, don't save — respond instead
         var isAskingClarification = /\?$/.test(fbText) && fbText.length < 80;
         // Only complaining about Giuno specifically, not using these words in answers
         var isComplaining = /^(ma ti ho fatto|non mi rispondi|fermati|stop|basta domande)$/i.test(fbText);
         // "Ok", "continua", "vai" = user wants to proceed, re-show the question
-        var isJustConfirming = /^(ok|sì|si|vai|continua|avanti|prosegui)$/i.test(fbText);
+        var isJustConfirming = /^(ok|sì|si|vai|continua|avanti|prosegui|riprendi|riprendi feedback)$/i.test(fbText);
 
         if (isJustConfirming) {
           // Re-show the current question
@@ -509,6 +536,7 @@ app.message(async function(args) {
           });
         }
         return; // Don't process further — this was a feedback response
+        } // close: else (looksLikeNewRequest guard)
       }
     }
   } catch(e) { logger.debug('[FEEDBACK-DM] Error:', e.message); }

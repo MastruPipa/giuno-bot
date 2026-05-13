@@ -8,6 +8,12 @@ var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { getGmailPerUtente, getCalendarPerUtente, getUserTokens } = require('../services/googleAuthService');
 var { withTimeout } = require('../utils/timeout');
+var {
+  ROUTINE_TITLE_RX,
+  isSkipResponse,
+  alreadySaved,
+  extractClientTag,
+} = require('../utils/recapHelpers');
 
 // Patterns that identify meeting recap emails
 var RECAP_SUBJECTS = [
@@ -28,6 +34,7 @@ async function scanMeetingRecaps() {
     var tokens = getUserTokens();
     var userIds = Object.keys(tokens);
     var totalSaved = 0;
+    var kbCache = (typeof db.getKBCache === 'function') ? db.getKBCache() : [];
 
     for (var ui = 0; ui < userIds.length; ui++) {
       var userId = userIds[ui];
@@ -48,9 +55,8 @@ async function scanMeetingRecaps() {
         for (var mi = 0; mi < messages.length; mi++) {
           var msgId = messages[mi].id;
 
-          // Check if already processed (by msgId in KB tags)
-          var existingKB = db.searchKB('gmail_recap_' + msgId);
-          if (existingKB && existingKB.some(function(k) { return (k.tags || []).indexOf('gmail_id:' + msgId) !== -1; })) continue;
+          // Dedup by exact tag match against the loaded KB cache.
+          if (alreadySaved(kbCache, 'gmail_id:' + msgId)) continue;
 
           // Read the email
           try {
@@ -103,15 +109,14 @@ async function scanMeetingRecaps() {
             });
 
             var summary = summaryRes.content[0].text.trim();
-            if (summary === 'SKIP' || summary.startsWith('SKIP')) continue;
+            if (isSkipResponse(summary)) continue;
 
             // Save to KB
             var kbContent = '[RECAP MEETING] ' + subject + ' (' + date + ')\n' + summary;
             var tags = ['tipo:meeting_recap', 'gmail_id:' + msgId, 'fonte:gmail'];
 
-            // Try to extract client name from subject
-            var clientMatch = subject.match(/(?:con|×|x|per|@)\s*(\w+)/i);
-            if (clientMatch) tags.push('cliente:' + clientMatch[1].toLowerCase());
+            var clientTag = extractClientTag(subject);
+            if (clientTag) tags.push(clientTag);
 
             db.addKBEntry(kbContent, tags, userId, {
               confidenceTier: 'drive_indexed',
@@ -127,11 +132,11 @@ async function scanMeetingRecaps() {
             totalSaved++;
             logger.info('[RECAP-SCAN] Salvato recap:', subject.substring(0, 60));
           } catch(e) {
-            logger.debug('[RECAP-SCAN] Errore email', msgId + ':', e.message);
+            logger.warn('[RECAP-SCAN] Errore email', msgId + ':', e.message);
           }
         }
       } catch(e) {
-        logger.debug('[RECAP-SCAN] Errore per user', userId + ':', e.message);
+        logger.warn('[RECAP-SCAN] Errore per user', userId + ':', e.message);
       }
     }
 
@@ -161,10 +166,14 @@ async function scanMeetingRecaps() {
         for (var ei = 0; ei < calEvents.length; ei++) {
           var calEvent = calEvents[ei];
           var eventId = calEvent.id;
+          var rawTitle = calEvent.summary || '';
 
-          // Check if already processed
-          var existingCal = db.searchKB('cal_recap_' + eventId);
-          if (existingCal && existingCal.some(function(k) { return (k.tags || []).indexOf('cal_event_id:' + eventId) !== -1; })) continue;
+          // Skip recurring + routine events — they always come back as SKIP from the LLM.
+          if (calEvent.recurringEventId) continue;
+          if (ROUTINE_TITLE_RX.test(rawTitle)) continue;
+
+          // Dedup by exact tag match.
+          if (alreadySaved(kbCache, 'cal_event_id:' + eventId)) continue;
 
           // Look for Gemini notes in: description, attachments, conferenceData.notes
           var notesContent = '';
@@ -196,7 +205,7 @@ async function scanMeetingRecaps() {
                     }
                   }
                 } catch(e) {
-                  logger.debug('[RECAP-SCAN] Errore lettura doc allegato:', e.message);
+                  logger.warn('[RECAP-SCAN] Errore lettura doc allegato:', e.message);
                 }
               }
             }
@@ -216,14 +225,13 @@ async function scanMeetingRecaps() {
             });
 
             var summary = summaryRes.content[0].text.trim();
-            if (summary === 'SKIP' || summary.startsWith('SKIP')) continue;
+            if (isSkipResponse(summary)) continue;
 
             var kbContent = '[RECAP MEETING] ' + eventTitle + ' (' + (calEvent.start.dateTime || calEvent.start.date || '') + ')\n' + summary;
             var tags = ['tipo:meeting_recap', 'cal_event_id:' + eventId, 'fonte:calendar'];
 
-            // Extract client name from title
-            var clientMatch = eventTitle.match(/(?:con|×|x|per|@|<>)\s*(\w+)/i);
-            if (clientMatch) tags.push('cliente:' + clientMatch[1].toLowerCase());
+            var calClientTag = extractClientTag(eventTitle);
+            if (calClientTag) tags.push(calClientTag);
 
             db.addKBEntry(kbContent, tags, calUserId, {
               confidenceTier: 'drive_indexed',
@@ -237,11 +245,11 @@ async function scanMeetingRecaps() {
             totalSaved++;
             logger.info('[RECAP-SCAN] Salvato recap calendar:', eventTitle.substring(0, 50));
           } catch(e) {
-            logger.debug('[RECAP-SCAN] Errore LLM recap cal:', e.message);
+            logger.warn('[RECAP-SCAN] Errore LLM recap cal:', e.message);
           }
         }
       } catch(e) {
-        logger.debug('[RECAP-SCAN] Errore calendar per user', calUserId + ':', e.message);
+        logger.warn('[RECAP-SCAN] Errore calendar per user', calUserId + ':', e.message);
       }
     }
 

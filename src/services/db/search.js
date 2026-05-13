@@ -65,6 +65,11 @@ function scoreMemory(memory, tokens, now) {
   var tagsLow = (memory.tags || []).map(function(t) { return t.toLowerCase(); });
 
   var isOfficial = tagsLow.some(function(t) { return t === 'fonte:ufficiale'; });
+  // A correction is a high-trust statement from the user — let it outweigh the
+  // older memories it's intended to replace.
+  var isCorrection = tagsLow.some(function(t) { return t === 'correzione' || t === 'feedback'; });
+  // Memories that have been explicitly invalidated should never resurface.
+  if (memory.superseded_by) return 0;
 
   var baseScore = 0;
   tokens.forEach(function(token) {
@@ -91,7 +96,14 @@ function scoreMemory(memory, tokens, now) {
 
   if (memory.expires_at && new Date(memory.expires_at).getTime() < now) return 0;
 
-  return (baseScore * 0.5) + (baseScore * typeWeight * 0.25) + (baseScore * temporalScore * 0.25);
+  // confidence_score was previously ignored: a 0.3 auto-learn memory weighed
+  // as much as a 0.9 hand-written semantic one. Now it acts as a multiplier
+  // (corrections get a 1.5× boost because the user just told us the truth).
+  var rawConfidence = (memory.confidence_score != null) ? memory.confidence_score : 0.5;
+  var confidenceMultiplier = isCorrection ? 1.5 : Math.max(0.3, Math.min(1.0, rawConfidence));
+
+  var combined = (baseScore * 0.4) + (baseScore * typeWeight * 0.2) + (baseScore * temporalScore * 0.2);
+  return combined * confidenceMultiplier;
 }
 
 var BLACKLIST_PATTERNS = [
