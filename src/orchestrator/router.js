@@ -85,6 +85,20 @@ async function route(userId, message, options) {
     var convCache = db2.getConvCache();
     var recentConv = (convCache[convKey] || []).slice(-6); // last 3 exchanges
 
+    // Resolve ordinal/numbered references to the previous bot reply.
+    // "1. persa" after a numbered lead list → "Unimed è persa" so the
+    // classifier and downstream agents don't think the user wants to
+    // search the keyword "persa" in isolation.
+    try {
+      var refResolver = require('../utils/referenceResolver');
+      var resolved = refResolver.resolveOrdinalReference(message, recentConv);
+      if (resolved) {
+        logger.info('[ROUTER] Ordinal ref resolved: "' + message.substring(0, 40) +
+          '" → "' + resolved.rewritten.substring(0, 80) + '"');
+        message = resolved.rewritten;
+      }
+    } catch(e) { logger.warn('[ROUTER] referenceResolver error:', e.message); }
+
     // If we have conversation history, give classifier the subject context
     var classifierMessage = message;
     if (recentConv.length > 0) {
