@@ -48,6 +48,17 @@ function findTeamMemberByName(nameOrAlias) {
   return null;
 }
 
+// Lookup by Slack user ID. Authoritative way to turn a raw Slack ID into the
+// canonical team name (used when resolving channel message authors).
+function findTeamMemberById(slackUserId) {
+  if (!slackUserId) return null;
+  var roster = _rosterCache || [];
+  for (var i = 0; i < roster.length; i++) {
+    if (roster[i] && roster[i].slack_user_id === slackUserId) return roster[i];
+  }
+  return null;
+}
+
 // Return the team-roster entries whose canonical_name or any alias appears
 // inside the given text (token-boundary match). Used to auto-tag messages.
 function findTeamMembersInText(text) {
@@ -130,6 +141,7 @@ module.exports = {
   loadTeamRoster: loadTeamRoster,
   getTeamRoster: getTeamRoster,
   findTeamMemberByName: findTeamMemberByName,
+  findTeamMemberById: findTeamMemberById,
   findTeamMembersInText: findTeamMembersInText,
   upsertTeamMember: upsertTeamMember,
   deactivateTeamMember: deactivateTeamMember,

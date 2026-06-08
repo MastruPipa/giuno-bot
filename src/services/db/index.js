@@ -163,6 +163,7 @@ module.exports = {
   loadTeamRoster:        team.loadTeamRoster,
   getTeamRoster:         team.getTeamRoster,
   findTeamMemberByName:  team.findTeamMemberByName,
+  findTeamMemberById:    team.findTeamMemberById,
   findTeamMembersInText: team.findTeamMembersInText,
   upsertTeamMember:      team.upsertTeamMember,
   deactivateTeamMember:  team.deactivateTeamMember,
