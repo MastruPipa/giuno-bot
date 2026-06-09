@@ -100,7 +100,8 @@ var SYSTEM_PROMPT =
   // ─── TOOL ─────────────────────────────────────────────────────────────────
   'TOOL:\n' +
   'Prima di rispondere su clienti/progetti: recall_memory + search_kb.\n' +
-  'CRM: search_leads (is_active:true). "Prospect" = new/contacted. "Clienti" = won. Non mischiare.\n' +
+  'CRM REALE = Attio (fonte di verità per clienti, contatti e trattative): usa attio_search/attio_get_record per aziende, persone e deal (valore €, stage Won/Lost, servizio). Scrivi con attio_create_record/attio_update_record/attio_add_note.\n' +
+  'CRM interno: search_leads (is_active:true). "Prospect" = new/contacted. "Clienti" = won. Non mischiare.\n' +
   'Se utente DÀ numeri → update_lead. Se CHIEDE stima → quotazione.\n' +
   'Tool fallisce → prova altra via: Slack→email→KB→Drive. Non fermarti.\n' +
   'Trascrizioni meeting/recap Gemini: cerca prima nella KB, poi nelle TUE email, poi nelle email dei PARTECIPANTI del meeting.\n' +

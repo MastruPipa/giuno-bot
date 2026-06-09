@@ -29,6 +29,7 @@ var peopleContextTools = require('./peopleContextTools');
 var workflowTools     = require('./workflowTools');
 var agencyTools       = require('./agencyTools');
 var standupTools      = require('./standupTools');
+var attioTools        = require('./attioTools');
 
 var ALL_MODULES = [
   slackTools,
@@ -48,6 +49,7 @@ var ALL_MODULES = [
   workflowTools,
   agencyTools,
   standupTools,
+  attioTools,
 ];
 
 // ─── Critical action confirmation ─────────────────────────────────────────────
@@ -73,8 +75,8 @@ function getAllTools() {
 var AGENT_TOOL_SETS = {
   threadSummary: ['summarize_thread', 'summarize_channel', 'read_channel', 'search_slack_messages', 'recall_memory', 'get_channel_map'],
   dailyDigest:   ['list_events', 'find_emails', 'recall_memory', 'search_kb', 'search_slack_messages', 'summarize_channel', 'list_channels'],
-  clientRetrieval: ['resolve_entity', 'recall_memory', 'search_kb', 'search_leads', 'query_leads_db', 'search_suppliers', 'get_supplier', 'search_drive', 'browse_folder', 'search_in_shared_drive', 'list_shared_drives', 'read_channel', 'search_slack_messages', 'search_everywhere', 'ask_gemini', 'list_channels', 'summarize_channel', 'get_pinned_messages', 'get_channel_digest', 'get_entity_relationships', 'search_drive_index', 'list_projects', 'get_project_details', 'entity_card', 'search_contacts'],
-  crmUpdate: ['search_leads', 'update_lead', 'create_lead', 'delete_lead', 'recall_memory', 'list_projects', 'update_project', 'create_project'],
+  clientRetrieval: ['resolve_entity', 'recall_memory', 'search_kb', 'search_leads', 'query_leads_db', 'search_suppliers', 'get_supplier', 'search_drive', 'browse_folder', 'search_in_shared_drive', 'list_shared_drives', 'read_channel', 'search_slack_messages', 'search_everywhere', 'ask_gemini', 'list_channels', 'summarize_channel', 'get_pinned_messages', 'get_channel_digest', 'get_entity_relationships', 'search_drive_index', 'list_projects', 'get_project_details', 'entity_card', 'search_contacts', 'attio_search', 'attio_get_record'],
+  crmUpdate: ['search_leads', 'update_lead', 'create_lead', 'delete_lead', 'recall_memory', 'list_projects', 'update_project', 'create_project', 'attio_search', 'attio_get_record', 'attio_create_record', 'attio_update_record', 'attio_add_note'],
   general: null, // null means all tools
 };
 
