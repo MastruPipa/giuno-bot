@@ -8,6 +8,7 @@ var rbac = require('../../rbac');
 var logger = require('../utils/logger');
 var { generaLinkOAuth } = require('../services/googleAuthService');
 var embeddingService = require('../services/embeddingService');
+var attio = require('../services/attioService');
 var { safeCall } = require('../utils/safeCall');
 var { withTimeout, withRetry } = require('../utils/retryPolicy');
 
@@ -23,14 +24,17 @@ var CLOSED_PROJECT_STATUSES = {
 // ─── Context needs per intent ────────────────────────────────────────────────
 
 var CONTEXT_NEEDS = {
-  THREAD_SUMMARY:   { memories: true,  kb: false, glossary: false, entities: false, drive: false },
-  DAILY_DIGEST:     { memories: true,  kb: true,  glossary: false, entities: false, drive: false },
-  CLIENT_RETRIEVAL: { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true  },
-  QUOTE_SUPPORT:    { memories: false, kb: true,  glossary: false, entities: false, drive: false },
-  CRM_UPDATE:       { memories: false, kb: false, glossary: false, entities: true,  drive: false },
-  HISTORICAL_SCAN:  { memories: false, kb: false, glossary: false, entities: false, drive: false },
-  GENERAL:          { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true  },
+  THREAD_SUMMARY:   { memories: true,  kb: false, glossary: false, entities: false, drive: false, crm: false },
+  DAILY_DIGEST:     { memories: true,  kb: true,  glossary: false, entities: false, drive: false, crm: false },
+  CLIENT_RETRIEVAL: { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true,  crm: true  },
+  QUOTE_SUPPORT:    { memories: false, kb: true,  glossary: false, entities: false, drive: false, crm: true  },
+  CRM_UPDATE:       { memories: false, kb: false, glossary: false, entities: true,  drive: false, crm: true  },
+  HISTORICAL_SCAN:  { memories: false, kb: false, glossary: false, entities: false, drive: false, crm: false },
+  GENERAL:          { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true,  crm: false },
 };
+
+// CRM-flavoured questions that classify as GENERAL still get Attio enrichment.
+var CRM_KEYWORDS = /\b(client[ei]|aziend[ae]|deal|trattativ[ae]|pipeline|offert[ae]|preventiv[oi]|propost[ae]|lead|prospect|fattur|contratt[oi]|won|lost|crm|attio)\b/i;
 
 // ─── Trivial message detection ───────────────────────────────────────────────
 
@@ -45,6 +49,61 @@ function isTrivialMessage(message) {
 }
 
 // ─── Main builder ────────────────────────────────────────────────────────────
+
+// Pull candidate CRM search terms out of the message: resolved entity names
+// first, then capitalised tokens (likely company/person names). Bounded to 2.
+var _TERM_STOP = { Giuno: 1, Antonio: 1, Ciao: 1, Ehi: 1, Hey: 1, Ok: 1, Grazie: 1, Quale: 1, Quali: 1, Come: 1, Cosa: 1, Chi: 1, Quanto: 1, Quando: 1, Dove: 1, Perche: 1, Perché: 1 };
+function extractCrmTerms(message, entities) {
+  var terms = [];
+  var seen = {};
+  var push = function(t) {
+    if (!t) return;
+    t = String(t).trim();
+    if (t.length < 3) return;
+    var key = t.toLowerCase();
+    if (seen[key] || _TERM_STOP[t]) return;
+    seen[key] = 1; terms.push(t);
+  };
+  (entities || []).forEach(function(e) { if (e && e.name) push(e.name); });
+  var caps = (message || '').match(/\b[A-ZÀ-Ý][\wÀ-ÿ.&'’-]{2,}\b/g) || [];
+  caps.forEach(push);
+  return terms.slice(0, 2);
+}
+
+// Proactively fetch relevant Attio records so CRM questions are grounded in the
+// real CRM without the model having to call a tool first. Best-effort: returns
+// null when Attio isn't configured or nothing matches.
+async function buildAttioContext(message, entities) {
+  if (!attio.isConfigured()) return null;
+  var terms = extractCrmTerms(message, entities);
+  if (terms.length === 0) return null;
+
+  var companies = [];
+  var deals = [];
+  var seenCo = {}, seenDeal = {};
+  for (var i = 0; i < terms.length; i++) {
+    var filter = { name: { '$contains': terms[i] } };
+    var cs = await safeCall('CTX.attio.companies', function() { return attio.queryRecords('companies', filter, 3); }, []);
+    var ds = await safeCall('CTX.attio.deals', function() { return attio.queryRecords('deals', filter, 3); }, []);
+    (cs || []).forEach(function(c) { if (c.record_id && !seenCo[c.record_id]) { seenCo[c.record_id] = 1; companies.push(c); } });
+    (ds || []).forEach(function(d) { if (d.record_id && !seenDeal[d.record_id]) { seenDeal[d.record_id] = 1; deals.push(d); } });
+  }
+
+  // Resolve a few deals linked to the top company match (answers "che deal con X").
+  if (companies[0] && companies[0].values && companies[0].values.associated_deals) {
+    var refs = [].concat(companies[0].values.associated_deals);
+    for (var j = 0; j < refs.length && j < 3; j++) {
+      var rid = refs[j] && refs[j].record_id;
+      if (rid && !seenDeal[rid]) {
+        var dd = await safeCall('CTX.attio.dealRef', function() { return attio.getRecord('deals', rid); }, null);
+        if (dd) { seenDeal[rid] = 1; deals.push(dd); }
+      }
+    }
+  }
+
+  if (companies.length === 0 && deals.length === 0) return null;
+  return { companies: companies.slice(0, 4), deals: deals.slice(0, 5) };
+}
 
 async function buildContext(params) {
   var userId  = params.userId;
@@ -289,6 +348,14 @@ async function buildContext(params) {
     } catch(e) { logger.debug('[CTX-V2] closed-project filter skipped:', e && e.message); }
   }
 
+  // Automatic CRM grounding: for CRM-flavoured questions, enrich with Attio.
+  var attioContext = null;
+  if ((needs.crm || CRM_KEYWORDS.test(message)) && !isTrivialMessage(message)) {
+    attioContext = await safeCall('CTX.buildAttioContext', function() {
+      return withTimeout(function() { return buildAttioContext(message, relevantEntities); }, 4000, 'CTX.attio');
+    }, null);
+  }
+
   return {
     // V1 backward-compatible fields
     userId:           userId,
@@ -316,6 +383,7 @@ async function buildContext(params) {
     driveContext:     driveContext,
     channelProfile:   channelProfile,
     teamContext:      teamContext,
+    attioContext:     attioContext,
   };
 }
 
@@ -360,6 +428,26 @@ function formatContextForPrompt(ctx) {
         return '- ' + body;
       }).join('\n'));
     }
+  }
+
+  if (ctx.attioContext && ((ctx.attioContext.companies || []).length || (ctx.attioContext.deals || []).length)) {
+    var ac = ctx.attioContext;
+    var acLines = [];
+    (ac.companies || []).forEach(function(c) {
+      var v = c.values || {};
+      var line = (v.name || '(senza nome)');
+      if (v.description) line += ' — ' + String(v.description).substring(0, 120);
+      acLines.push('• AZIENDA ' + line + ' [id:' + c.record_id + ']');
+    });
+    (ac.deals || []).forEach(function(d) {
+      var v = d.values || {};
+      var bits = [];
+      if (v.stage) bits.push('stage: ' + (Array.isArray(v.stage) ? v.stage.join('/') : v.stage));
+      if (v.value != null) bits.push('valore: ' + v.value);
+      if (v.servizio_proposto) bits.push('servizio: ' + [].concat(v.servizio_proposto).join(', '));
+      acLines.push('• DEAL ' + (v.name || '(senza nome)') + (bits.length ? ' — ' + bits.join(' | ') : '') + ' [id:' + d.record_id + ']');
+    });
+    parts.push('ATTIO (CRM — fonte di verità, usa questi dati e i tool attio_* per dettagli/modifiche):\n' + acLines.join('\n'));
   }
 
   if (ctx.kbResults && ctx.kbResults.length > 0) {
