@@ -13,6 +13,13 @@ var { withTimeout, withRetry } = require('../utils/retryPolicy');
 
 var getUserRole = rbac.getUserRole;
 
+// Project statuses we treat as "closed": memories/KB tagged with one of these
+// projects are filtered out of proactive context unless the user names them.
+var CLOSED_PROJECT_STATUSES = {
+  completed: 1, completato: 1, closed: 1, chiuso: 1, archived: 1, archiviato: 1,
+  done: 1, cancelled: 1, canceled: 1, annullato: 1, lost: 1, perso: 1,
+};
+
 // ─── Context needs per intent ────────────────────────────────────────────────
 
 var CONTEXT_NEEDS = {
@@ -256,6 +263,30 @@ async function buildContext(params) {
         return g.term + ': ' + g.definition + (g.synonyms && g.synonyms.length > 0 ? ' (sinonimi: ' + g.synonyms.join(', ') + ')' : '');
       }).join('\n');
     }
+  }
+
+  // Closed-project guard: drop retrieved memories/KB tied to a project that
+  // has been closed, UNLESS the user explicitly named that project. This stops
+  // the bot from dragging in long-finished projects nobody mentioned.
+  if ((relevantMemories && relevantMemories.length) || (kbResults && kbResults.length)) {
+    try {
+      var statusMap = (await safeCall('CTX.getProjectStatusMap',
+        function() { return db.getProjectStatusMap(); }, {})) || {};
+      var msgLow = (message || '').toLowerCase();
+      var hasClosedUnmentionedTag = function(tags) {
+        if (!Array.isArray(tags)) return false;
+        for (var ti = 0; ti < tags.length; ti++) {
+          var mt = /^progetto:(.+)$/i.exec(String(tags[ti] || ''));
+          if (!mt) continue;
+          var pname = mt[1].toLowerCase().trim();
+          var st = (statusMap[pname] || '').toLowerCase();
+          if (CLOSED_PROJECT_STATUSES[st] && msgLow.indexOf(pname) === -1) return true;
+        }
+        return false;
+      };
+      relevantMemories = (relevantMemories || []).filter(function(m) { return !hasClosedUnmentionedTag(m.tags); });
+      kbResults = (kbResults || []).filter(function(k) { return !hasClosedUnmentionedTag(k.tags); });
+    } catch(e) { logger.debug('[CTX-V2] closed-project filter skipped:', e && e.message); }
   }
 
   return {

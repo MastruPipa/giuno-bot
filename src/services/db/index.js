@@ -173,6 +173,7 @@ module.exports = {
   createProject:        projects.createProject,
   updateProject:        projects.updateProject,
   searchProjects:       projects.searchProjects,
+  getProjectStatusMap:  projects.getProjectStatusMap,
   getProject:           projects.getProject,
   deleteProject:        projects.deleteProject,
   allocateResource:     projects.allocateResource,
