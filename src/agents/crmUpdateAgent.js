@@ -43,6 +43,9 @@ async function run(message, ctx) {
     dynamicContext += 'Utente: ' + (ctx.profile.ruolo || 'team') + '\n';
   }
 
+  var attioBlock = require('../orchestrator/attioContext').formatAttioForPrompt(ctx.attioContext);
+  if (attioBlock) dynamicContext += '\n' + attioBlock + '\n';
+
   var fullSystemPrompt = SYSTEM_PROMPT + '\n\n---\nCONTESTO:\n' + dynamicContext;
 
   var messages = [{ role: 'user', content: message }];
