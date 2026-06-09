@@ -53,14 +53,34 @@ async function getChannelHistory(app, channelId, oldest, maxMessages) {
   return all.slice(0, maxMessages);
 }
 
-// Resolve user ID to display name (with cache)
+// Resolve user ID to display name (with cache).
+// Priority: authoritative team roster → Slack profile → clean placeholder.
+// Never leaks raw Slack IDs or Slack's "deactivateduserNNNN" handle, which
+// confuse the LLM (it pairs them to random names / treats them as people).
 async function resolveUserName(app, userId, cache) {
   if (cache[userId]) return cache[userId];
+  // 1. Authoritative roster (canonical name by Slack ID).
+  try {
+    var member = db.findTeamMemberById && db.findTeamMemberById(userId);
+    if (member && member.canonical_name) {
+      cache[userId] = member.canonical_name;
+      return cache[userId];
+    }
+  } catch(e) { /* roster not loaded — fall through */ }
+  // 2. Slack profile.
   try {
     var uRes = await app.client.users.info({ user: userId });
-    cache[userId] = uRes.user.real_name || uRes.user.name;
+    var u = uRes.user || {};
+    var realName = u.real_name || (u.profile && u.profile.real_name) || '';
+    // Deactivated accounts: Slack reports deleted=true and a synthetic handle
+    // like "deactivateduser519299". Surface a clean label instead.
+    if (u.deleted || /^deactivateduser/i.test(u.name || '') || !realName) {
+      cache[userId] = '(utente disattivato)';
+    } else {
+      cache[userId] = realName;
+    }
   } catch(e) {
-    cache[userId] = userId;
+    cache[userId] = '(utente sconosciuto)';
   }
   return cache[userId];
 }

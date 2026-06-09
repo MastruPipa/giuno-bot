@@ -1103,6 +1103,17 @@ app.action('open_daily_modal', async function(args) {
       triggerIdPresent: !!triggerId,
       elapsedMs: Date.now() - ackStart,
     });
+    // The button left the user with nothing. Don't make them stuck: fall back
+    // to the text path (they're already in standupInAttesa, so a structured
+    // message gets recorded just like the modal).
+    try {
+      await app.client.chat.postMessage({
+        channel: args.body.user.id,
+        text: 'Non riesco ad aprire il modulo del daily in questo momento. ' +
+          'Scrivimi qui il daily in testo e lo registro io — esempio:\n' +
+          '*Ieri:* cosa hai fatto\n*Oggi:* cosa farai\n*Blocchi:* eventuali intoppi',
+      });
+    } catch(e2) { logger.debug('[DAILY-MODAL] fallback DM error:', e2 && e2.message); }
   }
 });
 

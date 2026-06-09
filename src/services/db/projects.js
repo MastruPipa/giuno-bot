@@ -57,6 +57,26 @@ async function searchProjects(params) {
   } catch(e) { c.logErr('searchProjects', e); return []; }
 }
 
+// Cached lowercase project-name → status map. Used by the context builder to
+// avoid surfacing memories/KB tied to projects that have been closed.
+var _statusMapCache = null;
+var _statusMapAt = 0;
+async function getProjectStatusMap() {
+  if (!c.useSupabase) return {};
+  var now = Date.now();
+  if (_statusMapCache && (now - _statusMapAt) < 300000) return _statusMapCache; // 5 min TTL
+  try {
+    var res = await c.getClient().from('projects').select('name, status').limit(500);
+    var map = {};
+    (res.data || []).forEach(function(p) {
+      if (p && p.name) map[String(p.name).toLowerCase().trim()] = (p.status || 'active');
+    });
+    _statusMapCache = map;
+    _statusMapAt = now;
+    return map;
+  } catch(e) { c.logErr('getProjectStatusMap', e); return _statusMapCache || {}; }
+}
+
 async function getProject(projectId) {
   if (!c.useSupabase) return null;
   try {
@@ -167,6 +187,7 @@ module.exports = {
   createProject: createProject,
   updateProject: updateProject,
   searchProjects: searchProjects,
+  getProjectStatusMap: getProjectStatusMap,
   getProject: getProject,
   deleteProject: deleteProject,
   allocateResource: allocateResource,
