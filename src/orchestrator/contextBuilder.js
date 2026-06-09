@@ -70,13 +70,16 @@ function extractCrmTerms(message, entities) {
   return terms.slice(0, 2);
 }
 
+// Generic CRM/pipeline questions ("come va la pipeline", "che deal abbiamo",
+// "clienti vinti") that carry no specific company name still deserve grounding.
+var OVERVIEW_KEYWORDS = /\b(pipeline|trattativ|deal|vint|won|pers|lost|apert|in corso|offert|preventiv|client|aziend|crm|fattur|propost)\b/i;
+
 // Proactively fetch relevant Attio records so CRM questions are grounded in the
 // real CRM without the model having to call a tool first. Best-effort: returns
 // null when Attio isn't configured or nothing matches.
 async function buildAttioContext(message, entities) {
   if (!attio.isConfigured()) return null;
   var terms = extractCrmTerms(message, entities);
-  if (terms.length === 0) return null;
 
   var companies = [];
   var deals = [];
@@ -101,7 +104,17 @@ async function buildAttioContext(message, entities) {
     }
   }
 
+  // Overview fallback: a generic CRM/pipeline question with no specific match.
+  // Pull the most recent deals so Giuno can answer from the real pipeline.
+  if (deals.length === 0 && companies.length === 0 && OVERVIEW_KEYWORDS.test(message)) {
+    var recent = await safeCall('CTX.attio.recentDeals', function() {
+      return attio.queryRecords('deals', null, 8, [{ attribute: 'created_at', direction: 'desc' }]);
+    }, []);
+    (recent || []).forEach(function(d) { if (d.record_id && !seenDeal[d.record_id]) { seenDeal[d.record_id] = 1; deals.push(d); } });
+  }
+
   if (companies.length === 0 && deals.length === 0) return null;
+  logger.info('[CTX-ATTIO] grounded:', companies.length, 'aziende,', deals.length, 'deal | termini:', terms.join(',') || '(overview)');
   return { companies: companies.slice(0, 4), deals: deals.slice(0, 5) };
 }
 
