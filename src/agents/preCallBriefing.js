@@ -21,14 +21,33 @@ async function buildBriefing(userId, event) {
   // Collect raw data
   var rawData = { title: title, time: startTime, attendees: [], crmData: null, channelDigest: null, projectInfo: null, ownerFacts: null, ownerMemory: null, ownerOpenItems: null };
 
-  // Owner context — what do we already know about the person whose calendar
-  // this is? Helps Haiku tailor the briefing ("Gianna, tu stai seguendo X, ricorda che...").
+  // Search terms from the title — strip our own agency name, the Meet/Google
+  // prefix and meeting filler so we don't match generic tokens like "Studio"
+  // against unrelated CRM rows (that's how a Pasticceria call got a law firm).
+  var searchTerms = (title || '')
+    .replace(/<>|kataniastudio|katania|studio|\bks\b|meet|call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione|deep\s*dive/gi, ' ')
+    .trim().split(/\s+/)
+    .map(function(w) { return w.replace(/[^\wÀ-ÿ']/g, ''); })
+    .filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno|gli|the|and)$/i.test(w); });
+
+  function relevantToMeeting(text) {
+    if (!text) return false;
+    var low = String(text).toLowerCase();
+    return searchTerms.some(function(t) { return t.length >= 3 && low.indexOf(t.toLowerCase()) !== -1; });
+  }
+
+  // Owner context — ONLY what is actually relevant to THIS meeting. Generic open
+  // items / summaries (e.g. internal effort-tracking) must not leak into an
+  // unrelated client briefing.
   try {
     var userFacts = await db.getUserFacts(userId, 8);
     if (userFacts && userFacts.length > 0) {
       var byCat = {};
-      userFacts.forEach(function(f) { (byCat[f.category] = byCat[f.category] || []).push(f.fact); });
-      rawData.ownerFacts = byCat;
+      userFacts.forEach(function(f) {
+        if (!relevantToMeeting(f.fact)) return;
+        (byCat[f.category] = byCat[f.category] || []).push(f.fact);
+      });
+      if (Object.keys(byCat).length > 0) rawData.ownerFacts = byCat;
     }
   } catch(e) { /* user_facts may not exist */ }
 
@@ -40,9 +59,11 @@ async function buildBriefing(userId, event) {
         .eq('conv_key', userId)
         .limit(1);
       if (summ.data && summ.data.length > 0) {
-        if (summ.data[0].summary) rawData.ownerMemory = summ.data[0].summary.substring(0, 600);
+        if (summ.data[0].summary && relevantToMeeting(summ.data[0].summary)) {
+          rawData.ownerMemory = summ.data[0].summary.substring(0, 600);
+        }
         var openItems = (summ.data[0].proposed_actions || []).filter(function(a) {
-          return a && a.type === 'open_item' && a.description;
+          return a && a.type === 'open_item' && a.description && relevantToMeeting(a.description);
         });
         if (openItems.length > 0) rawData.ownerOpenItems = openItems.slice(0, 3).map(function(a) { return a.description; });
       }
@@ -56,21 +77,34 @@ async function buildBriefing(userId, event) {
     });
   }
 
-  // Extract search terms from title + attendees
-  var searchTerms = (title || '').replace(/call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione|deep\s*dive/gi, ' ')
-    .trim().split(/\s+/).filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno|ks)$/i.test(w); });
-
-  // CRM
-  for (var wi = 0; wi < Math.min(searchTerms.length, 5); wi++) {
-    try {
-      var leads = await db.searchLeads({ company_name: searchTerms[wi], limit: 1 });
-      if (leads && leads.length > 0) {
-        // Only pass useful CRM fields, not technical status
-        var l = leads[0];
-        rawData.crmData = { company: l.company_name, services: l.services || null, contact: l.contact_name || null };
-        break;
+  // CRM — prefer Attio (the real CRM) and only accept a confident match on a
+  // meaningful token (>=4 chars), so we never attach an unrelated company.
+  try {
+    var attioSvc = require('../services/attioService');
+    if (attioSvc.isConfigured()) {
+      for (var ai = 0; ai < Math.min(searchTerms.length, 3) && !rawData.crmData; ai++) {
+        if (searchTerms[ai].length < 4) continue;
+        var cos = await attioSvc.queryRecords('companies', { name: { '$contains': searchTerms[ai] } }, 1);
+        if (cos && cos.length > 0 && cos[0].values && cos[0].values.name) {
+          rawData.crmData = { company: cos[0].values.name };
+        }
       }
-    } catch(e) { /* ignore */ }
+    }
+  } catch(e) { /* ignore */ }
+
+  // Fallback to the internal leads CRM only if Attio gave nothing.
+  if (!rawData.crmData) {
+    for (var wi = 0; wi < Math.min(searchTerms.length, 5); wi++) {
+      if (searchTerms[wi].length < 4) continue;
+      try {
+        var leads = await db.searchLeads({ company_name: searchTerms[wi], limit: 1 });
+        if (leads && leads.length > 0) {
+          var l = leads[0];
+          rawData.crmData = { company: l.company_name, services: l.services || null, contact: l.contact_name || null };
+          break;
+        }
+      } catch(e) { /* ignore */ }
+    }
   }
 
   // Channel digest
@@ -120,6 +154,10 @@ async function buildBriefing(userId, event) {
         'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +
         'Non usare CAPS. Non dire "BRIEFING CALL". Non mostrare status CRM tecnici ("lost", "won").\n' +
         'Non inventare valori in € se non sono nei dati.\n' +
+        'Se crmData è assente o non combacia chiaramente col titolo/partecipanti, NON menzionare il CRM e ' +
+        'NON ipotizzare azienda o contatto: dai solo orario, partecipanti ed eventuale link.\n' +
+        'NON aggiungere promemoria su attività interne (tracking ore, recap, report, effort) o progetti ' +
+        'che non riguardano DIRETTAMENTE questo meeting.\n' +
         'Se c\'è un partecipante esterno, metti solo il nome (no email gmail/hotmail).\n' +
         'Se ownerFacts/ownerMemory/ownerOpenItems sono presenti, usali per ricordare al destinatario ' +
         '(che è l\'owner del calendario) cosa stava facendo con questo cliente/progetto: cita 1 fatto pertinente ' +
