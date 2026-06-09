@@ -89,9 +89,18 @@ function scoreMemory(memory, tokens, now) {
   var typeWeight = TYPE_WEIGHT[memory.memory_type] || 0.7;
 
   var temporalScore = 1.0;
-  if (memory.created && now && (memory.memory_type === 'episodic' || memory.memory_type === 'observation' || memory.memory_type === 'intent')) {
+  if (memory.created && now) {
     var ageDays = (now - new Date(memory.created).getTime()) / (1000 * 60 * 60 * 24);
-    temporalScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
+    var perishable = (memory.memory_type === 'episodic' || memory.memory_type === 'observation' ||
+                      memory.memory_type === 'intent' || !memory.memory_type);
+    if (perishable) {
+      // Time-bound facts (what happened / what someone intended) age out fast.
+      temporalScore = Math.max(0.3, 1 - (ageDays / 180) * 0.7);
+    } else {
+      // semantic / procedural / preference: gentle decay so that, all else equal,
+      // fresh info wins ties and year-old facts don't masquerade as current truth.
+      temporalScore = Math.max(0.6, 1 - (ageDays / 365) * 0.4);
+    }
   }
 
   if (memory.expires_at && new Date(memory.expires_at).getTime() < now) return 0;
