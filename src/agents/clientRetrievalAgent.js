@@ -91,6 +91,9 @@ function buildDynamicContext(ctx) {
     });
   }
 
+  var attioBlock = require('../orchestrator/attioContext').formatAttioForPrompt(ctx.attioContext);
+  if (attioBlock) dynamicContext += '\n' + attioBlock + '\n';
+
   if (ctx.channelContext) {
     dynamicContext += '\nCONTESTO CANALE:\n' + ctx.channelContext + '\n';
   }

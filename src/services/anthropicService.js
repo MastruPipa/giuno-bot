@@ -14,6 +14,7 @@ var { resolveSlackMentions } = require('./slackService');
 var { generaLinkOAuth } = require('./googleAuthService');
 var registry = require('../tools/registry');
 var { safeParse } = require('../utils/safeCall');
+var { withTimeout } = require('../utils/retryPolicy');
 
 var client = new Anthropic();
 
@@ -915,6 +916,19 @@ async function askGiuno(userId, userMessage, options) {
   if (options.preflightInstruction) {
     contextData += '\n' + options.preflightInstruction + '\n';
   }
+
+  // Automatic CRM grounding: for CRM-flavoured questions, pull the real CRM
+  // (Attio) into context so Giuno answers from companies/deals, not memories.
+  try {
+    var attioCtxMod = require('../orchestrator/attioContext');
+    if (attioCtxMod.isCrmIsh(userMessage)) {
+      var attioData = await withTimeout(function() {
+        return attioCtxMod.buildAttioContext(userMessage, []);
+      }, 4000, 'askGiuno.attio');
+      var attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
+      if (attioBlock) contextData += '\n' + attioBlock + '\n';
+    }
+  } catch(e) { logger.debug('[ASK-GIUNO] attio enrich skip:', e && e.message); }
 
   // Cross-user redaction rule — always on. Each team member's DMs are private:
   // never quote verbatim what user A said in DM when answering user B, and
