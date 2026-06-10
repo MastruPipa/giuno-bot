@@ -191,4 +191,7 @@ module.exports = {
   getWeekPlanned:            timeLogs.getWeekPlanned,
   syncAllocationHoursLogged: timeLogs.syncAllocationHoursLogged,
   upsertWeeklyAllocation:    timeLogs.upsertWeeklyAllocation,
+  getWeekLogs:               timeLogs.getWeekLogs,
+  getPlannedVsActual:        timeLogs.getPlannedVsActual,
+  getLogsInRange:            timeLogs.getLogsInRange,
 };

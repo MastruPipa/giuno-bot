@@ -30,7 +30,8 @@ function getUserTokens() {
 }
 
 function isProtectedPath(pathname) {
-  return pathname === '/dashboard' || pathname === '/metrics' || pathname === '/debug/search';
+  return pathname === '/dashboard' || pathname === '/metrics' || pathname === '/debug/search' ||
+    pathname === '/dashboard/workload' || pathname === '/export/timelogs.csv';
 }
 
 function isAuthorizedAdminRequest(req, parsed) {
@@ -71,6 +72,37 @@ var oauthServer = http.createServer(async function(req, res) {
     return;
   }
 
+
+  if (parsed.pathname === '/dashboard/workload') {
+    try {
+      var workloadDashboard = require('./workloadDashboard');
+      var workloadHtml = await workloadDashboard.renderWorkloadPage(parsed.query);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(workloadHtml);
+    } catch(e) {
+      logger.error('Errore dashboard workload:', e.message);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Errore dashboard workload: ' + e.message);
+    }
+    return;
+  }
+
+  if (parsed.pathname === '/export/timelogs.csv') {
+    try {
+      var workloadDash = require('./workloadDashboard');
+      var csv = await workloadDash.renderCsv(parsed.query);
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="' + csv.filename + '"',
+      });
+      res.end(csv.content);
+    } catch(e) {
+      logger.error('Errore export timelogs:', e.message);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Errore export: ' + e.message);
+    }
+    return;
+  }
 
   if (parsed.pathname === '/metrics') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

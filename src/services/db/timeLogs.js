@@ -157,6 +157,61 @@ async function upsertWeeklyAllocation(slackUserId, projectId, weekStart, hours) 
   } catch(e) { c.logErr('upsertWeeklyAllocation', e); return null; }
 }
 
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+// Tutti i log di una settimana (entrambi i tipi), con nome progetto.
+async function getWeekLogs(weekStart) {
+  if (!c.useSupabase) return [];
+  try {
+    var weekEnd = dates.addDays(weekStart, 6);
+    var res = await c.getClient().from('time_logs')
+      .select('slack_user_id, project_id, log_date, log_type, hours, notes, projects(name)')
+      .gte('log_date', weekStart)
+      .lte('log_date', weekEnd);
+    if (res.error) throw res.error;
+    return res.data || [];
+  } catch(e) { c.logErr('getWeekLogs', e); return []; }
+}
+
+// Pianificato vs effettivo della settimana, per utente e per progetto.
+// Ritorna { byUser: {uid: {planned, actual, projects: {pid: {name, planned, actual}}}},
+//           byProject: {pid: {name, planned, actual}} }
+async function getPlannedVsActual(weekStart) {
+  var logs = await getWeekLogs(weekStart);
+  var byUser = {};
+  var byProject = {};
+  logs.forEach(function(r) {
+    var h = parseFloat(r.hours) || 0;
+    var name = r.projects && r.projects.name ? r.projects.name : r.project_id;
+    var field = r.log_type === 'weekly' ? 'planned' : 'actual';
+
+    if (!byUser[r.slack_user_id]) byUser[r.slack_user_id] = { planned: 0, actual: 0, projects: {} };
+    var u = byUser[r.slack_user_id];
+    u[field] += h;
+    if (!u.projects[r.project_id]) u.projects[r.project_id] = { name: name, planned: 0, actual: 0 };
+    u.projects[r.project_id][field] += h;
+
+    if (!byProject[r.project_id]) byProject[r.project_id] = { name: name, planned: 0, actual: 0 };
+    byProject[r.project_id][field] += h;
+  });
+  return { byUser: byUser, byProject: byProject };
+}
+
+// Righe raw per export CSV in un intervallo di date.
+async function getLogsInRange(dateFrom, dateTo) {
+  if (!c.useSupabase) return [];
+  try {
+    var res = await c.getClient().from('time_logs')
+      .select('slack_user_id, project_id, log_date, log_type, hours, notes, created_at, projects(name)')
+      .gte('log_date', dateFrom)
+      .lte('log_date', dateTo)
+      .order('log_date', { ascending: true })
+      .limit(5000);
+    if (res.error) throw res.error;
+    return res.data || [];
+  } catch(e) { c.logErr('getLogsInRange', e); return []; }
+}
+
 module.exports = {
   saveTimeLogs: saveTimeLogs,
   getLogsForUserDate: getLogsForUserDate,
@@ -165,4 +220,7 @@ module.exports = {
   getWeekPlanned: getWeekPlanned,
   syncAllocationHoursLogged: syncAllocationHoursLogged,
   upsertWeeklyAllocation: upsertWeeklyAllocation,
+  getWeekLogs: getWeekLogs,
+  getPlannedVsActual: getPlannedVsActual,
+  getLogsInRange: getLogsInRange,
 };
