@@ -223,8 +223,10 @@ function register(appInstance) {
         hours: r.hours, notes: null, validation: result.validation,
       };
     });
-    var saved = await db.saveTimeLogs(logRows);
-    if (saved === null && db.isSupabase()) {
+    // Replace, non semplice upsert: una ri-pianificazione che omette un
+    // progetto deve toglierlo dal pianificato della settimana.
+    var replaceRes = await db.replaceTimeLogs(userId, weekStart, 'weekly', logRows);
+    if (replaceRes === null && db.isSupabase()) {
       try {
         await app.client.chat.postMessage({
           channel: userId,
@@ -235,9 +237,14 @@ function register(appInstance) {
       return;
     }
 
-    // hours_allocated della settimana target
+    // hours_allocated della settimana target; i progetti rimossi dalla
+    // ri-pianificazione vengono azzerati
     for (var ai = 0; ai < rows.length; ai++) {
       await db.upsertWeeklyAllocation(userId, rows[ai].project_id, weekStart, rows[ai].hours);
+    }
+    var removedIds = (replaceRes && replaceRes.removedProjectIds) || [];
+    for (var ri = 0; ri < removedIds.length; ri++) {
+      await db.upsertWeeklyAllocation(userId, removedIds[ri], weekStart, 0);
     }
 
     var total = 0;

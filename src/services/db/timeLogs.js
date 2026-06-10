@@ -34,6 +34,34 @@ async function saveTimeLogs(rows) {
   } catch(e) { c.logErr('saveTimeLogs', e); return null; }
 }
 
+// Sostituisce l'intero set di log di (utente, data, tipo): upsert delle righe
+// inviate + DELETE dei progetti presenti nella submission precedente ma omessi
+// in questa (es. correzione mattutina che toglie un progetto loggato per
+// errore — senza il delete resterebbe nei consuntivi).
+// Ritorna { saved, removedProjectIds } o null su errore di scrittura.
+async function replaceTimeLogs(slackUserId, logDate, logType, rows) {
+  if (!c.useSupabase) return null;
+  try {
+    var existing = await getLogsForUserDate(slackUserId, logDate, logType);
+    var newIds = {};
+    (rows || []).forEach(function(r) { newIds[r.project_id] = true; });
+    var removedProjectIds = existing
+      .map(function(r) { return r.project_id; })
+      .filter(function(pid) { return !newIds[pid]; });
+    if (removedProjectIds.length > 0) {
+      var del = await c.getClient().from('time_logs').delete()
+        .eq('slack_user_id', slackUserId)
+        .eq('log_date', logDate)
+        .eq('log_type', logType)
+        .in('project_id', removedProjectIds);
+      if (del.error) throw del.error;
+    }
+    var saved = await saveTimeLogs(rows);
+    if (saved === null) return null;
+    return { saved: saved, removedProjectIds: removedProjectIds };
+  } catch(e) { c.logErr('replaceTimeLogs', e); return null; }
+}
+
 async function getLogsForUserDate(slackUserId, logDate, logType) {
   if (!c.useSupabase) return [];
   try {
@@ -214,6 +242,7 @@ async function getLogsInRange(dateFrom, dateTo) {
 
 module.exports = {
   saveTimeLogs: saveTimeLogs,
+  replaceTimeLogs: replaceTimeLogs,
   getLogsForUserDate: getLogsForUserDate,
   getUsersWithDailyLog: getUsersWithDailyLog,
   getWeekActuals: getWeekActuals,

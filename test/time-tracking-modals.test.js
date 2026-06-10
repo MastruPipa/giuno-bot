@@ -45,6 +45,13 @@ test('buildCheckinBlocks: righe tt_, nota opzionale e number_input con range 0.5
   assert.equal(hoursBlock.element.max_value, '24');
 });
 
+test('buildPlannerBlocks: le ore weekly ammettono fino a 60h per riga', function() {
+  var blocks = modals.buildPlannerBlocks(PROJECTS, 1, '2026-06-15');
+  var hoursBlock = blocks.filter(function(b) { return b.block_id === 'wp_hours_1'; })[0];
+  assert.equal(hoursBlock.element.max_value, '60');
+  assert.equal(hoursBlock.element.min_value, '0.5');
+});
+
 test('extractRows: parsa progetto+ore, accetta la virgola decimale e salta le righe vuote', function() {
   var state = {
     tt_project_1: { project_select: { selected_option: { value: 'p1' } } },

@@ -303,8 +303,10 @@ function register(appInstance) {
         hours: r.hours, notes: note, validation: result.validation,
       };
     });
-    var saved = await db.saveTimeLogs(logRows);
-    if (saved === null && db.isSupabase()) {
+    // Replace, non semplice upsert: una correzione che omette un progetto
+    // loggato in precedenza deve rimuoverlo dai consuntivi.
+    var replaceRes = await db.replaceTimeLogs(userId, logDate, 'daily', logRows);
+    if (replaceRes === null && db.isSupabase()) {
       try {
         await app.client.chat.postMessage({
           channel: userId,
@@ -315,9 +317,15 @@ function register(appInstance) {
       return;
     }
 
-    // Aggiorna gli aggregati derivati
-    for (var si = 0; si < rows.length; si++) {
-      await db.syncAllocationHoursLogged(userId, rows[si].project_id, logDate);
+    // Aggiorna gli aggregati derivati, inclusi i progetti rimossi dalla
+    // correzione (le loro hours_logged vanno ricalcolate a ribasso).
+    var removedIds = (replaceRes && replaceRes.removedProjectIds) || [];
+    var syncIds = rows.map(function(r) { return r.project_id; }).concat(removedIds);
+    var syncedSeen = {};
+    for (var si = 0; si < syncIds.length; si++) {
+      if (syncedSeen[syncIds[si]]) continue;
+      syncedSeen[syncIds[si]] = true;
+      await db.syncAllocationHoursLogged(userId, syncIds[si], logDate);
     }
 
     var total = 0;

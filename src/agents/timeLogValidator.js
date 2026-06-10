@@ -17,7 +17,14 @@ var { withTimeout } = require('../utils/retryPolicy');
 var MODEL = 'claude-haiku-4-5-20251001';
 var AI_TIMEOUT_MS = 2200;
 var HOURS_MIN = 0.5;
-var HOURS_MAX = 24;
+// Cap per riga: il daily è un giorno solo (max 24h), il weekly è l'intera
+// settimana su un progetto (40h piene sono legittime; 60 lascia margine).
+var HOURS_MAX_DAILY = 24;
+var HOURS_MAX_WEEKLY = 60;
+
+function hoursMaxFor(logType) {
+  return logType === 'weekly' ? HOURS_MAX_WEEKLY : HOURS_MAX_DAILY;
+}
 
 // Caller LLM iniettabile per i test (e per eventuali mock in sviluppo)
 var _llmCaller = null;
@@ -36,6 +43,7 @@ function validateDeterministic(rows, ctx) {
   }
   var seen = {};
   var total = 0;
+  var hoursMax = hoursMaxFor(ctx.logType);
   rows.forEach(function(r) {
     var pBlock = prefix + '_project_' + r.index;
     var hBlock = prefix + '_hours_' + r.index;
@@ -53,8 +61,8 @@ function validateDeterministic(rows, ctx) {
       }
       seen[r.project_id] = true;
     }
-    if (r.hours == null || isNaN(r.hours) || r.hours < HOURS_MIN || r.hours > HOURS_MAX) {
-      errors[hBlock] = 'Inserisci un numero valido compreso tra 0.5 e 24.';
+    if (r.hours == null || isNaN(r.hours) || r.hours < HOURS_MIN || r.hours > hoursMax) {
+      errors[hBlock] = 'Inserisci un numero valido compreso tra 0.5 e ' + hoursMax + '.';
     } else {
       total += r.hours;
     }
@@ -188,5 +196,6 @@ module.exports = {
   detectAnomalies: detectAnomalies,
   setLLMCaller: setLLMCaller,
   HOURS_MIN: HOURS_MIN,
-  HOURS_MAX: HOURS_MAX,
+  HOURS_MAX_DAILY: HOURS_MAX_DAILY,
+  HOURS_MAX_WEEKLY: HOURS_MAX_WEEKLY,
 };

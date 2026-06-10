@@ -39,6 +39,9 @@ function projectOptions(projects) {
 // ─── Builder righe ───────────────────────────────────────────────────────────
 
 function buildRowBlocks(prefix, i, options) {
+  // Il check-in è un giorno solo (max 24h); il planner copre l'intera
+  // settimana su un progetto, quindi ammette fino a 60h per riga.
+  var maxHours = prefix === 'wp' ? '60' : '24';
   return [
     {
       type: 'input', block_id: prefix + '_project_' + i, optional: i > 1,
@@ -54,7 +57,7 @@ function buildRowBlocks(prefix, i, options) {
       label: { type: 'plain_text', text: '⏱ Ore' },
       element: {
         type: 'number_input', action_id: 'hours_input',
-        is_decimal_allowed: true, min_value: '0.5', max_value: '24',
+        is_decimal_allowed: true, min_value: '0.5', max_value: maxHours,
         placeholder: { type: 'plain_text', text: 'Es. 4 o 4.5' },
       },
     },

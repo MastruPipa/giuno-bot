@@ -185,6 +185,7 @@ module.exports = {
 
   // Time logs (workload & progress tracking)
   saveTimeLogs:              timeLogs.saveTimeLogs,
+  replaceTimeLogs:           timeLogs.replaceTimeLogs,
   getLogsForUserDate:        timeLogs.getLogsForUserDate,
   getUsersWithDailyLog:      timeLogs.getUsersWithDailyLog,
   getWeekActuals:            timeLogs.getWeekActuals,

@@ -57,6 +57,21 @@ test('deterministic: progetto duplicato viene rifiutato', function() {
   assert.match(res.errors.tt_project_2, /duplicato/);
 });
 
+test('deterministic: weekly ammette fino a 60h per riga (es. 40h su un progetto), oltre rifiuta', function() {
+  var wctx = ctx({ prefix: 'wp', logType: 'weekly' });
+  var ok = validator.validateDeterministic([{ index: 1, project_id: 'p1', hours: 40 }], wctx);
+  assert.equal(ok.ok, true);
+
+  var over = validator.validateDeterministic([{ index: 1, project_id: 'p1', hours: 61 }], wctx);
+  assert.equal(over.ok, false);
+  assert.match(over.errors.wp_hours_1, /0\.5 e 60/);
+
+  // il daily resta cappato a 24h per riga
+  var daily = validator.validateDeterministic([{ index: 1, project_id: 'p1', hours: 25 }], ctx());
+  assert.equal(daily.ok, false);
+  assert.match(daily.errors.tt_hours_1, /0\.5 e 24/);
+});
+
 test('deterministic: totale daily > 24h viene rifiutato, per weekly è ammesso', function() {
   var rows = [
     { index: 1, project_id: 'p1', hours: 14 },

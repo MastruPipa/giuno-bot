@@ -257,7 +257,13 @@ CREATE TABLE IF NOT EXISTS time_logs (
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   log_date DATE NOT NULL,
   log_type TEXT NOT NULL CHECK (log_type IN ('weekly','daily')),
-  hours NUMERIC(4,2) NOT NULL CHECK (hours >= 0.5 AND hours <= 24),
+  -- daily = un giorno (max 24h); weekly = intera settimana su un progetto (max 60h)
+  hours NUMERIC(4,2) NOT NULL CHECK (
+    hours >= 0.5 AND (
+      (log_type = 'daily' AND hours <= 24) OR
+      (log_type = 'weekly' AND hours <= 60)
+    )
+  ),
   notes TEXT,
   validation JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
