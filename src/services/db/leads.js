@@ -2,6 +2,7 @@
 'use strict';
 
 var c = require('./client');
+var dates = require('../../utils/dates');
 
 async function leadExists(companyName, contactEmail) {
   if (!c.useSupabase) return false;
@@ -37,8 +38,8 @@ async function getLeadsPipeline() {
     var res = await c.getClient().from('leads').select('status');
     var byStatus = {};
     (res.data || []).forEach(function(r) { var s = r.status || 'new'; byStatus[s] = (byStatus[s] || 0) + 1; });
-    var today = new Date().toISOString().slice(0, 10);
-    var tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    var today = dates.todayISO();
+    var tomorrow = dates.daysFromTodayISO(1);
     var upRes = await c.getClient().from('leads').select('company_name, contact_name, next_followup, status').lte('next_followup', tomorrow).gte('next_followup', today).order('next_followup');
     return { byStatus: byStatus, upcoming: upRes.data || [], total: (res.data || []).length };
   } catch(e) { c.logErr('getLeadsPipeline', e); return { byStatus: {}, upcoming: [], total: 0 }; }

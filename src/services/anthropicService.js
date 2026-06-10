@@ -8,6 +8,7 @@ require('dotenv').config();
 var Anthropic = require('@anthropic-ai/sdk');
 var db = require('../../supabase');
 var logger = require('../utils/logger');
+var datesUtil = require('../utils/dates');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { getUserRole, getRoleSystemPrompt } = require('../../rbac');
 var { resolveSlackMentions } = require('./slackService');
@@ -487,7 +488,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
 
     // Memories
     if (analysis.memories && analysis.memories.length > 0) {
-      var dateTag = new Date().toISOString().slice(0, 10);
+      var dateTag = datesUtil.todayISO();
       var sourceTag = context.isDM ? 'DM' : (context.channelId ? '#canale' : 'conversazione');
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
@@ -509,7 +510,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
 
           // Append date/source if not already in content
           var enrichedContent = m.content;
-          if (!m.content.includes('202') && !m.content.includes(dateTag)) {
+          if (!/\b\d{4}-\d{2}-\d{2}\b/.test(m.content)) {
             enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
           }
           var tags = (m.tags || []).concat(['data:' + dateTag]);
@@ -805,15 +806,18 @@ async function askGiuno(userId, userMessage, options) {
           .eq('conv_key', userId)
           .limit(1);
         if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
-          var dmAgeH = (Date.now() - new Date(dmMainRes.data[0].updated_at).getTime()) / 3600000;
-          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + Math.round(dmAgeH) + 'h fa, ' +
-            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali):\n' +
+          var dmAge = datesUtil.ageLabelIt(dmMainRes.data[0].updated_at) || 'data sconosciuta';
+          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + dmAge + ', ' +
+            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali — i fatti interni risalgono ad allora o prima):\n' +
             dmMainRes.data[0].summary + '\n';
           var openActions = (dmMainRes.data[0].proposed_actions || [])
             .filter(function(a) { return a && a.type === 'open_item' && a.description; });
           if (openActions.length > 0) {
             contextData += 'ACTION ITEMS APERTI CON QUESTO UTENTE:\n' +
-              openActions.slice(0, 5).map(function(a) { return '- ' + a.description; }).join('\n') + '\n';
+              openActions.slice(0, 5).map(function(a) {
+                var actAge = datesUtil.ageLabelIt(a.proposed_at);
+                return '- ' + a.description + (actAge ? ' (proposto ' + actAge + ')' : '');
+              }).join('\n') + '\n';
           }
         }
 
@@ -827,7 +831,9 @@ async function askGiuno(userId, userMessage, options) {
         if (recentThreadRes.data && recentThreadRes.data.length > 0) {
           var threadSummary = recentThreadRes.data[0];
           if (threadSummary.summary) {
-            contextData += '\n[CONTESTO DA ULTIMO THREAD]\n' +
+            var thrAge = datesUtil.ageLabelIt(threadSummary.updated_at);
+            contextData += '\n[CONTESTO DA UN ALTRO THREAD' + (thrAge ? ', aggiornato ' + thrAge : '') +
+              ' — potrebbe NON riguardare la richiesta attuale, usalo solo se pertinente]\n' +
               threadSummary.summary.substring(0, 400) + '\n';
           }
         }

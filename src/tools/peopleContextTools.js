@@ -4,6 +4,7 @@
 
 var db = require('../../supabase');
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 
 var definitions = [
   {
@@ -225,11 +226,7 @@ async function execute(toolName, input, userId, userRole) {
     if (!supabase) return { error: 'DB non disponibile.' };
     if (!input.priorities || input.priorities.length === 0) return { error: 'Lista priorità vuota.' };
     try {
-      var now = new Date();
-      var dayOfWeek = now.getDay();
-      var monday = new Date(now);
-      monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
-      var weekStart = monday.toISOString().slice(0, 10);
+      var weekStart = dates.mondayISO();
 
       await supabase.from('weekly_priorities').upsert({
         week_start: weekStart,

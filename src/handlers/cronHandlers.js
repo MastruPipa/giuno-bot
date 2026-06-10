@@ -8,6 +8,7 @@ require('dotenv').config();
 
 var cron   = require('node-cron');
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { withTimeout } = require('../utils/timeout');
 var db = require('../../supabase');
@@ -1459,7 +1460,7 @@ function scheduleCrons() {
       var isWeekday = dow >= 1 && dow <= 5;
       var isStandupWindow = hhmm >= 900 && hhmm < 1130;
       if (isWeekday && isStandupWindow) {
-        var todayStr = nowRome.toISOString().slice(0, 10);
+        var todayStr = dates.todayISO();
         var sd = db.getStandupCache();
         if (!sd || sd.oggi !== todayStr) {
           logger.info('[BOOT] Daily standup non inviato oggi (' + todayStr + ') — invio di recupero...');

@@ -5,6 +5,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app } = require('../services/slackService');
@@ -64,7 +65,7 @@ async function checkLeadFollowups() {
 
   try {
     // Leads with next_followup_date in the past or today
-    var today = new Date().toISOString().slice(0, 10);
+    var today = dates.todayISO();
     var res = await supabase.from('leads')
       .select('id, company_name, status, owner_slack_id, next_followup_date')
       .eq('is_active', true)
