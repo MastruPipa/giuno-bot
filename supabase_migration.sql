@@ -244,3 +244,30 @@ CREATE TABLE IF NOT EXISTS team_members (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS team_members_active_idx ON team_members(active) WHERE active = TRUE;
+
+-- 20. Time logs — fonte di verità granulare per il workload & progress tracking.
+-- 'weekly' = ore pianificate (log_date = lunedì della settimana pianificata),
+-- 'daily'  = consuntivo del giorno lavorato. Gli aggregati in
+-- resource_allocations.hours_logged sono derivati da questa tabella.
+-- NB: projects e resource_allocations sono state create fuori da questo file —
+-- verificare sullo schema live che projects.id sia UUID prima di applicare la FK.
+CREATE TABLE IF NOT EXISTS time_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slack_user_id TEXT NOT NULL,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  log_date DATE NOT NULL,
+  log_type TEXT NOT NULL CHECK (log_type IN ('weekly','daily')),
+  hours NUMERIC(4,2) NOT NULL CHECK (hours >= 0.5 AND hours <= 24),
+  notes TEXT,
+  validation JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- Una riga per user/progetto/data/tipo: la correzione mattutina è un upsert
+CREATE UNIQUE INDEX IF NOT EXISTS time_logs_unique
+  ON time_logs(slack_user_id, project_id, log_date, log_type);
+CREATE INDEX IF NOT EXISTS time_logs_user_date ON time_logs(slack_user_id, log_date);
+CREATE INDEX IF NOT EXISTS time_logs_project ON time_logs(project_id, log_date);
+
+-- Opt-out individuale dal tracking (DM planner/check-in)
+ALTER TABLE user_prefs ADD COLUMN IF NOT EXISTS tracking_enabled BOOLEAN DEFAULT TRUE;

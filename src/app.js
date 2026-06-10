@@ -47,6 +47,10 @@ async function main() {
   // Register real-time listener BEFORE app.start()
   realTimeListener.register(app);
 
+  // Workload & progress tracking: Weekly Planner + Daily Check-in
+  require('./handlers/weeklyPlanner').register(app);
+  require('./handlers/timeTracking').register(app);
+
   // Start Slack in Socket Mode
   await app.start();
   logger.info('Giuno Bolt app avviata in Socket Mode');

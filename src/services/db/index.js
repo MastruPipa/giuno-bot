@@ -24,6 +24,7 @@ var unifiedSearch = require('./unifiedSearch');
 var projects     = require('./projects');
 var userFacts    = require('./userFacts');
 var team         = require('./team');
+var timeLogs     = require('./timeLogs');
 
 async function initAll() {
   var results = await Promise.all([
@@ -181,4 +182,13 @@ module.exports = {
   getProjectAllocations: projects.getProjectAllocations,
   getUserAllocations:   projects.getUserAllocations,
   getTeamWorkload:      projects.getTeamWorkload,
+
+  // Time logs (workload & progress tracking)
+  saveTimeLogs:              timeLogs.saveTimeLogs,
+  getLogsForUserDate:        timeLogs.getLogsForUserDate,
+  getUsersWithDailyLog:      timeLogs.getUsersWithDailyLog,
+  getWeekActuals:            timeLogs.getWeekActuals,
+  getWeekPlanned:            timeLogs.getWeekPlanned,
+  syncAllocationHoursLogged: timeLogs.syncAllocationHoursLogged,
+  upsertWeeklyAllocation:    timeLogs.upsertWeeklyAllocation,
 };
