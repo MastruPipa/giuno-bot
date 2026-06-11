@@ -9,19 +9,13 @@ var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app } = require('../services/slackService');
 var { formatPerSlack } = require('../utils/slackFormat');
+var gate = require('../utils/proactiveGate');
 
-// Dedup: don't send the same alert twice in one day
-var _sentToday = {};
-var _sentDate = null;
-
-function wasAlertSentToday(userId, alertKey) {
-  var today = dates.todayISO();
-  if (_sentDate !== today) { _sentToday = {}; _sentDate = today; }
-  var key = userId + ':' + alertKey;
-  if (_sentToday[key]) return true;
-  _sentToday[key] = true;
-  return false;
-}
+// Dedup: cooldown PERSISTENTE per alert+destinatario sul gate condiviso
+// (followup_log). Il vecchio dedup in-memory si azzerava ogni giorno e a ogni
+// riavvio: la stessa lista di alert tornava identica tutti i giorni.
+var ALERT_COOLDOWN_DAYS = 7;
+var ALERT_MAX_SENDS = 3;
 
 // ─── Alert checkers ─────────────────────────────────────────────────────────
 
@@ -58,11 +52,15 @@ async function checkStaleLeads() {
     var supabase = db.getClient();
     if (!supabase) return alerts;
     var fiveDaysAgo = new Date(Date.now() - 5 * 86400000).toISOString();
+    // Finestra di azionabilità: oltre 45 giorni un lead non è più "critico",
+    // è freddo — segnalarlo come urgente ogni giorno per mesi è solo rumore.
+    var coldCutoff = new Date(Date.now() - 45 * 86400000).toISOString();
     var res = await supabase.from('leads')
       .select('id, company_name, status, owner_slack_id, updated_at')
       .eq('is_active', true)
       .in('status', ['contacted', 'proposal_sent', 'negotiating'])
       .lt('updated_at', fiveDaysAgo)
+      .gte('updated_at', coldCutoff)
       .limit(10);
     if (res.data) {
       res.data.forEach(function(lead) {
@@ -137,10 +135,38 @@ async function checkOverloadedTeam() {
 
 async function sendAlert(userId, alerts) {
   if (!alerts || alerts.length === 0) return;
+  if (!gate.notificheEnabled(userId)) return;
+
+  // Cooldown per destinatario: ogni alert al massimo una volta ogni 7 giorni
+  // e non più di 3 volte in totale (poi è rumore, non un alert).
+  var supabase = db.getClient && db.getClient();
+  var deliverable = [];
+  for (var di = 0; di < alerts.length; di++) {
+    var al = alerts[di];
+    if (!al._hash) {
+      var idn = al.project || al.lead || al.user || al.channel || String(al.message || '').substring(0, 60) || 'generic';
+      al._hash = gate.itemHash('alert:' + al.type + ':' + idn);
+    }
+    var check = supabase
+      ? await gate.followupAllowed(supabase, userId, al._hash, { cooldownDays: ALERT_COOLDOWN_DAYS, maxAttempts: ALERT_MAX_SENDS })
+      : { allowed: true, attempts: 0 };
+    if (!check.allowed) continue;
+    al._attempts = check.attempts;
+    deliverable.push(al);
+  }
+  if (deliverable.length === 0) {
+    logger.info('[PROACTIVE] Tutti gli alert per', userId, 'in cooldown — skip.');
+    return;
+  }
 
   var msg = '*⚡ Alert proattivo da Giuno*\n\n';
-  var criticals = alerts.filter(function(a) { return a.severity === 'critical'; });
-  var warnings = alerts.filter(function(a) { return a.severity === 'warning'; });
+  var criticals = deliverable.filter(function(a) { return a.severity === 'critical'; });
+  var warnings = deliverable.filter(function(a) { return a.severity === 'warning'; });
+  // Tetto per messaggio: una muraglia di 10 bullet non è leggibile né azionabile
+  var moreCriticals = Math.max(0, criticals.length - 6);
+  var moreWarnings = Math.max(0, warnings.length - 4);
+  criticals = criticals.slice(0, 6);
+  warnings = warnings.slice(0, 4);
 
   if (criticals.length > 0) {
     msg += '*🔴 Critici:*\n';
@@ -168,6 +194,10 @@ async function sendAlert(userId, alerts) {
     });
   }
 
+  if (moreCriticals > 0 || moreWarnings > 0) {
+    msg += '_…e altri ' + (moreCriticals + moreWarnings) + ' punti minori (chiedimeli se ti servono)._\n';
+  }
+
   msg += '\n_Chiedimi dettagli su qualsiasi punto._';
 
   try {
@@ -176,7 +206,17 @@ async function sendAlert(userId, alerts) {
       text: formatPerSlack(msg),
       unfurl_links: false,
     });
-    logger.info('[PROACTIVE] Alert inviato a', userId, '—', alerts.length, 'issues');
+    // Registra nel log condiviso SOLO dopo l'invio riuscito (il vecchio codice
+    // marcava "inviato" anche quando poi la soglia bloccava il messaggio).
+    if (supabase) {
+      for (var ri = 0; ri < deliverable.length; ri++) {
+        var rec = deliverable[ri];
+        await gate.recordFollowup(supabase, userId, rec._hash,
+          rec.type + ': ' + (rec.project || rec.lead || rec.detail || '').toString().substring(0, 100),
+          rec._attempts);
+      }
+    }
+    logger.info('[PROACTIVE] Alert inviato a', userId, '—', deliverable.length, 'issues');
   } catch(e) {
     logger.error('[PROACTIVE] Errore invio alert a', userId + ':', e.message);
   }
@@ -207,19 +247,14 @@ async function runProactiveScan() {
     logger.info('[PROACTIVE] Trovati', allAlerts.length, 'alert.');
 
     // Dedup: filter out alerts already sent today
-    allAlerts = allAlerts.filter(function(a) {
-      // La chiave deve identificare l'alert: prima un alert senza project/lead
-      // collassava su 'unknown' e veniva dedupato (o duplicato) a caso.
+    // Chiave stabile per il cooldown: tipo + identità dell'alert. NON include
+    // il detail (contiene "da N giorni": cambierebbe ogni giorno riaprendo il
+    // dedup — era così che la stessa lista tornava tutti i giorni).
+    allAlerts.forEach(function(a) {
       var identity = a.project || a.lead || a.user || a.channel ||
-        String(a.message || a.detail || '').substring(0, 60) || 'generic';
-      var alertKey = a.type + ':' + identity;
-      return !wasAlertSentToday(a.owner || 'admin', alertKey);
+        String(a.message || '').substring(0, 60) || 'generic';
+      a._hash = gate.itemHash('alert:' + a.type + ':' + identity);
     });
-
-    if (allAlerts.length === 0) {
-      logger.info('[PROACTIVE] Tutti gli alert già inviati oggi.');
-      return;
-    }
 
     // Threshold: only send if there's at least 1 critical OR 3+ warnings
     var criticalCount = allAlerts.filter(function(a) { return a.severity === 'critical'; }).length;
