@@ -1207,12 +1207,17 @@ function scheduleCrons() {
     var { sendWeeklyReports } = require('../agents/weeklyReport');
     sendWeeklyReports().catch(function(e) { logger.error('[WEEKLY-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
-  // Follow-up agent — ogni 4 ore lun-ven durante orario lavorativo
-  // Follow-up: 13:00 e 17:00 (non alle 9 — troppi messaggi insieme)
-  cron.schedule('0 13,17 * * 1-5', function() {
-    var { runFollowups } = require('../agents/followUpAgent');
-    runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  // Follow-up agent (13:00/17:00) — DISATTIVATO di default: i reminder generati
+  // da intenti/azioni estratti via LLM risultavano spesso casuali. Riattivabile
+  // con PROACTIVE_FOLLOWUPS_ENABLED=true senza toccare il codice.
+  if (process.env.PROACTIVE_FOLLOWUPS_ENABLED === 'true') {
+    cron.schedule('0 13,17 * * 1-5', function() {
+      var { runFollowups } = require('../agents/followUpAgent');
+      runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
+    }, { timezone: 'Europe/Rome' });
+  } else {
+    logger.info('[FOLLOWUP-CRON] Follow-up agent disattivato (PROACTIVE_FOLLOWUPS_ENABLED != true)');
+  }
   // Email learner — ogni 2h, legge email importanti e salva in KB
   cron.schedule('15 10,12,14,16 * * 1-5', function() {
     var { scanEmails } = require('../agents/emailLearner');
@@ -1332,8 +1337,14 @@ function scheduleCrons() {
   // 03:30 (non 04:00): alle 4 gira già il decay giornaliero della confidence
   // sulla stessa tabella — sfalsati per non aggiornare le stesse righe insieme
   cron.schedule('30 3 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 3:30
-  // Proactive DM follow-ups — 10:00 Mon-Fri on items open >2 days, max 3 nudges per item.
-  cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
+  // Proactive DM follow-ups (10:00, "volevo sapere com'è andata con...") —
+  // DISATTIVATO di default come il follow-up agent: stessi dati LLM-estratti,
+  // stessi falsi positivi. Riattivabile con PROACTIVE_FOLLOWUPS_ENABLED=true.
+  if (process.env.PROACTIVE_FOLLOWUPS_ENABLED === 'true') {
+    cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
+  } else {
+    logger.info('[FOLLOWUP] Proactive followups disattivati (PROACTIVE_FOLLOWUPS_ENABLED != true)');
+  }
   // Personal daily digest — 08:30 Mon-Fri, runs before the daily standup so each
   // member sees what Giuno remembers about them before writing the new entry.
   cron.schedule('30 8 * * 1-5', function() {
