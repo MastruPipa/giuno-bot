@@ -250,11 +250,12 @@ CREATE INDEX IF NOT EXISTS team_members_active_idx ON team_members(active) WHERE
 -- 'daily'  = consuntivo del giorno lavorato. Gli aggregati in
 -- resource_allocations.hours_logged sono derivati da questa tabella.
 -- NB: projects e resource_allocations sono state create fuori da questo file —
--- verificare sullo schema live che projects.id sia UUID prima di applicare la FK.
+-- nello schema live projects.id è TEXT (verificato e applicato l'11/06/2026),
+-- quindi la FK usa TEXT e non UUID.
 CREATE TABLE IF NOT EXISTS time_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   slack_user_id TEXT NOT NULL,
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   log_date DATE NOT NULL,
   log_type TEXT NOT NULL CHECK (log_type IN ('weekly','daily')),
   -- daily = un giorno (max 24h); weekly = intera settimana su un progetto (max 60h)
