@@ -13,6 +13,8 @@ var { getCalendarPerUtente } = require('../services/googleAuthService');
 var { formatPerSlack } = require('../utils/slackFormat');
 var { withTimeout } = require('../utils/timeout');
 
+var { extractSearchTerms } = require('../utils/precallTerms');
+
 async function buildBriefing(userId, event) {
   var title = event.summary || 'Meeting senza titolo';
   var startTime = event.start.dateTime
@@ -20,16 +22,9 @@ async function buildBriefing(userId, event) {
     : 'tutto il giorno';
 
   // Collect raw data
-  var rawData = { title: title, time: startTime, attendees: [], crmData: null, channelDigest: null, projectInfo: null, ownerFacts: null, ownerMemory: null, ownerOpenItems: null };
+  var rawData = { title: title, time: startTime, attendees: [], crmData: null, crmChecked: false, crmUnavailable: false, channelDigest: null, projectInfo: null, ownerFacts: null, ownerMemory: null, ownerOpenItems: null };
 
-  // Search terms from the title — strip our own agency name, the Meet/Google
-  // prefix and meeting filler so we don't match generic tokens like "Studio"
-  // against unrelated CRM rows (that's how a Pasticceria call got a law firm).
-  var searchTerms = (title || '')
-    .replace(/<>|kataniastudio|katania|studio|\bks\b|meet|call|meeting|sync|check|×|x|-|con|per|brainstorm|kick.?off|review|demo|riunione|presentazione|deep\s*dive/gi, ' ')
-    .trim().split(/\s+/)
-    .map(function(w) { return w.replace(/[^\wÀ-ÿ']/g, ''); })
-    .filter(function(w) { return w.length > 2 && !/^(del|dei|delle|della|alle|per|con|che|una|uno|gli|the|and)$/i.test(w); });
+  var searchTerms = extractSearchTerms(title);
 
   function relevantToMeeting(text) {
     if (!text) return false;
@@ -78,20 +73,58 @@ async function buildBriefing(userId, event) {
     });
   }
 
-  // CRM — prefer Attio (the real CRM) and only accept a confident match on a
-  // meaningful token (>=4 chars), so we never attach an unrelated company.
+  // CRM — riusa il grounding Attio condiviso (cerca aziende E deal: una call
+  // "Proposta per Kultura" è un deal, non un'azienda) sul titolo + nomi dei
+  // partecipanti esterni. Le email esterne cercano la persona in Attio: chiave
+  // molto più affidabile dei token del titolo.
+  var externalAttendees = rawData.attendees.filter(function(a) { return a.external; });
   try {
     var attioSvc = require('../services/attioService');
     if (attioSvc.isConfigured()) {
-      for (var ai = 0; ai < Math.min(searchTerms.length, 3) && !rawData.crmData; ai++) {
-        if (searchTerms[ai].length < 4) continue;
-        var cos = await attioSvc.queryRecords('companies', { name: { '$contains': searchTerms[ai] } }, 1);
-        if (cos && cos.length > 0 && cos[0].values && cos[0].values.name) {
-          rawData.crmData = { company: cos[0].values.name };
-        }
+      var attioCtxMod = require('../orchestrator/attioContext');
+      var crmQueryText = title + ' ' + externalAttendees.map(function(a) { return a.name || ''; }).join(' ');
+      var attioData = await withTimeout(attioCtxMod.buildAttioContext(crmQueryText, []), 6000, 'precall_attio');
+      rawData.crmChecked = true;
+      if (attioData) {
+        rawData.crmData = {
+          companies: (attioData.companies || []).slice(0, 2).map(function(c) {
+            return (c.values && c.values.name) || null;
+          }).filter(Boolean),
+          deals: (attioData.deals || []).slice(0, 2).map(function(d) {
+            var v = d.values || {};
+            return {
+              name: v.name || null,
+              stage: v.stage ? [].concat(v.stage).join('/') : (v.status_trattativa ? [].concat(v.status_trattativa).join('/') : null),
+              value: v.value != null ? v.value : null,
+              servizio: v.servizio_proposto ? [].concat(v.servizio_proposto).join(', ') : null,
+            };
+          }),
+        };
       }
+      // Persona dal CRM via email esterna
+      for (var pa = 0; pa < externalAttendees.length && pa < 2; pa++) {
+        var em = externalAttendees[pa].email;
+        if (!em) continue;
+        try {
+          var ppl = await withTimeout(attioSvc.queryRecords('people', { email_addresses: { '$contains': em } }, 1), 4000, 'precall_attio_people');
+          if (ppl && ppl.length > 0 && ppl[0].values) {
+            rawData.crmData = rawData.crmData || {};
+            rawData.crmData.person = {
+              name: ppl[0].values.name || externalAttendees[pa].name || em,
+              email: em,
+            };
+            break;
+          }
+        } catch(pe) { logger.debug('[PRECALL] Attio people lookup fallita per', em + ':', pe.message); }
+      }
+      logger.info('[PRECALL] CRM lookup "' + title.substring(0, 50) + '" →',
+        rawData.crmData ? JSON.stringify(rawData.crmData).substring(0, 150) : 'nessun match');
     }
-  } catch(e) { /* ignore */ }
+  } catch(e) {
+    // Attio giù/timeout ≠ "non ci sono dati": il briefing deve dirlo.
+    logger.warn('[PRECALL] Attio non consultabile:', e.message);
+    rawData.crmUnavailable = true;
+  }
 
   // Fallback to the internal leads CRM only if Attio gave nothing.
   if (!rawData.crmData) {
@@ -155,8 +188,12 @@ async function buildBriefing(userId, event) {
         'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +
         'Non usare CAPS. Non dire "BRIEFING CALL". Non mostrare status CRM tecnici ("lost", "won").\n' +
         'Non inventare valori in € se non sono nei dati.\n' +
-        'Se crmData è assente o non combacia chiaramente col titolo/partecipanti, NON menzionare il CRM e ' +
-        'NON ipotizzare azienda o contatto: dai solo orario, partecipanti ed eventuale link.\n' +
+        'Stati CRM (campo crmChecked/crmUnavailable):\n' +
+        '- crmUnavailable=true → di\' "non sono riuscito a consultare il CRM prima della call", MAI "non ci sono dati".\n' +
+        '- crmChecked=true e crmData presente → usa companies/deals/person: nome azienda, nome e servizio del deal, nome del contatto.\n' +
+        '- crmChecked=true e crmData assente → puoi dire che sul CRM non risulta nulla di collegato.\n' +
+        'Se crmData non combacia chiaramente col titolo/partecipanti, NON ipotizzare azienda o contatto: ' +
+        'dai solo orario, partecipanti ed eventuale link.\n' +
         'NON aggiungere promemoria su attività interne (tracking ore, recap, report, effort) o progetti ' +
         'che non riguardano DIRETTAMENTE questo meeting.\n' +
         'Se c\'è un partecipante esterno, metti solo il nome (no email gmail/hotmail).\n' +
