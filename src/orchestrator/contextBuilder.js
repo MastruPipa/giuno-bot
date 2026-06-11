@@ -293,10 +293,14 @@ async function buildContext(params) {
 
   // Automatic CRM grounding: for CRM-flavoured questions, enrich with Attio.
   var attioContext = null;
+  var attioUnavailable = false;
   if ((needs.crm || attioCtx.isCrmIsh(message)) && !isTrivialMessage(message)) {
     attioContext = await safeCall('CTX.buildAttioContext', function() {
       return withTimeout(function() { return attioCtx.buildAttioContext(message, relevantEntities); }, 4000, 'CTX.attio');
     }, null);
+    // Domanda CRM senza CRM: il modello deve saperlo, non rispondere da
+    // memorie vecchie come fossero lo stato attuale.
+    if (!attioContext) attioUnavailable = true;
   }
 
   return {
@@ -327,6 +331,7 @@ async function buildContext(params) {
     channelProfile:   channelProfile,
     teamContext:      teamContext,
     attioContext:     attioContext,
+    attioUnavailable: attioUnavailable,
   };
 }
 
@@ -376,6 +381,11 @@ function formatContextForPrompt(ctx) {
 
   var attioBlock = attioCtx.formatAttioForPrompt(ctx.attioContext);
   if (attioBlock) parts.push(attioBlock);
+  else if (ctx.attioUnavailable) {
+    parts.push('[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
+      'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
+      'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.');
+  }
 
   if (ctx.kbResults && ctx.kbResults.length > 0) {
     parts.push('KB:\n' + ctx.kbResults.slice(0, 4).map(function(k) {

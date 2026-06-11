@@ -934,11 +934,24 @@ async function askGiuno(userId, userMessage, options) {
   try {
     var attioCtxMod = require('../orchestrator/attioContext');
     if (attioCtxMod.isCrmIsh(userMessage)) {
-      var attioData = await withTimeout(function() {
-        return attioCtxMod.buildAttioContext(userMessage, []);
-      }, 4000, 'askGiuno.attio');
-      var attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
-      if (attioBlock) contextData += '\n' + attioBlock + '\n';
+      var attioBlock = null;
+      try {
+        var attioData = await withTimeout(function() {
+          return attioCtxMod.buildAttioContext(userMessage, []);
+        }, 4000, 'askGiuno.attio');
+        attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
+      } catch(attioErr) {
+        logger.warn('[ASK-GIUNO] Attio non disponibile per domanda CRM:', attioErr && attioErr.message);
+      }
+      if (attioBlock) {
+        contextData += '\n' + attioBlock + '\n';
+      } else {
+        // Senza CRM live il modello rispondeva da memorie vecchie come se
+        // fossero attuali ("Aitho è ancora prospect" quando è won da giorni).
+        contextData += '\n[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
+          'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
+          'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.\n';
+      }
     }
   } catch(e) { logger.debug('[ASK-GIUNO] attio enrich skip:', e && e.message); }
 
@@ -1007,6 +1020,18 @@ async function askGiuno(userId, userMessage, options) {
       }
     }
   } catch(e) { /* ignore */ }
+
+  // Tetto al contesto: oltre ~9000 caratteri il segnale annega nel rumore e
+  // il modello smette di leggere le voci in fondo. Tronca a un confine di
+  // riga e dichiara il taglio invece di degradare in silenzio.
+  var CONTEXT_CHAR_BUDGET = 9000;
+  if (contextData.length > CONTEXT_CHAR_BUDGET) {
+    var cutAt = contextData.lastIndexOf('\n', CONTEXT_CHAR_BUDGET);
+    if (cutAt < CONTEXT_CHAR_BUDGET * 0.8) cutAt = CONTEXT_CHAR_BUDGET;
+    logger.warn('[ASK-GIUNO] contextData oltre budget (' + contextData.length + ' char), troncato a ' + cutAt);
+    contextData = contextData.substring(0, cutAt) +
+      '\n[...altro contesto omesso per limiti di spazio — se ti manca un\'informazione usa i tool di ricerca invece di tirare a indovinare]\n';
+  }
 
   var messageWithContext = contextData
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
