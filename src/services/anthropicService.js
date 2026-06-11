@@ -264,7 +264,13 @@ async function compressConversation(messages, convKey) {
           ];
           AP.forEach(function(ap) {
             var m = botText.match(ap.pattern);
-            if (m) proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
+            if (!m) return;
+            // Guardia anti-negazione: "non aggiorno il CRM" matchava il
+            // pattern e diventava un follow-up — controlla i ~20 caratteri
+            // prima del match per negazioni nella stessa frase.
+            var before = botText.substring(Math.max(0, m.index - 20), m.index);
+            if (/\b(non|niente|senza|mai)\b[^.!?\n]*$/i.test(before)) return;
+            proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
           });
           break;
         }

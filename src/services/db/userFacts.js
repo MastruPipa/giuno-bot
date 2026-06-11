@@ -41,14 +41,25 @@ async function upsertUserFact(slackUserId, category, fact, confidence) {
   }
 }
 
-async function getUserFacts(slackUserId, limit) {
+// Default: solo fatti con confidence >= 0.5 e confermati negli ultimi 120
+// giorni. Un fatto mai ri-confermato da mesi non è più "sticky truth" — prima
+// finiva ogni mattina nel digest come se fosse attuale.
+// opts: { minConfidence, maxAgeDays } per override (0 = nessun limite).
+async function getUserFacts(slackUserId, limit, opts) {
   if (!slackUserId || !c.useSupabase) return [];
+  opts = opts || {};
+  var minConfidence = opts.minConfidence == null ? 0.5 : opts.minConfidence;
+  var maxAgeDays = opts.maxAgeDays == null ? 120 : opts.maxAgeDays;
   try {
-    var res = await c.getClient().from('user_facts')
+    var q = c.getClient().from('user_facts')
       .select('category, fact, confidence, last_confirmed_at')
-      .eq('slack_user_id', slackUserId)
-      .order('confidence', { ascending: false })
-      .limit(limit || 20);
+      .eq('slack_user_id', slackUserId);
+    if (minConfidence > 0) q = q.gte('confidence', minConfidence);
+    if (maxAgeDays > 0) {
+      var cutoff = new Date(Date.now() - maxAgeDays * 86400000).toISOString();
+      q = q.gte('last_confirmed_at', cutoff);
+    }
+    var res = await q.order('confidence', { ascending: false }).limit(limit || 20);
     return (res && res.data) || [];
   } catch(e) {
     if (!/user_facts/i.test(String(e && e.message || ''))) {

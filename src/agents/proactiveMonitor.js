@@ -208,7 +208,11 @@ async function runProactiveScan() {
 
     // Dedup: filter out alerts already sent today
     allAlerts = allAlerts.filter(function(a) {
-      var alertKey = a.type + ':' + (a.project || a.lead || a.owner || 'unknown');
+      // La chiave deve identificare l'alert: prima un alert senza project/lead
+      // collassava su 'unknown' e veniva dedupato (o duplicato) a caso.
+      var identity = a.project || a.lead || a.user || a.channel ||
+        String(a.message || a.detail || '').substring(0, 60) || 'generic';
+      var alertKey = a.type + ':' + identity;
       return !wasAlertSentToday(a.owner || 'admin', alertKey);
     });
 
