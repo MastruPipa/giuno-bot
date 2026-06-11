@@ -4,6 +4,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var { getSheetPerUtente } = require('../services/googleAuthService');
 var { withTimeout } = require('../utils/timeout');
 var db = require('../../supabase');
@@ -423,7 +424,7 @@ async function execute(toolName, input, userId, userRole) {
       contact_email: input.contact_email || null,
       phone: input.phone || null,
       owner_slack_id: input.owner_slack_id || null,
-      first_contact: new Date().toISOString().slice(0, 10),
+      first_contact: dates.todayISO(),
     };
     try {
       var created = await db.insertLead(newLead);

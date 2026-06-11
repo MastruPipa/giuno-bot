@@ -4,6 +4,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app } = require('../services/slackService');
@@ -14,7 +15,7 @@ var _sentToday = {};
 var _sentDate = null;
 
 function wasAlertSentToday(userId, alertKey) {
-  var today = new Date().toISOString().slice(0, 10);
+  var today = dates.todayISO();
   if (_sentDate !== today) { _sentToday = {}; _sentDate = today; }
   var key = userId + ':' + alertKey;
   if (_sentToday[key]) return true;
@@ -84,7 +85,7 @@ async function checkStaleLeads() {
 async function checkOverdueProjects() {
   var alerts = [];
   try {
-    var today = new Date().toISOString().slice(0, 10);
+    var today = dates.todayISO();
     var projects = await db.searchProjects({ status: 'active', limit: 50 });
     projects.forEach(function(p) {
       if (!p.end_date) return;
@@ -207,7 +208,11 @@ async function runProactiveScan() {
 
     // Dedup: filter out alerts already sent today
     allAlerts = allAlerts.filter(function(a) {
-      var alertKey = a.type + ':' + (a.project || a.lead || a.owner || 'unknown');
+      // La chiave deve identificare l'alert: prima un alert senza project/lead
+      // collassava su 'unknown' e veniva dedupato (o duplicato) a caso.
+      var identity = a.project || a.lead || a.user || a.channel ||
+        String(a.message || a.detail || '').substring(0, 60) || 'generic';
+      var alertKey = a.type + ':' + identity;
       return !wasAlertSentToday(a.owner || 'admin', alertKey);
     });
 

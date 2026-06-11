@@ -8,6 +8,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var dbClient = require('../services/db/client');
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
@@ -54,13 +55,11 @@ var definitions = [
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isoDaysAgo(n) {
-  var d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return dates.daysFromTodayISO(-n);
 }
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return dates.todayISO();
 }
 
 function toMinutes(task) {

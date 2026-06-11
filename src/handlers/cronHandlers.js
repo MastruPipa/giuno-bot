@@ -8,6 +8,7 @@ require('dotenv').config();
 
 var cron   = require('node-cron');
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { withTimeout } = require('../utils/timeout');
 var db = require('../../supabase');
@@ -926,7 +927,9 @@ async function monitoraDomandeInSospeso() {
           var msg = msgs[mi];
           if (msg.reply_count && msg.reply_count > 0) continue;
 
-          var kbResults = db.searchKB(msg.text.substring(0, 100));
+          // minConfidence: una voce KB incerta non deve diventare una risposta
+          // pubblica non richiesta in canale
+          var kbResults = db.searchKB(msg.text.substring(0, 100), { minConfidence: 0.4 });
           if (kbResults.length === 0) continue;
 
           try {
@@ -986,7 +989,6 @@ async function sendProactiveFollowups() {
 
     var now = Date.now();
     var twoDaysAgo = new Date(now - 2 * 86400000).toISOString();
-    var threeDaysAgo = new Date(now - 3 * 86400000).toISOString();
 
     var sumRes = await supabase.from('conversation_summaries')
       .select('conv_key, proposed_actions, updated_at')
@@ -998,31 +1000,32 @@ async function sendProactiveFollowups() {
     var rows = (sumRes && sumRes.data) || [];
     var sent = 0;
 
+    var gate = require('../utils/proactiveGate');
+    var fourteenDaysAgo = new Date(now - 14 * 86400000).toISOString();
+
     for (var ri = 0; ri < rows.length; ri++) {
       var row = rows[ri];
       // Only touch DM main summaries (conv_key = userId, no colon)
       if (!row.conv_key || row.conv_key.indexOf(':') !== -1) continue;
       var userId = row.conv_key;
+      // Opt-out per utente
+      if (!gate.notificheEnabled(userId)) continue;
       var openItems = (row.proposed_actions || []).filter(function(a) {
-        return a && a.type === 'open_item' && a.description;
+        // Gli item senza data o più vecchi di 14 giorni muoiono qui: prima
+        // restavano in coda per sempre e generavano reminder fuori contesto.
+        return a && a.type === 'open_item' && a.description &&
+          a.proposed_at && a.proposed_at > fourteenDaysAgo;
       });
       if (openItems.length === 0) continue;
 
-      // Pick first item not recently followed up on
-      var crypto = require('crypto');
+      // Pick first item not recently followed up on (cooldown condiviso)
       var picked = null;
       for (var ii = 0; ii < openItems.length; ii++) {
         var desc = openItems[ii].description;
-        var itemHash = crypto.createHash('sha1').update(desc.toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
-        var logRes = await supabase.from('followup_log')
-          .select('sent_at, attempts')
-          .eq('slack_user_id', userId)
-          .eq('item_hash', itemHash)
-          .maybeSingle();
-        var log = logRes && logRes.data;
-        if (log && new Date(log.sent_at).toISOString() > threeDaysAgo) continue;
-        if (log && (log.attempts || 1) >= 3) continue;
-        picked = { description: desc, hash: itemHash, attempts: (log && log.attempts) || 0 };
+        var itemHash = gate.itemHash(desc);
+        var check = await gate.followupAllowed(supabase, userId, itemHash);
+        if (!check.allowed) continue;
+        picked = { description: desc, hash: itemHash, attempts: check.attempts };
         break;
       }
       if (!picked) continue;
@@ -1040,13 +1043,7 @@ async function sendProactiveFollowups() {
           '_(Se non serve più fammi sapere e me ne dimentico.)_';
         await app.client.chat.postMessage({ channel: userId, text: msg });
 
-        await supabase.from('followup_log').upsert({
-          slack_user_id: userId,
-          item_hash: picked.hash,
-          item_description: picked.description.substring(0, 300),
-          sent_at: new Date().toISOString(),
-          attempts: picked.attempts + 1,
-        }, { onConflict: 'slack_user_id,item_hash' });
+        await gate.recordFollowup(supabase, userId, picked.hash, picked.description, picked.attempts);
         sent++;
         logger.info('[FOLLOWUP] inviato a', userId, '— item:', picked.description.substring(0, 60));
       } catch(e) {
@@ -1328,7 +1325,9 @@ function scheduleCrons() {
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
   });
   cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
-  cron.schedule('0 4 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 4:00
+  // 03:30 (non 04:00): alle 4 gira già il decay giornaliero della confidence
+  // sulla stessa tabella — sfalsati per non aggiornare le stesse righe insieme
+  cron.schedule('30 3 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 3:30
   // Proactive DM follow-ups — 10:00 Mon-Fri on items open >2 days, max 3 nudges per item.
   cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
   // Personal daily digest — 08:30 Mon-Fri, runs before the daily standup so each
@@ -1459,7 +1458,7 @@ function scheduleCrons() {
       var isWeekday = dow >= 1 && dow <= 5;
       var isStandupWindow = hhmm >= 900 && hhmm < 1130;
       if (isWeekday && isStandupWindow) {
-        var todayStr = nowRome.toISOString().slice(0, 10);
+        var todayStr = dates.todayISO();
         var sd = db.getStandupCache();
         if (!sd || sd.oggi !== todayStr) {
           logger.info('[BOOT] Daily standup non inviato oggi (' + todayStr + ') — invio di recupero...');

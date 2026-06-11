@@ -6,6 +6,7 @@
 require('dotenv').config();
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var { createCircuitBreaker } = require('../utils/circuitBreaker');
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ async function askGemini(prompt, systemInstruction) {
 var _newsCache = { date: null, testo: null };
 
 async function fetchNewsMarketing() {
-  var oggi = new Date().toISOString().slice(0, 10);
+  var oggi = dates.todayISO();
   if (_newsCache.date === oggi && _newsCache.testo) return _newsCache.testo;
 
   try {

@@ -8,6 +8,7 @@ require('dotenv').config();
 var Anthropic = require('@anthropic-ai/sdk');
 var db = require('../../supabase');
 var logger = require('../utils/logger');
+var datesUtil = require('../utils/dates');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { getUserRole, getRoleSystemPrompt } = require('../../rbac');
 var { resolveSlackMentions } = require('./slackService');
@@ -263,7 +264,13 @@ async function compressConversation(messages, convKey) {
           ];
           AP.forEach(function(ap) {
             var m = botText.match(ap.pattern);
-            if (m) proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
+            if (!m) return;
+            // Guardia anti-negazione: "non aggiorno il CRM" matchava il
+            // pattern e diventava un follow-up — controlla i ~20 caratteri
+            // prima del match per negazioni nella stessa frase.
+            var before = botText.substring(Math.max(0, m.index - 20), m.index);
+            if (/\b(non|niente|senza|mai)\b[^.!?\n]*$/i.test(before)) return;
+            proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
           });
           break;
         }
@@ -487,7 +494,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
 
     // Memories
     if (analysis.memories && analysis.memories.length > 0) {
-      var dateTag = new Date().toISOString().slice(0, 10);
+      var dateTag = datesUtil.todayISO();
       var sourceTag = context.isDM ? 'DM' : (context.channelId ? '#canale' : 'conversazione');
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
@@ -509,7 +516,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
 
           // Append date/source if not already in content
           var enrichedContent = m.content;
-          if (!m.content.includes('202') && !m.content.includes(dateTag)) {
+          if (!/\b\d{4}-\d{2}-\d{2}\b/.test(m.content)) {
             enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
           }
           var tags = (m.tags || []).concat(['data:' + dateTag]);
@@ -805,15 +812,18 @@ async function askGiuno(userId, userMessage, options) {
           .eq('conv_key', userId)
           .limit(1);
         if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
-          var dmAgeH = (Date.now() - new Date(dmMainRes.data[0].updated_at).getTime()) / 3600000;
-          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + Math.round(dmAgeH) + 'h fa, ' +
-            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali):\n' +
+          var dmAge = datesUtil.ageLabelIt(dmMainRes.data[0].updated_at) || 'data sconosciuta';
+          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + dmAge + ', ' +
+            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali — i fatti interni risalgono ad allora o prima):\n' +
             dmMainRes.data[0].summary + '\n';
           var openActions = (dmMainRes.data[0].proposed_actions || [])
             .filter(function(a) { return a && a.type === 'open_item' && a.description; });
           if (openActions.length > 0) {
             contextData += 'ACTION ITEMS APERTI CON QUESTO UTENTE:\n' +
-              openActions.slice(0, 5).map(function(a) { return '- ' + a.description; }).join('\n') + '\n';
+              openActions.slice(0, 5).map(function(a) {
+                var actAge = datesUtil.ageLabelIt(a.proposed_at);
+                return '- ' + a.description + (actAge ? ' (proposto ' + actAge + ')' : '');
+              }).join('\n') + '\n';
           }
         }
 
@@ -827,7 +837,9 @@ async function askGiuno(userId, userMessage, options) {
         if (recentThreadRes.data && recentThreadRes.data.length > 0) {
           var threadSummary = recentThreadRes.data[0];
           if (threadSummary.summary) {
-            contextData += '\n[CONTESTO DA ULTIMO THREAD]\n' +
+            var thrAge = datesUtil.ageLabelIt(threadSummary.updated_at);
+            contextData += '\n[CONTESTO DA UN ALTRO THREAD' + (thrAge ? ', aggiornato ' + thrAge : '') +
+              ' — potrebbe NON riguardare la richiesta attuale, usalo solo se pertinente]\n' +
               threadSummary.summary.substring(0, 400) + '\n';
           }
         }
@@ -922,11 +934,24 @@ async function askGiuno(userId, userMessage, options) {
   try {
     var attioCtxMod = require('../orchestrator/attioContext');
     if (attioCtxMod.isCrmIsh(userMessage)) {
-      var attioData = await withTimeout(function() {
-        return attioCtxMod.buildAttioContext(userMessage, []);
-      }, 4000, 'askGiuno.attio');
-      var attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
-      if (attioBlock) contextData += '\n' + attioBlock + '\n';
+      var attioBlock = null;
+      try {
+        var attioData = await withTimeout(function() {
+          return attioCtxMod.buildAttioContext(userMessage, []);
+        }, 4000, 'askGiuno.attio');
+        attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
+      } catch(attioErr) {
+        logger.warn('[ASK-GIUNO] Attio non disponibile per domanda CRM:', attioErr && attioErr.message);
+      }
+      if (attioBlock) {
+        contextData += '\n' + attioBlock + '\n';
+      } else {
+        // Senza CRM live il modello rispondeva da memorie vecchie come se
+        // fossero attuali ("Aitho è ancora prospect" quando è won da giorni).
+        contextData += '\n[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
+          'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
+          'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.\n';
+      }
     }
   } catch(e) { logger.debug('[ASK-GIUNO] attio enrich skip:', e && e.message); }
 
@@ -995,6 +1020,18 @@ async function askGiuno(userId, userMessage, options) {
       }
     }
   } catch(e) { /* ignore */ }
+
+  // Tetto al contesto: oltre ~9000 caratteri il segnale annega nel rumore e
+  // il modello smette di leggere le voci in fondo. Tronca a un confine di
+  // riga e dichiara il taglio invece di degradare in silenzio.
+  var CONTEXT_CHAR_BUDGET = 9000;
+  if (contextData.length > CONTEXT_CHAR_BUDGET) {
+    var cutAt = contextData.lastIndexOf('\n', CONTEXT_CHAR_BUDGET);
+    if (cutAt < CONTEXT_CHAR_BUDGET * 0.8) cutAt = CONTEXT_CHAR_BUDGET;
+    logger.warn('[ASK-GIUNO] contextData oltre budget (' + contextData.length + ' char), troncato a ' + cutAt);
+    contextData = contextData.substring(0, cutAt) +
+      '\n[...altro contesto omesso per limiti di spazio — se ti manca un\'informazione usa i tool di ricerca invece di tirare a indovinare]\n';
+  }
 
   var messageWithContext = contextData
     ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'

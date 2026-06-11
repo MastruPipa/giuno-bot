@@ -5,10 +5,12 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app } = require('../services/slackService');
 var { formatPerSlack } = require('../utils/slackFormat');
+var gate = require('../utils/proactiveGate');
 
 // ─── Check pending follow-ups from memories ─────────────────────────────────
 
@@ -19,11 +21,15 @@ async function checkPendingFollowups() {
 
   try {
     var now = new Date();
-    // Find intent memories that are expired or about to expire
+    // Find intent memories that are expired or about to expire.
+    // Solo memorie vive e con confidence decente: un intento mal classificato
+    // a bassa confidence non deve diventare un reminder ricorrente.
     var res = await supabase.from('memories')
-      .select('id, slack_user_id, content, created_at, memory_type, tags')
+      .select('id, slack_user_id, content, created_at, memory_type, tags, confidence_score')
       .eq('memory_type', 'intent')
       .is('superseded_by', null)
+      .or('expires_at.is.null,expires_at.gt.' + now.toISOString())
+      .gte('confidence_score', 0.5)
       .lt('created_at', new Date(now.getTime() - 24 * 3600000).toISOString()) // older than 24h
       .order('created_at', { ascending: false })
       .limit(20);
@@ -64,7 +70,7 @@ async function checkLeadFollowups() {
 
   try {
     // Leads with next_followup_date in the past or today
-    var today = new Date().toISOString().slice(0, 10);
+    var today = dates.todayISO();
     var res = await supabase.from('leads')
       .select('id, company_name, status, owner_slack_id, next_followup_date')
       .eq('is_active', true)
@@ -123,34 +129,58 @@ async function checkSilentChannels() {
 
 async function sendFollowups(userId, items) {
   if (!items || items.length === 0) return;
+  // Opt-out per utente: niente DM proattivi se notifiche_enabled=false
+  if (!gate.notificheEnabled(userId)) return;
 
+  var supabase = db.getClient();
   var intents = items.filter(function(i) { return i.type === 'pending_intent'; });
   var leads = items.filter(function(i) { return i.type === 'lead_followup'; });
 
+  // Cooldown condiviso su followup_log: lo stesso item non viene ri-ricordato
+  // entro 3 giorni né oltre 3 tentativi, da QUALSIASI sistema proattivo.
+  var allowedIntents = [];
+  for (var ai = 0; ai < intents.length && allowedIntents.length < 3; ai++) {
+    var hash = gate.itemHash(intents[ai].content);
+    var check = supabase ? await gate.followupAllowed(supabase, userId, hash) : { allowed: true, attempts: 0 };
+    if (!check.allowed) continue;
+    intents[ai]._hash = hash;
+    intents[ai]._attempts = check.attempts;
+    allowedIntents.push(intents[ai]);
+  }
+  var allowedLeads = [];
+  for (var li = 0; li < leads.length && allowedLeads.length < 3; li++) {
+    var lHash = gate.itemHash('lead:' + leads[li].lead + ':' + leads[li].dueDate);
+    var lCheck = supabase ? await gate.followupAllowed(supabase, userId, lHash) : { allowed: true, attempts: 0 };
+    if (!lCheck.allowed) continue;
+    leads[li]._hash = lHash;
+    leads[li]._attempts = lCheck.attempts;
+    allowedLeads.push(leads[li]);
+  }
+
   // Don't send if nothing substantial
-  if (intents.length === 0 && leads.length === 0) return;
+  if (allowedIntents.length === 0 && allowedLeads.length === 0) return;
 
   var msg = '*📋 Follow-up da Giuno*\n\n';
 
-  if (intents.length > 0) {
+  if (allowedIntents.length > 0) {
     msg += '*Azioni in sospeso:*\n';
-    intents.forEach(function(i) {
+    allowedIntents.forEach(function(i) {
       var days = Math.round(i.ageHours / 24);
       msg += '• ' + i.content.substring(0, 120) + ' _(' + days + 'gg fa)_\n';
     });
     msg += '\n';
   }
 
-  if (leads.length > 0) {
+  if (allowedLeads.length > 0) {
     msg += '*Lead da ricontattare:*\n';
-    leads.forEach(function(l) {
+    allowedLeads.forEach(function(l) {
       msg += '• *' + l.lead + '* [' + l.status + '] — followup previsto: ' + l.dueDate + '\n';
     });
     msg += '\n';
   }
 
   // Quality gate: don't send garbage
-  if (msg.length < 80 || (intents.length === 0 && leads.length === 0)) return;
+  if (msg.length < 80) return;
 
   msg += '_Rispondi "fatto" per qualsiasi punto completato._';
 
@@ -160,6 +190,15 @@ async function sendFollowups(userId, items) {
       text: formatPerSlack(msg),
       unfurl_links: false,
     });
+    // Registra ogni item inviato nel log condiviso
+    if (supabase) {
+      for (var ri = 0; ri < allowedIntents.length; ri++) {
+        await gate.recordFollowup(supabase, userId, allowedIntents[ri]._hash, allowedIntents[ri].content, allowedIntents[ri]._attempts);
+      }
+      for (var rl = 0; rl < allowedLeads.length; rl++) {
+        await gate.recordFollowup(supabase, userId, allowedLeads[rl]._hash, 'lead: ' + allowedLeads[rl].lead, allowedLeads[rl]._attempts);
+      }
+    }
   } catch(e) { logger.error('[FOLLOWUP] Errore invio a', userId + ':', e.message); }
 }
 

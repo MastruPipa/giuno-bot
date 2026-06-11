@@ -9,6 +9,7 @@ var logger = require('../utils/logger');
 var { generaLinkOAuth } = require('../services/googleAuthService');
 var embeddingService = require('../services/embeddingService');
 var attioCtx = require('./attioContext');
+var datesUtil = require('../utils/dates');
 var { safeCall } = require('../utils/safeCall');
 var { withTimeout, withRetry } = require('../utils/retryPolicy');
 
@@ -292,10 +293,14 @@ async function buildContext(params) {
 
   // Automatic CRM grounding: for CRM-flavoured questions, enrich with Attio.
   var attioContext = null;
+  var attioUnavailable = false;
   if ((needs.crm || attioCtx.isCrmIsh(message)) && !isTrivialMessage(message)) {
     attioContext = await safeCall('CTX.buildAttioContext', function() {
       return withTimeout(function() { return attioCtx.buildAttioContext(message, relevantEntities); }, 4000, 'CTX.attio');
     }, null);
+    // Domanda CRM senza CRM: il modello deve saperlo, non rispondere da
+    // memorie vecchie come fossero lo stato attuale.
+    if (!attioContext) attioUnavailable = true;
   }
 
   return {
@@ -313,10 +318,10 @@ async function buildContext(params) {
     isDM:             isDM,
     relevantMemories: relevantMemories,
     kbResults:        kbResults,
-    currentDate:      now.toISOString().slice(0, 10),
+    currentDate:      datesUtil.todayISO(),
     currentYear:      currentYear,
     currentQuarter:   currentQuarter,
-    temporalNote:     'Siamo nel ' + currentYear + ' ' + currentQuarter + '. Info recenti hanno priorità.',
+    temporalNote:     datesUtil.dateContextIt() + ' (' + currentQuarter + '). Info recenti hanno priorità.',
     glossaryContext:  glossaryContext,
 
     // V2 new fields
@@ -326,6 +331,7 @@ async function buildContext(params) {
     channelProfile:   channelProfile,
     teamContext:      teamContext,
     attioContext:     attioContext,
+    attioUnavailable: attioUnavailable,
   };
 }
 
@@ -351,21 +357,22 @@ function formatContextForPrompt(ctx) {
       return !(/^precall_|^\[TOOL:|^TOOL:|^FEEDBACK_|^tool_result|briefing inviato/i.test(c)) && c.length > 15;
     });
     if (cleanMems.length > 0) {
-      // Memories older than ~60d for episodic/intent types are likely stale: flag
-      // them so the model treats them as "was true then" instead of current truth.
+      // Ogni memoria porta la sua età: senza, il modello tratta un fatto di
+      // mesi fa come verità attuale (era una causa del "confonde mesi e anni").
+      // Le episodiche/intent oltre 60 giorni hanno anche il warning esplicito.
       var stalenessMs = 60 * 86400000;
       var nowMs = Date.now();
-      parts.push('MEMORIA:\n' + cleanMems.slice(0, 5).map(function(m) {
+      parts.push('MEMORIA (con data di salvataggio — più è vecchia, meno è affidabile):\n' +
+        cleanMems.slice(0, 5).map(function(m) {
         var body = (m.content || '');
         var created = m.created || m.created_at;
         var type = m.type || m.memory_type;
+        var age = datesUtil.ageLabelIt(created);
         var isPerishable = type === 'episodic' || type === 'intent' || !type;
-        if (created && isPerishable) {
-          var ageMs = nowMs - new Date(created).getTime();
-          if (ageMs > stalenessMs) {
-            var months = Math.max(2, Math.round(ageMs / (30 * 86400000)));
-            body = '[info di ~' + months + ' mesi fa — verifica prima di usare] ' + body;
-          }
+        if (created && isPerishable && (nowMs - new Date(created).getTime()) > stalenessMs) {
+          body = '[salvata ' + age + ' — probabilmente superata, verifica prima di usare] ' + body;
+        } else if (age) {
+          body = '[salvata ' + age + '] ' + body;
         }
         return '- ' + body;
       }).join('\n'));
@@ -374,10 +381,16 @@ function formatContextForPrompt(ctx) {
 
   var attioBlock = attioCtx.formatAttioForPrompt(ctx.attioContext);
   if (attioBlock) parts.push(attioBlock);
+  else if (ctx.attioUnavailable) {
+    parts.push('[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
+      'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
+      'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.');
+  }
 
   if (ctx.kbResults && ctx.kbResults.length > 0) {
     parts.push('KB:\n' + ctx.kbResults.slice(0, 4).map(function(k) {
-      return '- ' + (k.content || '');
+      var kbAge = datesUtil.ageLabelIt(k.created || k.created_at || k.updated_at);
+      return '- ' + (kbAge ? '[salvata ' + kbAge + '] ' : '') + (k.content || '');
     }).join('\n'));
   }
 

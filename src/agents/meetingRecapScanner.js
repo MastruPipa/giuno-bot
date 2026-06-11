@@ -4,6 +4,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { getGmailPerUtente, getCalendarPerUtente, getUserTokens } = require('../services/googleAuthService');
@@ -124,7 +125,7 @@ async function scanMeetingRecaps() {
             });
 
             // Also save as memory for the user
-            db.addMemory(userId, kbContent.substring(0, 300), ['meeting_recap', 'data:' + new Date().toISOString().slice(0, 10)], {
+            db.addMemory(userId, kbContent.substring(0, 300), ['meeting_recap', 'data:' + dates.todayISO()], {
               memory_type: 'episodic',
               confidence_score: 0.8,
             });
@@ -238,7 +239,7 @@ async function scanMeetingRecaps() {
               sourceType: 'calendar_recap',
             });
 
-            db.addMemory(calUserId, kbContent.substring(0, 300), ['meeting_recap', 'data:' + new Date().toISOString().slice(0, 10)], {
+            db.addMemory(calUserId, kbContent.substring(0, 300), ['meeting_recap', 'data:' + dates.todayISO()], {
               memory_type: 'episodic', confidence_score: 0.8,
             });
 

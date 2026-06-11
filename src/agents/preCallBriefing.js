@@ -5,6 +5,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { app, getUtenti } = require('../services/slackService');
@@ -230,7 +231,7 @@ async function checkUpcomingCalls() {
         for (var ei = 0; ei < events.length; ei++) {
           var ev = events[ei];
           // Check if we already sent a briefing for this event today — use direct DB check
-          var briefingKey = 'precall_' + uid + '_' + ev.id + '_' + now.toISOString().slice(0, 10);
+          var briefingKey = 'precall_' + uid + '_' + ev.id + '_' + dates.todayISO();
           try {
             var supabaseCheck = require('../services/db/client').getClient();
             if (supabaseCheck) {

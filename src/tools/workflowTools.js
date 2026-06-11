@@ -4,6 +4,7 @@
 
 var db = require('../../supabase');
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 
 var definitions = [
   {
@@ -128,7 +129,7 @@ async function execute(toolName, input, userId, userRole) {
       var phases = typeof template.phases === 'string' ? JSON.parse(template.phases) : (template.phases || []);
 
       // Calculate dates
-      var startDate = input.start_date || new Date().toISOString().slice(0, 10);
+      var startDate = input.start_date || dates.todayISO();
       var currentDate = new Date(startDate);
       var endDate = new Date(currentDate);
       endDate.setDate(endDate.getDate() + (template.estimated_days || 30));
@@ -181,7 +182,7 @@ async function execute(toolName, input, userId, userRole) {
       if (input.assignee) updates.assignee_slack_id = input.assignee;
       if (input.actual_end_date) updates.actual_end_date = input.actual_end_date;
       if (input.notes) updates.notes = input.notes;
-      if (input.status === 'completed') updates.actual_end_date = updates.actual_end_date || new Date().toISOString().slice(0, 10);
+      if (input.status === 'completed') updates.actual_end_date = updates.actual_end_date || dates.todayISO();
 
       var { data, error } = await supabase.from('project_phases').update(updates).eq('id', input.phase_id).select().single();
       if (error) return { error: error.message };
@@ -232,7 +233,7 @@ async function execute(toolName, input, userId, userRole) {
     var targetUserId = input.user_id || userId;
     var plan = [];
     var now = new Date();
-    var today = now.toISOString().slice(0, 10);
+    var today = dates.todayISO();
 
     // 1. Active phases assigned to user
     try {

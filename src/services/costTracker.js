@@ -4,6 +4,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 
 // Pricing per 1M tokens (USD) — update as needed
 var PRICING = {
@@ -16,7 +17,7 @@ var PRICING = {
 var _buffer = {}; // key: "date|provider|model" -> { input_tokens, output_tokens, calls }
 
 function getKey(provider, model) {
-  var date = new Date().toISOString().slice(0, 10);
+  var date = dates.todayISO();
   return date + '|' + provider + '|' + model;
 }
 
@@ -92,7 +93,7 @@ async function getCostSummary(days) {
     var supabase = dbClient.getClient();
     if (!supabase) return null;
 
-    var fromDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    var fromDate = dates.daysFromTodayISO(-days);
     var { data } = await supabase.from('api_usage')
       .select('*')
       .gte('date', fromDate)

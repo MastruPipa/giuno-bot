@@ -5,6 +5,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 var { getDrivePerUtente, getDocsPerUtente, getSheetPerUtente } = require('../services/googleAuthService');
 var { extractDocText } = require('../tools/driveTools');
@@ -220,7 +221,7 @@ async function classifySlackThread(channelName, threadText) {
         '"items":[{"type":"decisione|scadenza|task|cliente|progetto","content":"stringa","client":null,"project":null,"date":null}]}\n' +
         'skip=true se: chiacchiere, saluti, standup generici.\n' +
         'Includi SOLO info concretamente utili da ricordare.\n' +
-        'Data oggi: ' + new Date().toISOString().slice(0, 10),
+        dates.dateContextIt(),
       messages: [{ role: 'user', content: 'Canale: #' + channelName + '\n\n' + threadText }],
     });
     var text = res.content[0].text.trim();

@@ -4,6 +4,7 @@
 'use strict';
 
 var logger = require('../utils/logger');
+var dates = require('../utils/dates');
 var db = require('../../supabase');
 
 var definitions = [
@@ -258,8 +259,8 @@ async function execute(toolName, input, userId, userRole) {
     }
     if (input.action === 'upcoming') {
       var days = input.days_ahead || 7;
-      var from = new Date().toISOString().slice(0, 10);
-      var to = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+      var from = dates.todayISO();
+      var to = dates.daysFromTodayISO(days);
       var { data } = await supabase.from('content_calendar').select('*')
         .gte('publish_date', from).lte('publish_date', to)
         .not('status', 'in', '("published","cancelled")')
@@ -299,7 +300,7 @@ async function execute(toolName, input, userId, userRole) {
       return { invoices: data || [] };
     }
     if (input.action === 'overdue') {
-      var today = new Date().toISOString().slice(0, 10);
+      var today = dates.todayISO();
       var { data } = await supabase.from('invoices').select('*').eq('status', 'sent').lt('due_date', today).order('due_date');
       return { overdue: data || [], count: (data || []).length };
     }
@@ -338,7 +339,7 @@ async function execute(toolName, input, userId, userRole) {
       var { data } = await supabase.from('competitors').insert({
         client_name: input.client_name || '', competitor_name: input.competitor_name || '',
         website: input.website || null, social_links: input.social_links || {},
-        notes: input.notes || null, last_checked: new Date().toISOString().slice(0, 10),
+        notes: input.notes || null, last_checked: dates.todayISO(),
       }).select().single();
       return { success: true, competitor: data };
     }
@@ -360,7 +361,7 @@ async function execute(toolName, input, userId, userRole) {
     }
     var { data } = await supabase.from('time_entries').insert({
       slack_user_id: userId, project_id: projectId || null,
-      date: input.date || new Date().toISOString().slice(0, 10),
+      date: input.date || dates.todayISO(),
       hours: input.hours, task_description: input.task_description || null,
       billable: input.billable !== false,
     }).select().single();
