@@ -1198,6 +1198,10 @@ function scheduleCrons() {
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
   var dailyStandup = require('./dailyStandupV2');
   dailyStandup.scheduleDailyJobs(cron);
+  // Workload & progress tracking — Weekly Planner (gio 15:00/17:15/18:00) +
+  // Daily Check-in (17:30 send, 09:05 reminder correzione, 09:30 close)
+  require('./weeklyPlanner').schedulePlannerJobs(cron);
+  require('./timeTracking').scheduleCheckinJobs(cron);
   // Weekly report V2 — venerdì 17:00
   cron.schedule('0 17 * * 5', function() {
     var { sendWeeklyReports } = require('../agents/weeklyReport');

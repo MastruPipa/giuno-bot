@@ -30,6 +30,7 @@ var workflowTools     = require('./workflowTools');
 var agencyTools       = require('./agencyTools');
 var standupTools      = require('./standupTools');
 var attioTools        = require('./attioTools');
+var timeTrackingTools = require('./timeTrackingTools');
 
 var ALL_MODULES = [
   slackTools,
@@ -50,6 +51,7 @@ var ALL_MODULES = [
   agencyTools,
   standupTools,
   attioTools,
+  timeTrackingTools,
 ];
 
 // ─── Critical action confirmation ─────────────────────────────────────────────

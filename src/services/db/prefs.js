@@ -38,6 +38,7 @@ async function savePrefs(userId, prefs) {
       routine_enabled: prefs.routine_enabled,
       notifiche_enabled: prefs.notifiche_enabled,
       standup_enabled: prefs.standup_enabled,
+      tracking_enabled: prefs.tracking_enabled,
       updated_at: new Date().toISOString(),
     });
   } catch(e) { c.logErr('savePrefs', e); }

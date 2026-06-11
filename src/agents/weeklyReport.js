@@ -79,17 +79,36 @@ async function buildWeeklyReport(userId, userRole) {
     } catch(e) { /* ignore */ }
   }
 
-  // 3. Team workload (admin only)
+  // 3. Team workload (admin only) — pianificato vs effettivo dai time_logs
+  // della settimana corrente; fallback agli aggregati allocations se il
+  // tracking non ha ancora dati.
   if (isAdmin) {
     try {
-      var workload = await db.getTeamWorkload();
-      if (workload.length > 0) {
-        var wLines = workload.map(function(w) {
-          var pct = w.total_allocated > 0 ? Math.round((w.total_logged / w.total_allocated) * 100) : 0;
-          var icon = pct > 110 ? '🔴' : (pct > 85 ? '🟡' : '🟢');
-          return '• <@' + w.slack_user_id + '> ' + icon + ' ' + Math.round(w.total_logged) + '/' + Math.round(w.total_allocated) + 'h (' + pct + '%)';
-        });
-        parts.push('*Carico team:*\n' + wLines.join('\n'));
+      var trackingDates = require('../utils/trackingDates');
+      var weekStartStr = trackingDates.weekStartOf(trackingDates.oggiRome());
+      var pva = await db.getPlannedVsActual(weekStartStr);
+      var pvaUsers = Object.keys(pva.byUser || {});
+      if (pvaUsers.length > 0) {
+        var pvaLines = pvaUsers.sort(function(a, b) { return pva.byUser[b].actual - pva.byUser[a].actual; })
+          .map(function(uid) {
+            var u = pva.byUser[uid];
+            var pct = u.planned > 0 ? Math.round((u.actual / u.planned) * 100) : 0;
+            var icon = u.actual > 40 ? '🔴' : (u.actual > 33 ? '🟡' : '🟢');
+            var line = '• <@' + uid + '> ' + icon + ' ' + Math.round(u.actual * 10) / 10 + 'h effettive';
+            if (u.planned > 0) line += ' / ' + Math.round(u.planned * 10) / 10 + 'h pianificate (' + pct + '%)';
+            return line;
+          });
+        parts.push('*Carico team (settimana ' + weekStartStr + '):*\n' + pvaLines.join('\n'));
+      } else {
+        var workload = await db.getTeamWorkload();
+        if (workload.length > 0) {
+          var wLines = workload.map(function(w) {
+            var pct = w.total_allocated > 0 ? Math.round((w.total_logged / w.total_allocated) * 100) : 0;
+            var icon = pct > 110 ? '🔴' : (pct > 85 ? '🟡' : '🟢');
+            return '• <@' + w.slack_user_id + '> ' + icon + ' ' + Math.round(w.total_logged) + '/' + Math.round(w.total_allocated) + 'h (' + pct + '%)';
+          });
+          parts.push('*Carico team:*\n' + wLines.join('\n'));
+        }
       }
     } catch(e) { /* ignore */ }
   }
