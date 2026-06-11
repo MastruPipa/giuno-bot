@@ -1274,11 +1274,18 @@ function scheduleCrons() {
   cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
   cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
   cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
-  // Proactive monitor — 2x/giorno (mattina + pomeriggio)
-  cron.schedule('0 10,16 * * 1-5', function() {
-    var { runProactiveScan } = require('../agents/proactiveMonitor');
-    runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  // Proactive monitor (10:00/16:00, alert budget/lead/scadenze) — DISATTIVATO
+  // di default: gli alert risultavano caotici (lead interni stantii segnalati
+  // come critici). Riattivabile con PROACTIVE_ALERTS_ENABLED=true quando i
+  // dati CRM interni saranno puliti/allineati ad Attio.
+  if (process.env.PROACTIVE_ALERTS_ENABLED === 'true') {
+    cron.schedule('0 10,16 * * 1-5', function() {
+      var { runProactiveScan } = require('../agents/proactiveMonitor');
+      runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
+    }, { timezone: 'Europe/Rome' });
+  } else {
+    logger.info('[PROACTIVE-CRON] Proactive monitor disattivato (PROACTIVE_ALERTS_ENABLED != true)');
+  }
   // Memory decay — ogni notte alle 4:00, abbassa confidence memorie vecchie non usate
   cron.schedule('0 4 * * *', async function() {
     try {
