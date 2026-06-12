@@ -98,7 +98,7 @@ async function sendAlertToAdmin(signals) {
   var adminId = admins.data[0].slack_user_id;
   var high = signals.filter(function(s) { return s.severity === 'high'; });
   var med = signals.filter(function(s) { return s.severity === 'medium'; });
-  var msg = '*PM Alert — ' + new Date().toLocaleDateString('it-IT') + '*\n\n';
+  var msg = '*PM Alert — ' + new Date().toLocaleDateString('it-IT', { timeZone: 'Europe/Rome' }) + '*\n\n';
   if (high.length > 0) { msg += '*Alta priorità:*\n'; high.forEach(function(s) { msg += '• ' + s.description + '\n'; }); msg += '\n'; }
   if (med.length > 0) { msg += '*Attenzione:*\n'; med.slice(0, 5).forEach(function(s) { msg += '• ' + s.description + '\n'; }); }
   try {

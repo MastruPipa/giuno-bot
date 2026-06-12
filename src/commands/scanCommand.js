@@ -73,7 +73,7 @@ async function run(message, ctx) {
     if (list.length === 0) return 'Nessun foglio registrato.';
     var listMsg = list.map(function(r) {
       return (r.is_active ? '🟢' : '⚪') + ' ' + r.display_name + ' (' + r.scan_frequency + ')' +
-        (r.last_scanned_at ? ' — ultimo: ' + new Date(r.last_scanned_at).toLocaleDateString('it-IT') : ' — mai scansionato');
+        (r.last_scanned_at ? ' — ultimo: ' + new Date(r.last_scanned_at).toLocaleDateString('it-IT', { timeZone: 'Europe/Rome' }) : ' — mai scansionato');
     }).join('\n');
     return '*Fogli registrati:*\n' + listMsg;
   }

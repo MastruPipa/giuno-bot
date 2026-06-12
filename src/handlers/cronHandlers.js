@@ -92,7 +92,7 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
         var s = '*Agenda di oggi:*\n';
         eventi.forEach(function(e) {
           var ora = e.start.dateTime
-            ? new Date(e.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+            ? new Date(e.start.dateTime).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
             : 'tutto il giorno';
           s += '• ' + ora + ' — ' + (e.summary || 'Senza titolo') + '\n';
         });
@@ -280,8 +280,8 @@ async function buildRecapSettimanale(slackUserId, canaliSettimana) {
         var s = '*Riunioni della settimana:* ' + eventi.length + ' eventi\n';
         eventi.slice(0, 8).forEach(function(e) {
           var giorno = e.start.dateTime
-            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })
-            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/Rome' })
+            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
           s += giorno + ' — ' + (e.summary || 'Senza titolo') + '\n';
         });
         if (eventi.length > 8) s += '...e altri ' + (eventi.length - 8) + ' eventi\n';
@@ -330,8 +330,8 @@ async function buildRecapSettimanale(slackUserId, canaliSettimana) {
         var s = '*Anteprima settimana prossima:* ' + prossimi.length + ' eventi\n';
         prossimi.slice(0, 5).forEach(function(e) {
           var giorno = e.start.dateTime
-            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' })
-            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+            ? new Date(e.start.dateTime).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/Rome' })
+            : new Date(e.start.date).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
           s += giorno + ' — ' + (e.summary || 'Senza titolo') + '\n';
         });
         parti.push(s.trim());
