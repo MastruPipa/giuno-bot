@@ -105,7 +105,8 @@ async function queryRecords(object, filter, limit, sorts, offset) {
     method: 'POST', body: body,
   });
   return (json && json.data || []).map(function(rec) {
-    return { record_id: recordId(rec), values: simplifyValues(rec.values) };
+    var createdAt = rec && (rec.created_at || (rec.id && rec.id.created_at)) || null;
+    return { record_id: recordId(rec), values: simplifyValues(rec.values), created_at: createdAt };
   });
 }
 
