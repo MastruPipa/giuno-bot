@@ -249,6 +249,39 @@ async function handleDailyResponse(userId, text, structured) {
   return true;
 }
 
+// ─── Cattura daily scritti a mano nel canale #daily ────────────────────────
+// Oltre a DM e modale, molti scrivono il daily direttamente in #daily: prima
+// non venivano agganciati e risultavano "mancanti" pur avendo risposto. Lo
+// user_id del messaggio è autorevole, quindi questo risolve anche le
+// attribuzioni sbagliate. Non ripubblica nulla (il messaggio è già nel canale).
+async function recordChannelDaily(userId, text, channelId) {
+  if (!userId || channelId !== DAILY_CHANNEL_ID) return false;
+  var clean = (text || '').trim();
+  if (clean.length < 10) return false;
+
+  var todayStr = oggi();
+  var sd = db.getStandupCache();
+  if (sd.oggi !== todayStr) { sd.oggi = todayStr; sd.risposte = {}; sd.inattesa = []; }
+  sd.risposte = sd.risposte || {};
+  sd.risposte[userId] = { testo: clean, timestamp: Date.now(), source: 'channel' };
+  var standupInAttesa = getStandupInAttesa();
+  standupInAttesa.delete(userId);
+  sd.inattesa = Array.from(standupInAttesa);
+  await db.saveStandup(sd);
+
+  try {
+    var supabase = require('../services/db/client').getClient();
+    if (supabase) {
+      var saveRes = await supabase.from('standup_entries')
+        .upsert({ slack_user_id: userId, date: todayStr, raw_text: clean, source: 'channel' },
+          { onConflict: 'slack_user_id,date' });
+      if (saveRes && saveRes.error) logger.warn('[DAILY-V2] Upsert daily da canale fallito:', saveRes.error.message);
+      else logger.info('[DAILY-V2] Daily da canale registrato per', userId, todayStr);
+    }
+  } catch(e) { logger.warn('[DAILY-V2] recordChannelDaily error:', e.message); }
+  return true;
+}
+
 // ─── 11:30 — Publish unified summary in #daily ──────────────────────────────
 
 async function publishDailySummary() {
@@ -365,8 +398,10 @@ function scheduleDailyJobs(cron) {
 }
 
 module.exports = {
+  DAILY_CHANNEL_ID: DAILY_CHANNEL_ID,
   scheduleDailyJobs: scheduleDailyJobs,
   handleDailyResponse: handleDailyResponse,
+  recordChannelDaily: recordChannelDaily,
   sendDailyRequests: sendDailyRequests,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
