@@ -49,14 +49,30 @@ async function updateLead(identifier, updates) {
   if (!c.useSupabase) return null;
   try {
     var updateData = Object.assign({}, updates, { updated_at: new Date().toISOString() });
-    var res;
-    if (identifier.match && identifier.match(/^[0-9a-f-]{36}$/i)) {
-      res = await c.getClient().from('leads').update(updateData).eq('id', identifier).select();
-    } else {
-      res = await c.getClient().from('leads').update(updateData).ilike('company_name', identifier).select();
+    // Path 1: identifier è un UUID → aggiorna esattamente quel record.
+    if (identifier && identifier.match && identifier.match(/^[0-9a-f-]{36}$/i)) {
+      var resById = await c.getClient().from('leads').update(updateData).eq('id', identifier).select();
+      if (resById.error) throw resById.error;
+      return resById.data;
     }
-    if (res.error) throw res.error;
-    return res.data;
+    // Path 2: identifier è un nome azienda. Risolviamo PRIMA a un singolo
+    // record: un update per ilike diretto aggiornerebbe tutti gli omonimi e i
+    // caratteri % / _ verrebbero interpretati come wildcard LIKE. Quindi:
+    // escape dei wildcard, lookup, e update solo se il match è univoco.
+    var pattern = String(identifier || '').replace(/[\\%_]/g, '\\$&');
+    var matchRes = await c.getClient().from('leads').select('id, company_name').ilike('company_name', pattern);
+    if (matchRes.error) throw matchRes.error;
+    var matches = matchRes.data || [];
+    if (matches.length === 0) return [];
+    if (matches.length > 1) {
+      var ambErr = new Error('Trovati ' + matches.length + ' lead con nome "' + identifier + '". Specifica l\'ID del record da aggiornare.');
+      ambErr.ambiguous = true;
+      ambErr.matches = matches;
+      throw ambErr;
+    }
+    var resOne = await c.getClient().from('leads').update(updateData).eq('id', matches[0].id).select();
+    if (resOne.error) throw resOne.error;
+    return resOne.data;
   } catch(e) { c.logErr('updateLead', e); throw e; }
 }
 
