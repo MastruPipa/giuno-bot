@@ -59,6 +59,23 @@ async function main() {
   logger.info('ATTIO_API_KEY presente:', !!process.env.ATTIO_API_KEY,
     '— se false, il bot NON legge il CRM Attio e ripiega su memoria/leads (dati potenzialmente vecchi).');
 
+  // Self-test Attio: "presente" non garantisce che la chiave sia valida.
+  // Una query reale al boot rivela SUBITO se Attio risponde (e con quale
+  // errore grezzo: 401 chiave invalida, 403 permessi, ecc.), invece di
+  // lasciare che ogni chiamata fallisca in silenzio dentro safeCall.
+  if (process.env.ATTIO_API_KEY) {
+    (async function() {
+      try {
+        var attioSvc = require('./services/attioService');
+        var test = await attioSvc.queryRecords('deals', null, 1);
+        logger.info('[ATTIO-SELFTEST] OK — query deals riuscita,', (test || []).length, 'record');
+      } catch(e) {
+        logger.error('[ATTIO-SELFTEST] FALLITA — il bot NON leggerà il CRM:', (e && e.message) || e,
+          '| status:', e && e.status);
+      }
+    })();
+  }
+
   // Start OAuth + Dashboard HTTP server
   oauthHandler.startOAuthServer();
 
