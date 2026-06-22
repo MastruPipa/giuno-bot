@@ -17,9 +17,10 @@ var definitions = [
     name: 'query_time_logs',
     description: 'Interroga i time log del workload tracking (ore pianificate con il Weekly Planner e ore ' +
       'effettive dal Daily Check-in). Usa questo tool per domande su ore tracciate/pianificate/consuntivate ' +
-      'per persona, progetto o settimana: "quante ore ho tracciato?", "quanto ha lavorato X su Y?", ' +
-      '"pianificato vs effettivo del team". Ritorna totali per utente e per progetto della settimana indicata. ' +
-      'NB: per le ore dichiarate nei daily standup testuali usa invece query_standup.',
+      'e sull\'EFFORT/carico di una risorsa rispetto al monte orario: "quante ore ho tracciato?", ' +
+      '"quanto ha lavorato X su Y?", "qual è l\'effort di X questa settimana?", "quanto è carico il team?", ' +
+      '"pianificato vs effettivo". Ritorna, per ogni persona, ore pianificate, ore effettive ed effort_pct ' +
+      'rispetto al monte orario settimanale (40h). NB: per le ore dichiarate nei daily standup testuali usa query_standup.',
     input_schema: {
       type: 'object',
       properties: {
@@ -45,6 +46,8 @@ var definitions = [
 ];
 
 // ─── Implementation ──────────────────────────────────────────────────────────
+
+var WEEKLY_TARGET_HOURS = 40; // monte orario settimanale di riferimento (full-time)
 
 function round1(n) { return Math.round((n || 0) * 10) / 10; }
 
@@ -97,6 +100,7 @@ async function queryTimeLogs(input) {
       name: userLabel(uid),
       hours_planned: round1(planned),
       hours_actual: round1(actual),
+      effort_pct: round1(actual / WEEKLY_TARGET_HOURS * 100), // effort su monte orario 40h
       projects: projects.map(function(p) {
         return { project: p.name, hours_planned: round1(p.planned), hours_actual: round1(p.actual) };
       }).sort(function(a, b) { return b.hours_actual - a.hours_actual; }),
@@ -109,6 +113,7 @@ async function queryTimeLogs(input) {
     week_end: dates.addDays(weekStart, 6),
     user_filter: uidFilter,
     project_filter: input.project || null,
+    monte_orario_settimanale: WEEKLY_TARGET_HOURS,
     total_hours_planned: round1(totalPlanned),
     total_hours_actual: round1(totalActual),
     by_user: userList,
