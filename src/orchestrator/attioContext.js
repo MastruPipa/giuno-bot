@@ -79,12 +79,26 @@ async function buildAttioContext(message, entities) {
     var recent = await safeCall('CTX.attio.recentDeals', function() {
       return attio.queryRecords('deals', null, 50);
     }, []);
+    var RECENT_MS = 90 * 86400000; // ultimo periodo: ~3 mesi
+    var nowMs = Date.now();
+    var dealTs = function(d) {
+      var v = d.values || {};
+      var lc = Array.isArray(v.last_contact) ? v.last_contact[0] : v.last_contact;
+      var raw = d.created_at || v.created_at || lc;
+      var t = raw ? new Date(raw).getTime() : 0;
+      return isNaN(t) ? 0 : t;
+    };
+    // Solo deal ancora in gioco: escludi Lost/Won/annullati/chiusi.
     var openDeals = (recent || []).filter(function(d) {
       var raw = d.values && d.values.stage;
       var st = String((Array.isArray(raw) ? raw[0] : raw) || '').toLowerCase();
       return st && !/lost|pers|won|vint|annull|chius/.test(st);
     });
-    var pick = openDeals.length > 0 ? openDeals : (recent || []);
+    // Solo l'ultimo periodo: scarta i deal senza attività recente; ordina dal
+    // più recente. Niente più riferimenti a trattative chiuse mesi fa.
+    var recentOpen = openDeals.filter(function(d) { return dealTs(d) >= (nowMs - RECENT_MS); });
+    var pick = (recentOpen.length > 0 ? recentOpen : openDeals)
+      .slice().sort(function(a, b) { return dealTs(b) - dealTs(a); });
     pick.slice(0, 8).forEach(function(d) { if (d.record_id && !seenDeal[d.record_id]) { seenDeal[d.record_id] = 1; deals.push(d); } });
   }
 
