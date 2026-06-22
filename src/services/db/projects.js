@@ -57,6 +57,37 @@ async function searchProjects(params) {
   } catch(e) { c.logErr('searchProjects', e); return []; }
 }
 
+// Upsert di un progetto sincronizzato da una sorgente esterna (es. deal Attio).
+// I progetti sincronizzati hanno id con prefisso 'attio_' così non collidono
+// mai con quelli creati a mano ('prj_...'). Sull'update tocca solo le colonne
+// passate: owner/note impostati a mano restano.
+async function upsertSyncedProject(row) {
+  if (!c.useSupabase) return null;
+  try {
+    row.updated_at = new Date().toISOString();
+    var res = await c.getClient().from('projects').upsert(row, { onConflict: 'id' }).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  } catch(e) { c.logErr('upsertSyncedProject', e); return null; }
+}
+
+// Archivia i progetti sincronizzati (id 'attio_%') che non sono più nel set
+// attivo corrente, così cadono fuori dal planner. Non tocca i progetti manuali.
+async function archiveStaleSyncedProjects(activeIds) {
+  if (!c.useSupabase) return 0;
+  try {
+    var q = c.getClient().from('projects')
+      .update({ status: 'archived', updated_at: new Date().toISOString() })
+      .like('id', 'attio_%').eq('status', 'active');
+    if (activeIds && activeIds.length) {
+      q = q.not('id', 'in', '(' + activeIds.map(function(id) { return '"' + id + '"'; }).join(',') + ')');
+    }
+    var res = await q.select('id');
+    if (res.error) throw res.error;
+    return (res.data || []).length;
+  } catch(e) { c.logErr('archiveStaleSyncedProjects', e); return 0; }
+}
+
 // Cached lowercase project-name → status map. Used by the context builder to
 // avoid surfacing memories/KB tied to projects that have been closed.
 var _statusMapCache = null;
@@ -187,6 +218,8 @@ module.exports = {
   createProject: createProject,
   updateProject: updateProject,
   searchProjects: searchProjects,
+  upsertSyncedProject: upsertSyncedProject,
+  archiveStaleSyncedProjects: archiveStaleSyncedProjects,
   getProjectStatusMap: getProjectStatusMap,
   getProject: getProject,
   deleteProject: deleteProject,
