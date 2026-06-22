@@ -80,7 +80,7 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
           var Anthropic = require('@anthropic-ai/sdk');
           var visionClient = new Anthropic();
           var visionRes = await visionClient.messages.create({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-4-8',
             max_tokens: 500,
             messages: [{
               role: 'user',

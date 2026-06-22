@@ -57,7 +57,7 @@ async function run(message, ctx) {
     var response;
     try {
       response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: 400,
         system: fullSystemPrompt,
         messages: messages,

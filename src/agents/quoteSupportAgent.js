@@ -63,7 +63,7 @@ async function estimateEffort(message, rateCardData, similarQuotes) {
     });
   }
   var res = await client.messages.create({
-    model: 'claude-sonnet-4-20250514', max_tokens: 800,
+    model: 'claude-opus-4-8', max_tokens: 800,
     system: 'Pricing expert per Katania Studio (agenzia creativa Catania, 9 persone).\n' +
       'Rispondi SOLO JSON:\n{"projectType":"string","scope":"1-2 frasi","effort":[{"role":"string","hours":number,"rateInterno":number}],"confidence":"alta|media|bassa","warnings":["string"]}\n' +
       'REGOLE: ore minime 2h/deliverable, includi PM (min 10%), rate default se mancanti: 35€/h junior, 50€/h senior, 65€/h director\n\n' + rateInfo + quotesInfo,

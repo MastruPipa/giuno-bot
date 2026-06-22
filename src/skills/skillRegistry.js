@@ -121,7 +121,7 @@ async function executeSkill(skill, message, ctx) {
 
     while (true) {
       var response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: ctx.isDM ? 500 : 800,
         system: systemPrompt,
         messages: messages,

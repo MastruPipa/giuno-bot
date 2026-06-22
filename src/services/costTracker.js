@@ -8,8 +8,8 @@ var dates = require('../utils/dates');
 
 // Pricing per 1M tokens (USD) — update as needed
 var PRICING = {
-  'claude-sonnet-4-20250514':    { input: 3.00, output: 15.00 },
-  'claude-haiku-4-5-20251001':   { input: 0.80, output: 4.00 },
+  'claude-opus-4-8':    { input: 5.00, output: 25.00 },
+  'claude-haiku-4-5-20251001':   { input: 1.00, output: 5.00 },
   'text-embedding-3-small':      { input: 0.02, output: 0 },
 };
 
