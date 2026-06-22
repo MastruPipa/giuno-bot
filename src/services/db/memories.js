@@ -49,6 +49,25 @@ var IMPORTANCE_BOOSTERS = [
   { pattern: /CORREZIONE|feedback.*negativo/i, boost: 0.15 },
 ];
 
+// Regola unica di confidence: i booster di importanza vivono qui così ogni
+// scrittore (auto-classificato o con tipo imposto) ottiene lo stesso punteggio
+// per lo stesso contenuto. Niente più confidence ad-hoc incoerenti tra fonti.
+function applyImportanceBoost(confidence, expiresIn, content) {
+  var c2 = (content || '').toLowerCase();
+  var totalBoost = 0;
+  IMPORTANCE_BOOSTERS.forEach(function(b) {
+    if (b.pattern.test(c2)) totalBoost += b.boost;
+  });
+  if (totalBoost > 0) {
+    confidence = Math.min(0.95, confidence + totalBoost);
+    // Business-critical content should live longer
+    if (totalBoost >= 0.15 && expiresIn) {
+      expiresIn = Math.max(expiresIn, 90 * 86400000); // At least 90 days
+    }
+  }
+  return { confidence: confidence, expiresIn: expiresIn };
+}
+
 function classifyMemoryType(content) {
   var c2 = (content || '').toLowerCase();
   var result = { type: 'episodic', confidence: 0.5, expiresIn: 30 * 86400000, shared: false };
@@ -61,19 +80,9 @@ function classifyMemoryType(content) {
     }
   }
 
-  // Apply importance boosters
-  var totalBoost = 0;
-  IMPORTANCE_BOOSTERS.forEach(function(b) {
-    if (b.pattern.test(c2)) totalBoost += b.boost;
-  });
-  if (totalBoost > 0) {
-    result.confidence = Math.min(0.95, result.confidence + totalBoost);
-    // Business-critical content should live longer
-    if (totalBoost >= 0.15 && result.expiresIn) {
-      result.expiresIn = Math.max(result.expiresIn, 90 * 86400000); // At least 90 days
-    }
-  }
-
+  var boosted = applyImportanceBoost(result.confidence, result.expiresIn, content);
+  result.confidence = boosted.confidence;
+  result.expiresIn = boosted.expiresIn;
   return result;
 }
 
@@ -163,9 +172,25 @@ async function addMemory(userId, content, tags, options) {
   // Scrub PII before anything else so dedup / classify / embedding all run on
   // the clean string. Keeps personal data out of long-term storage.
   content = scrubPII(content);
-  var classification = options.memory_type
-    ? { type: options.memory_type, confidence: options.confidence_score || 0.5, expiresIn: options.expiresIn || null, shared: options.shared || false }
-    : classifyMemoryType(content);
+  var classification;
+  if (options.memory_type) {
+    classification = {
+      type: options.memory_type,
+      confidence: options.confidence_score != null ? options.confidence_score : 0.5,
+      expiresIn: options.expiresIn || null,
+      shared: options.shared || false,
+    };
+    // Se il chiamante non ha fissato un punteggio, applica gli stessi booster
+    // del path automatico così la confidence resta coerente tra le fonti.
+    if (options.confidence_score == null) {
+      var b = applyImportanceBoost(classification.confidence, classification.expiresIn, content);
+      classification.confidence = b.confidence;
+      classification.expiresIn = b.expiresIn;
+    }
+  } else {
+    classification = classifyMemoryType(content);
+  }
+  classification.confidence = Math.max(0, Math.min(1, classification.confidence));
 
   var expiresAt = classification.expiresIn ? new Date(Date.now() + classification.expiresIn).toISOString() : null;
   var slackUserId = classification.shared ? null : userId;
@@ -198,22 +223,38 @@ async function addMemory(userId, content, tags, options) {
     }
   }
 
-  // Semantic dedup — only for SHARED memories (team-wide knowledge). Stops
-  // paraphrased duplicates like "X è nostro partner" vs "X è partner" from
-  // piling up in the shared pool. Limited scope keeps embedding cost low.
-  if (classification.shared && c.useSupabase && content.length > 30) {
+  // Semantic dedup — per TUTTE le memorie (non solo le shared). Stops
+  // paraphrased near-duplicates like "X è nostro partner" vs "X è partner"
+  // from piling up. Soglia 0.95 = quasi identici, quindi non sopprime fatti
+  // distinti. Le memorie per-utente vengono deduplicate nello scope di quel
+  // utente; le shared nel pool condiviso.
+  if (c.useSupabase && content.length > 30) {
     try {
       var emb = require('../embeddingService');
       if (emb.getProvider()) {
-        var semDup = await emb.semanticSearchMemories(content, null, { threshold: 0.95, limit: 1 });
+        var semScope = classification.shared ? null : userId;
+        var semDup = await emb.semanticSearchMemories(content, semScope, { threshold: 0.95, limit: 1 });
         if (semDup && semDup.length > 0) {
-          logger.debug('[DB-MEMORIES] Skip semantic duplicate (similarity >0.95) for shared memory');
+          logger.debug('[DB-MEMORIES] Skip semantic duplicate (similarity >0.95)');
           return { id: semDup[0].id, duplicate: true, reason: 'semantic' };
         }
       }
     } catch(e) {
       // Embedding/RPC not available — fall through
     }
+  }
+
+  // Cross-store dedup: i fatti team-wide finiscono spesso anche nella KB (via
+  // il watcher dei canali). Se lo stesso contenuto è già nella KB, non lo
+  // duplichiamo qui. Match su contenuto normalizzato identico → sicuro.
+  if (classification.shared && c.useSupabase) {
+    try {
+      var kbMod = require('./kb');
+      if (kbMod.hasEquivalentContent && kbMod.hasEquivalentContent(content)) {
+        logger.debug('[DB-MEMORIES] Skip: equivalente già presente in KB');
+        return { id: null, duplicate: true, reason: 'kb_overlap' };
+      }
+    } catch(e) { /* kb non disponibile — fall through */ }
   }
 
   var entry = {
@@ -563,6 +604,25 @@ async function searchMemories(userId, query) {
 
 function getMemCache() { return _memCache || {}; }
 
+// Cross-store dedup helper: c'è già una memoria con contenuto normalizzato
+// identico? Usato da kb.addKBEntry per non duplicare in KB un fatto già in
+// memoria. Scansione limitata alle entry più recenti per contenere il costo.
+function hasEquivalentContent(content) {
+  if (!_memCache) return false;
+  var h = contentHash(content);
+  if (!h) return false;
+  var users = Object.keys(_memCache);
+  var scanned = 0;
+  var MAX_SCAN = 800;
+  for (var u = users.length - 1; u >= 0 && scanned < MAX_SCAN; u--) {
+    var arr = _memCache[users[u]] || [];
+    for (var i = arr.length - 1; i >= 0 && scanned < MAX_SCAN; i--, scanned++) {
+      if (arr[i] && contentHash(arr[i].content) === h) return true;
+    }
+  }
+  return false;
+}
+
 module.exports = {
   loadMemories: loadMemories,
   addMemory: addMemory,
@@ -570,4 +630,5 @@ module.exports = {
   searchMemories: searchMemories,
   getMemCache: getMemCache,
   contentHash: contentHash,
+  hasEquivalentContent: hasEquivalentContent,
 };

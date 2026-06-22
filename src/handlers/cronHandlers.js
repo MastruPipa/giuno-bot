@@ -1434,8 +1434,9 @@ function scheduleCrons() {
     finally { await releaseCronLock('drive_watcher'); }
   }, { timezone: 'Europe/Rome' });
   logger.info('Drive Watcher: ogni 30 min 8-20');
-  // Memory maintenance — domenica notte
-  cron.schedule('0 2 * * 0', async function() {
+  // Memory maintenance — ogni notte alle 2:00 (prima girava solo la domenica,
+  // lasciando le memorie frammentate per giorni).
+  cron.schedule('0 2 * * *', async function() {
     var locked = await acquireCronLock('memory_consolidation', 60);
     if (!locked) return;
     try { var { runConsolidation } = require('../jobs/memoryConsolidationJob'); await runConsolidation(); }
