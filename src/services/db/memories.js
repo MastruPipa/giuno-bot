@@ -372,7 +372,7 @@ async function addMemory(userId, content, tags, options) {
       var graphRows = entityRefs.map(function(name) {
         return { from_type: 'memory', from_id: entry.id, relationship: 'mentions', to_type: 'entity', to_id: name, weight: 0.8, created_by: 'auto' };
       });
-      c.getClient().from('memory_graph').insert(graphRows).catch(function() {});
+      c.getClient().from('memory_graph').insert(graphRows).then(null, function() {});
     }
 
     process.stdout.write('[storeMemory] ' + classification.type + ' | shared:' + classification.shared + ' | entities:' + (entityRefs.join(',') || 'none') + '\n');
@@ -580,7 +580,7 @@ async function searchMemories(userId, query) {
         // Track usage
         var ids = deduped.map(function(m) { return m.id; }).filter(Boolean);
         if (ids.length > 0) {
-          c.getClient().rpc('increment_memory_usage', { memory_ids: ids }).catch(function() {});
+          c.getClient().rpc('increment_memory_usage', { memory_ids: ids }).then(null, function() {});
         }
 
         if (deduped.length > 0) return deduped.slice(0, 15);

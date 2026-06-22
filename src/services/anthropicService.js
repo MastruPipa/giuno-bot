@@ -239,7 +239,7 @@ async function compressConversation(messages, convKey) {
 
   try {
     var res = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 500,
       system: 'Riassumi questa conversazione di un\'agenzia di marketing. Il riassunto deve essere UTILE per riprendere il discorso domani.\n' +
         'Mantieni: nomi clienti/persone, cifre esatte, decisioni prese, azioni da fare, scadenze, problemi aperti.\n' +
@@ -1048,7 +1048,7 @@ async function askGiuno(userId, userMessage, options) {
     var response;
     try {
       response = await callAnthropicWithRetry({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: options.isDM ? 500 : 900,
         system: buildSystemPrompt(getRoleSystemPrompt(userRole), options.isDM),
         messages: messages,

@@ -161,11 +161,11 @@ async function flushChannel(channelId) {
         tags: [meta.name, item.type, meta.cliente, batchThreadTs ? 'thread:' + batchThreadTs : null].filter(Boolean),
       };
       if (batchThreadTs) row.source_thread_ts = batchThreadTs;
-      await supabase.from('knowledge_base').insert(row).catch(function(err) {
+      await supabase.from('knowledge_base').insert(row).then(null, function(err) {
         // Retry without source_thread_ts if migration is not yet applied
         if (row.source_thread_ts && /source_thread_ts/i.test(String(err && err.message || ''))) {
           delete row.source_thread_ts;
-          return supabase.from('knowledge_base').insert(row).catch(function() {});
+          return supabase.from('knowledge_base').insert(row).then(null, function() {});
         }
       });
 

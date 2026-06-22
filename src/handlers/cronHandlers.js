@@ -415,7 +415,7 @@ async function autoMapChannel(channelId) {
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
     var res = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 200,
       system: 'Analizzi nomi e descrizioni di canali Slack aziendali.\n' +
         'Rispondi SOLO in JSON: {"cliente": "nome o null", "progetto": "nome o null", "tags": ["tag1"]}\n' +
@@ -481,7 +481,7 @@ async function digerisciCanali() {
 
         var channelMapping = db.getChannelMapCache()[ch.id] || {};
         var analysisRes = await client.messages.create({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-opus-4-8',
           max_tokens: 500,
           system: 'Analizzi conversazioni di canali Slack di un\'agenzia digitale.\n' +
             'Canale: #' + ch.name + (channelMapping.cliente ? ' (cliente: ' + channelMapping.cliente + ')' : '') +
@@ -680,7 +680,7 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
       var Anthropic = require('@anthropic-ai/sdk');
       var client = new Anthropic();
       var rcExtract = await client.messages.create({
-        model: 'claude-sonnet-4-20250514', max_tokens: 1000,
+        model: 'claude-opus-4-8', max_tokens: 1000,
         system: 'Estrai la rate card da questo foglio. Rispondi SOLO in JSON valido:\n{"version":"current","effective_from":null,"resources":[{"person":null,"role":"nome ruolo","day_rate":null,"hour_rate":null,"notes":null}]}\nSe non riesci rispondi: {"skip":true}',
         messages: [{ role: 'user', content: 'Rate card dal file "' + rcFile.name + '":\n' + JSON.stringify(rcData.data.values || []).substring(0, 3000) }],
       });
@@ -800,7 +800,7 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
       }
 
       var extraction = await client.messages.create({
-        model: 'claude-sonnet-4-20250514', max_tokens: 1500,
+        model: 'claude-opus-4-8', max_tokens: 1500,
         system: 'Estrai dati da un preventivo/economics di agenzia digitale.\nRispondi SOLO in JSON valido, nessun testo prima o dopo:\n{"client_name":"string o null","project_name":"string o null","service_category":"branding|content|performance|video|web|event|altro","service_tags":["array"],"deliverables":["array"],"resources":[{"person":"string","days":0,"hours":0,"day_rate":0,"hour_rate":0,"subtotal":0}],"total_days":0,"total_cost_interno":0,"price_quoted":0,"markup_pct":0,"status":"accepted|rejected|draft|unknown","date":"YYYY-MM-DD o null","confidence":"high|medium|low","notes":"string o null"}',
         messages: [{ role: 'user', content: 'File: "' + file.name + '" (' + (isSheet ? 'Sheet' : 'Doc') + ')\n\nContenuto:\n' + fileContent + (rateCard ? '\n\nRate card corrente:\n' + JSON.stringify(rateCard.resources).substring(0, 1000) : '') }],
       });
@@ -1146,7 +1146,7 @@ async function consolidaMemorie() {
 
       try {
         var res = await client.messages.create({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-opus-4-8',
           max_tokens: 800,
           system: 'Consolida queste memorie di un\'agenzia di marketing. Per ogni gruppo:\n' +
             '1. ELIMINA duplicati e info superate (tieni la più recente)\n' +
