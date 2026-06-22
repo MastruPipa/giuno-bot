@@ -56,6 +56,8 @@ async function main() {
   logger.info('Giuno Bolt app avviata in Socket Mode');
   logger.info('SLACK_USER_TOKEN presente:', !!process.env.SLACK_USER_TOKEN);
   logger.info('SLACK_BOT_TOKEN presente:', !!process.env.SLACK_BOT_TOKEN);
+  logger.info('ATTIO_API_KEY presente:', !!process.env.ATTIO_API_KEY,
+    '— se false, il bot NON legge il CRM Attio e ripiega su memoria/leads (dati potenzialmente vecchi).');
 
   // Start OAuth + Dashboard HTTP server
   oauthHandler.startOAuthServer();

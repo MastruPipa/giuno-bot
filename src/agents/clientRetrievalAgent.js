@@ -13,16 +13,16 @@ var SYSTEM_PROMPT =
   'REGOLA CRITICA: Non chiedere MAI chiarimenti. Agisci subito con le info che hai.\n' +
   'Se la domanda è vaga, usa le parole chiave più ovvie e cerca in TUTTE le fonti in parallelo.\n\n' +
   'Cerca SEMPRE in questo ordine senza saltare nessun passaggio:\n' +
-  '1. recall_memory — memoria personale\n' +
-  '2. search_kb — knowledge base aziendale\n' +
-  '3. search_leads / query_leads_db — OBBLIGATORIO per clienti/aziende: cerca SEMPRE nel CRM\n' +
-  '4. search_drive — documenti Drive\n' +
-  '5. search_slack_messages — conversazioni Slack (OBBLIGATORIO, non saltare mai)\n' +
-  '6. search_everywhere — se i risultati precedenti sono insufficienti\n\n' +
+  '1. attio_search / attio_get_record — IL CRM REALE è Attio: stato lead, pipeline, deal (aperti/persi/vinti), valore, stage. FONTE DI VERITÀ per clienti/aziende.\n' +
+  '2. recall_memory — memoria personale (contesto, NON stato CRM attuale)\n' +
+  '3. search_kb — knowledge base aziendale\n' +
+  '4. search_leads / query_leads_db — CRM locale secondario, può essere vecchio: solo a complemento di Attio\n' +
+  '5. search_drive — documenti Drive\n' +
+  '6. search_slack_messages — conversazioni Slack\n' +
+  '7. search_everywhere — se i risultati precedenti sono insufficienti\n\n' +
   'CRM — REGOLA CRITICA:\n' +
-  'Per QUALSIASI richiesta su un cliente o azienda, chiama SEMPRE search_leads.\n' +
-  'Il CRM contiene: stato lead, valore, servizi, ultimo contatto, note, followup.\n' +
-  'NON limitarti a memoria e KB — i dati CRM sono la fonte primaria per i clienti.\n\n' +
+  'Il CRM di riferimento è ATTIO. Per stato/pipeline di clienti e lead interroga Attio e fidati dello "stage" del deal: "Lost" = perso (NON aperto), "Won" = vinto, "Contratto"/"In Progress" = in lavorazione.\n' +
+  'Memoria e tabella leads locale NON sono il CRM e possono essere obsolete. Se i dati Attio non sono nel contesto, DICHIARA che non stai leggendo il CRM live e che lo stato va verificato — non presentare la memoria come stato CRM attuale.\n\n' +
   'Presenta tutto quello che trovi, anche se parziale.\n' +
   'Se non trovi nulla in nessuna fonte, dillo chiaramente con le fonti consultate.\n' +
   'MAI chiedere "cosa stai cercando?" se la domanda contiene già un soggetto chiaro.\n' +
@@ -92,7 +92,13 @@ function buildDynamicContext(ctx) {
   }
 
   var attioBlock = require('../orchestrator/attioContext').formatAttioForPrompt(ctx.attioContext);
-  if (attioBlock) dynamicContext += '\n' + attioBlock + '\n';
+  if (attioBlock) {
+    dynamicContext += '\n' + attioBlock + '\n';
+  } else if (ctx.attioUnavailable) {
+    dynamicContext += '\n[CRM ATTIO NON DISPONIBILE] Non riesco a leggere il CRM live (Attio) ora. ' +
+      'Memoria e tabella leads locale possono essere vecchie o sbagliate (un deal "perso" può risultare ancora aperto). ' +
+      'Se rispondi su stato lead/pipeline, DICHIARA che il dato non viene dal CRM live e va verificato; non darlo come stato attuale certo.\n';
+  }
 
   if (ctx.channelContext) {
     dynamicContext += '\nCONTESTO CANALE:\n' + ctx.channelContext + '\n';
