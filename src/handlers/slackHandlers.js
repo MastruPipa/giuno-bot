@@ -323,6 +323,22 @@ app.message(async function(args) {
 
   // Implicit channel replies
   if (message.channel_type !== 'im') {
+    // Cattura i daily scritti direttamente nel canale #daily (non solo via DM/
+    // modale): prima non venivano agganciati e gli utenti risultavano mancanti.
+    // Solo post "normali" (niente menzioni: quelli a Giuno passano da app_mention).
+    var dailyV2Mod = require('./dailyStandupV2');
+    if (message.text && !/<@[A-Z0-9]+>/.test(message.text) &&
+        message.channel === dailyV2Mod.DAILY_CHANNEL_ID) {
+      var capturedChannelDaily = false;
+      try {
+        capturedChannelDaily = await dailyV2Mod.recordChannelDaily(message.user, message.text, message.channel);
+      } catch(e) { logger.warn('[STANDUP-V2] cattura daily da canale fallita:', e.message); }
+      if (capturedChannelDaily) {
+        try { await app.client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'white_check_mark' }); } catch(e) { /* ignore */ }
+        return;
+      }
+    }
+
     var isImplicitReply = false;
     var implicitThreadTs = null;
 
