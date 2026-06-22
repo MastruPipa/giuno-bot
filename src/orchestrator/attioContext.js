@@ -70,11 +70,22 @@ async function buildAttioContext(message, entities) {
   }
 
   // Overview fallback: generic CRM/pipeline question with no specific match.
+  // Niente sort server-side (l'ordinamento su created_at via REST è fragile e,
+  // se fallisce, safeCall ingoia l'errore e non aggancia nulla). Recuperiamo un
+  // blocco di deal e filtriamo lato JS ai "lead aperti" — ancora in gioco:
+  // escludiamo Lost/Won/annullati così non spacciamo un deal perso o già chiuso
+  // per aperto.
   if (deals.length === 0 && companies.length === 0 && OVERVIEW_KEYWORDS.test(message)) {
     var recent = await safeCall('CTX.attio.recentDeals', function() {
-      return attio.queryRecords('deals', null, 8, [{ attribute: 'created_at', direction: 'desc' }]);
+      return attio.queryRecords('deals', null, 50);
     }, []);
-    (recent || []).forEach(function(d) { if (d.record_id && !seenDeal[d.record_id]) { seenDeal[d.record_id] = 1; deals.push(d); } });
+    var openDeals = (recent || []).filter(function(d) {
+      var raw = d.values && d.values.stage;
+      var st = String((Array.isArray(raw) ? raw[0] : raw) || '').toLowerCase();
+      return st && !/lost|pers|won|vint|annull|chius/.test(st);
+    });
+    var pick = openDeals.length > 0 ? openDeals : (recent || []);
+    pick.slice(0, 8).forEach(function(d) { if (d.record_id && !seenDeal[d.record_id]) { seenDeal[d.record_id] = 1; deals.push(d); } });
   }
 
   if (companies.length === 0 && deals.length === 0) return null;
