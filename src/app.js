@@ -76,6 +76,30 @@ async function main() {
     })();
   }
 
+  // Seed del roster team da Slack se vuoto ("team members = tutti"). Usa
+  // getUtenti (membri attivi, non-bot, non-eliminati). Le esclusioni di
+  // daily/check-in restano gestite a valle per nome, quindi qui mettiamo tutti
+  // — il roster serve anche a disambiguare le persone in memoria/CRM.
+  try {
+    if ((db.getTeamRoster() || []).length === 0) {
+      var slackUsers = await slackService.getUtenti();
+      var seeded = 0;
+      for (var ui = 0; ui < slackUsers.length; ui++) {
+        var su = slackUsers[ui];
+        if (!su.id || !su.name) continue;
+        var firstName = su.name.split(' ')[0];
+        var ok = await db.upsertTeamMember({
+          slack_user_id: su.id,
+          canonical_name: su.name,
+          aliases: (firstName && firstName.toLowerCase() !== su.name.toLowerCase()) ? [firstName] : [],
+          active: true,
+        });
+        if (ok) seeded++;
+      }
+      logger.info('[TEAM-ROSTER] Seed da Slack:', seeded, 'membri inseriti.');
+    }
+  } catch(e) { logger.warn('[TEAM-ROSTER] seed da Slack fallito:', e.message); }
+
   // Start OAuth + Dashboard HTTP server
   oauthHandler.startOAuthServer();
 

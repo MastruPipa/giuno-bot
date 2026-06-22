@@ -41,6 +41,13 @@ async function getParticipants() {
   var roster = db.getTeamRoster();
   if (roster && roster.length > 0) {
     return roster
+      .filter(function(m) {
+        // Roster = tutti, ma le stesse esclusioni del daily valgono per il
+        // check-in: leadership (Antonio/Gloria/Corrado) e numeri di servizio
+        // restano nel roster ma non ricevono la richiesta di tracciamento ore.
+        var n = (m.canonical_name || '').toLowerCase();
+        return !EXCLUDED_NAME_PATTERNS.some(function(p) { return n.indexOf(p) !== -1; });
+      })
       .map(function(m) { return { id: m.slack_user_id, name: m.canonical_name || m.slack_user_id }; })
       .filter(function(u) { return trackingEnabled(u.id); });
   }
