@@ -8,8 +8,10 @@ var logger = require('../utils/logger');
 var { askGiuno } = require('../services/anthropicService');
 var db = require('../../supabase');
 
-// Pattern for implicit action references
-var IMPLICIT_REFS = /^(mandalo?|fallo?|invialo?|aggiornalo?|procedi|ok fai|sì fai|si fai|vai|conferm[oa]|esegui)[\s!.]*$/i;
+// Pattern for implicit action references / conferme secche ("sì", "ok", "va
+// bene", "procedi"...). Ancorato all'intero messaggio: solo conferme pure,
+// non frasi con contenuto proprio ("sì ma aspetta" non matcha).
+var IMPLICIT_REFS = /^(s[iì]|s[iì]\s*s[iì]|s[iì]\s*(fai|dai|grazie|procedi|certo|vai)|ok|okay|va bene|vabb[eè]|d'?accordo|daccordo|certo|esatto|perfetto|confermo|conferma|confermato|procedi( pure)?|vai( pure| così)?|dai|fallo?|invialo?|mandalo?|aggiornalo?|esegui|yes|yep|sure|ci sta)[\s!.,]*$/i;
 
 /**
  * run — executes the general assistant for any message.
@@ -27,7 +29,9 @@ async function run(message, ctx) {
 
   // If message is an implicit reference, recover context
   if (IMPLICIT_REFS.test((message || '').trim())) {
-    var convKey = ctx.userId + ':' + (ctx.threadTs || 'dm');
+    // Chiave coerente con askGiuno/router: DM senza thread → userId (NON
+    // userId:dm, che era il bug per cui il recupero non trovava mai nulla).
+    var convKey = ctx.threadTs ? ctx.userId + ':' + ctx.threadTs : ctx.userId;
 
     // 1. Try in-memory conversation cache first
     var convCache = db.getConvCache();
@@ -62,10 +66,11 @@ async function run(message, ctx) {
     }
 
     if (lastAssistant) {
-      var enrichedMessage = '[CONTESTO: nel messaggio precedente hai proposto questa azione: "' +
-        String(lastAssistant).substring(0, 500) + '"]\n\n' +
-        'L\'utente ora dice: "' + message + '"\n' +
-        'Esegui l\'azione proposta nel contesto usando il tool appropriato (es. send_dm). NON inventare azioni non proposte.';
+      var enrichedMessage = '[CONTINUITÀ CONVERSAZIONE] Nel tuo messaggio precedente avevi detto/proposto:\n"' +
+        String(lastAssistant).substring(0, 800) + '"\n\n' +
+        'Ora l\'utente risponde: "' + message + '" — è una conferma/risposta a quanto sopra, NON un messaggio nuovo.\n' +
+        'Prosegui di conseguenza: se avevi proposto un\'azione concreta eseguila col tool giusto; altrimenti continua sul tema di prima. ' +
+        'NON dire che manca il contesto o che non vedi una domanda, e NON inventare azioni non proposte.';
       return await askGiuno(ctx.userId, enrichedMessage, options);
     }
 

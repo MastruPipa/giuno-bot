@@ -154,6 +154,22 @@ async function route(userId, message, options) {
         break;
     }
 
+    // Persisti il turno nella conversazione così il messaggio successivo (es.
+    // un "sì" di conferma) ha il contesto a prescindere dall'agente che ha
+    // risposto. Il path GENERAL/historical passa da askGiuno che già salva,
+    // quindi qui copriamo solo gli agenti specializzati (che non tengono storia).
+    if (intent !== INTENTS.GENERAL && intent !== INTENTS.HISTORICAL_SCAN &&
+        reply && typeof reply === 'string') {
+      try {
+        var cc = db2.getConvCache();
+        if (!cc[convKey]) cc[convKey] = [];
+        cc[convKey].push({ role: 'user', content: message });
+        cc[convKey].push({ role: 'assistant', content: reply });
+        if (cc[convKey].length > 20) cc[convKey] = cc[convKey].slice(-20);
+        db2.saveConversation(convKey, cc[convKey]);
+      } catch(e) { logger.warn('[ROUTER] persist conversazione fallita:', e.message); }
+    }
+
     return reply;
   } catch(e) {
     if (e.message === 'API_UNAVAILABLE') {
