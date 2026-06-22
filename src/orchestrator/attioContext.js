@@ -14,7 +14,7 @@ var { safeCall } = require('../utils/safeCall');
 var CRM_KEYWORDS = /\b(client[ei]|aziend[ae]|deal|trattativ[ae]|pipeline|offert[ae]|preventiv[oi]|propost[ae]|lead|prospect|fattur|contratt[oi]|won|lost|vint[oiae]|pers[oiae]|crm|attio)\b/i;
 
 // Generic pipeline/overview questions that carry no specific company name.
-var OVERVIEW_KEYWORDS = /\b(pipeline|trattativ|deal|vint|won|pers|lost|apert|in corso|offert|preventiv|client|aziend|crm|fattur|propost)\b/i;
+var OVERVIEW_KEYWORDS = /\b(pipeline|trattativ|deal|lead|prospect|vint|won|pers|lost|apert|in corso|offert|preventiv|client|aziend|crm|fattur|propost|follow|chius)\b/i;
 
 function isCrmIsh(message) {
   return CRM_KEYWORDS.test(message || '');
