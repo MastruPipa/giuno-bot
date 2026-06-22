@@ -110,16 +110,21 @@ async function backfillEmbeddings() {
 
     if (!kbEntries || kbEntries.length === 0) { hasMore = false; break; }
 
+    var kbBatchOk = 0;
     for (var i = 0; i < kbEntries.length; i++) {
       var emb = await generateEmbedding(kbEntries[i].content);
       if (emb) {
         await supabase.from('knowledge_base').update({ embedding: emb }).eq('id', kbEntries[i].id);
-        processed++;
+        processed++; kbBatchOk++;
       }
       await new Promise(function(r) { setTimeout(r, 100); });
     }
 
     logger.info('[EMBEDDING] KB batch done, processed so far:', processed);
+    // Se un intero batch non produce nessun embedding (provider ko o contenuti
+    // non embeddabili) interrompiamo: la stessa query .is(embedding,null)
+    // ritornerebbe sempre le stesse righe → loop infinito.
+    if (kbBatchOk === 0) { logger.warn('[EMBEDDING] Nessun embedding generato nel batch KB — provider non disponibile? Interrompo il backfill.'); break; }
     if (kbEntries.length < BATCH_SIZE) hasMore = false;
   }
 
@@ -131,16 +136,18 @@ async function backfillEmbeddings() {
 
     if (!memEntries || memEntries.length === 0) { hasMore = false; break; }
 
+    var memBatchOk = 0;
     for (var j = 0; j < memEntries.length; j++) {
       var emb2 = await generateEmbedding(memEntries[j].content);
       if (emb2) {
         await supabase.from('memories').update({ embedding: emb2 }).eq('id', memEntries[j].id);
-        processed++;
+        processed++; memBatchOk++;
       }
       await new Promise(function(r) { setTimeout(r, 100); });
     }
 
     logger.info('[EMBEDDING] Memories batch done, processed so far:', processed);
+    if (memBatchOk === 0) { logger.warn('[EMBEDDING] Nessun embedding generato nel batch memorie — provider non disponibile? Interrompo il backfill.'); break; }
     if (memEntries.length < BATCH_SIZE) hasMore = false;
   }
 
