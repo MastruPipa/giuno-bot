@@ -95,9 +95,10 @@ function buildDynamicContext(ctx) {
   if (attioBlock) {
     dynamicContext += '\n' + attioBlock + '\n';
   } else if (ctx.attioUnavailable) {
-    dynamicContext += '\n[CRM ATTIO NON DISPONIBILE] Non riesco a leggere il CRM live (Attio) ora. ' +
+    dynamicContext += '\n[DATI CRM LIVE NON NEL CONTESTO] Per questa risposta non hai i dati live di Attio. ' +
+      'NON ipotizzare la causa (non dire "manca la API key" o simili: non lo sai). ' +
       'Memoria e tabella leads locale possono essere vecchie o sbagliate (un deal "perso" può risultare ancora aperto). ' +
-      'Se rispondi su stato lead/pipeline, DICHIARA che il dato non viene dal CRM live e va verificato; non darlo come stato attuale certo.\n';
+      'Se rispondi su stato lead/pipeline, premetti che i dati non vengono dal CRM live e vanno verificati; non darli come stato attuale certo.\n';
   }
 
   if (ctx.channelContext) {
