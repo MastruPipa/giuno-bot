@@ -15,52 +15,74 @@ async function runConsolidation() {
   var stats = { clusters: 0, consolidated: 0, superseded: 0, errors: 0 };
 
   try {
-    // Get all active episodic memories grouped by entity
-    var { data: memories } = await supabase.from('memories')
+    // Episodici da comprimere + fatti stabili (semantic/procedural) già
+    // esistenti: così il consolidamento può anche FONDERE gli stabili
+    // ridondanti per la stessa entità, non solo comprimere gli episodici.
+    var episRes = await supabase.from('memories')
       .select('id, content, memory_type, entity_refs, tags, created_at, confidence_score')
       .eq('memory_type', 'episodic')
       .is('superseded_by', null)
       .order('created_at', { ascending: false })
       .limit(200);
+    var episodic = episRes.data || [];
 
-    if (!memories || memories.length < 5) {
-      logger.info('[CONSOLIDATE] Too few episodic memories to consolidate');
+    var stableRes = await supabase.from('memories')
+      .select('id, content, memory_type, entity_refs, created_at')
+      .in('memory_type', ['semantic', 'procedural'])
+      .is('superseded_by', null)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    var stable = stableRes.data || [];
+
+    if (episodic.length < 5 && stable.length < 2) {
+      logger.info('[CONSOLIDATE] Troppe poche memorie da consolidare');
       return stats;
     }
 
-    // Group by entity
-    var entityGroups = {};
-    memories.forEach(function(m) {
-      var refs = m.entity_refs || [];
-      if (refs.length === 0) refs = ['_untagged'];
+    // Raggruppa episodici e stabili per entità
+    var groups = {};
+    function addToGroup(m, bucket) {
+      var refs = (m.entity_refs && m.entity_refs.length) ? m.entity_refs : ['_untagged'];
       refs.forEach(function(entity) {
-        if (!entityGroups[entity]) entityGroups[entity] = [];
-        entityGroups[entity].push(m);
+        if (!groups[entity]) groups[entity] = { episodic: [], stable: [] };
+        groups[entity][bucket].push(m);
       });
-    });
+    }
+    episodic.forEach(function(m) { addToGroup(m, 'episodic'); });
+    stable.forEach(function(m) { addToGroup(m, 'stable'); });
 
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
 
-    var entities = Object.keys(entityGroups);
+    var entities = Object.keys(groups);
     for (var ei = 0; ei < entities.length; ei++) {
       var entity = entities[ei];
-      var group = entityGroups[entity];
-      if (group.length < 3 || entity === '_untagged') continue;
+      if (entity === '_untagged') continue;
+      var g = groups[entity];
+      // Processa se ci sono abbastanza episodici da comprimere OPPURE più fatti
+      // stabili che potrebbero essere ridondanti tra loro.
+      if (g.episodic.length < 3 && g.stable.length < 2) continue;
       stats.clusters++;
 
-      var memTexts = group.slice(0, 15).map(function(m) {
-        return '- [' + (m.created_at || '').substring(0, 10) + '] ' + m.content;
-      }).join('\n');
+      var epiTexts = g.episodic.slice(0, 15).map(function(m) {
+        return '- [' + (m.created_at || '').substring(0, 10) + '] (' + m.id + ') ' + m.content;
+      }).join('\n') || '(nessuna)';
+      var stableTexts = g.stable.slice(0, 15).map(function(m) {
+        return '- (' + m.id + ') [' + m.memory_type + '] ' + m.content;
+      }).join('\n') || '(nessuno)';
 
       try {
         var res = await client.messages.create({
-          model: 'claude-haiku-4-5-20251001', max_tokens: 500,
+          model: 'claude-haiku-4-5-20251001', max_tokens: 600,
           messages: [{ role: 'user', content:
-            'Entità: ' + entity + '\nMemorie episodiche (' + group.length + '):\n' + memTexts + '\n\n' +
-            'Analizza e consolida. JSON:\n' +
-            '{"consolidations":[{"type":"semantic|procedural","content":"fatto consolidato","supersedes":["id1","id2"]}],"skip":false}\n' +
-            'Regole: estrai solo FATTI STABILI ricorrenti. Se tutto è unico/episodico, {"skip":true}'
+            'Entità: ' + entity + '\n\n' +
+            'Memorie episodiche (' + g.episodic.length + '):\n' + epiTexts + '\n\n' +
+            'Fatti stabili già esistenti (' + g.stable.length + '):\n' + stableTexts + '\n\n' +
+            'Compito: (1) estrai fatti STABILI ricorrenti dagli episodici; (2) fondi i fatti ' +
+            'stabili ridondanti o sovrapposti in uno solo. In "supersedes" elenca gli id ' +
+            '(episodici e/o stabili) resi obsoleti dal fatto consolidato.\n' +
+            'JSON: {"consolidations":[{"type":"semantic|procedural","content":"fatto consolidato","supersedes":["id1","id2"]}],"skip":false}\n' +
+            'Se non c\'è nulla da consolidare o fondere, {"skip":true}'
           }],
         });
 

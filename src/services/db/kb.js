@@ -104,7 +104,15 @@ async function addKBEntry(content, tags, addedBy, options) {
   if (options.sourceChannelType === 'dm') return null;
   // Scrub PII before storing in the shared KB (read by all tiers of users).
   content = require('../../utils/piiScrub').scrubPII(content);
-  if (options.confidenceTier !== 'official' && isDuplicate(content, tags)) return null;
+  if (options.confidenceTier !== 'official') {
+    if (isDuplicate(content, tags)) return null;
+    // Cross-store dedup: se lo stesso fatto è già in memoria (store memories),
+    // non lo riscriviamo in KB. Riduce la "memoria sparsa" tra i due sistemi.
+    try {
+      var memMod = require('./memories');
+      if (memMod.hasEquivalentContent && memMod.hasEquivalentContent(content)) return null;
+    } catch(e) { /* memories non disponibile — fall through */ }
+  }
 
   var tier = options.confidenceTier || 'auto_learn';
   var tierDef = TIER_DEFAULTS[tier] || TIER_DEFAULTS.auto_learn;
@@ -244,6 +252,23 @@ function searchKB(query, options) {
 
 function getKBCache() { return _kbCache || []; }
 
+// Cross-store dedup helper: c'è già una entry KB con lo stesso contenuto
+// normalizzato? Il prefisso "[#canale] " del watcher viene rimosso prima del
+// confronto. Usato da memories.addMemory per i fatti shared. Scansione limitata
+// alle entry più recenti per contenere il costo.
+function hasEquivalentContent(content) {
+  if (!_kbCache || _kbCache.length === 0) return false;
+  var hashOf = require('./memories').contentHash;
+  var h = hashOf(content);
+  if (!h) return false;
+  var start = Math.max(0, _kbCache.length - 800);
+  for (var i = _kbCache.length - 1; i >= start; i--) {
+    var t = (_kbCache[i].content || '').replace(/^\[#[^\]]+\]\s*/, '');
+    if (hashOf(t) === h) return true;
+  }
+  return false;
+}
+
 async function cleanupExpiredKB() {
   if (!c.useSupabase) return 0;
   try {
@@ -283,6 +308,7 @@ module.exports = {
   deleteKBEntry: deleteKBEntry,
   searchKB: searchKB,
   getKBCache: getKBCache,
+  hasEquivalentContent: hasEquivalentContent,
   cleanupExpiredKB: cleanupExpiredKB,
   reviewPendingKB: reviewPendingKB,
 };

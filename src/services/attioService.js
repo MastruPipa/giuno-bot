@@ -95,10 +95,12 @@ function recordId(rec) {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 // Query records of an object. `filter` is a raw Attio filter object (optional).
-async function queryRecords(object, filter, limit, sorts) {
+// `offset` enables pagination for callers that need to sweep all records.
+async function queryRecords(object, filter, limit, sorts, offset) {
   var body = { limit: Math.min(limit || 10, 50) };
   if (filter) body.filter = filter;
   if (sorts) body.sorts = sorts;
+  if (offset) body.offset = offset;
   var json = await attioFetch('/objects/' + encodeURIComponent(object) + '/records/query', {
     method: 'POST', body: body,
   });

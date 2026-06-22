@@ -1407,10 +1407,22 @@ function scheduleCrons() {
     } catch(e) { logger.error('[SHEET-SCAN] Errore:', e.message); }
     finally { await releaseCronLock('sheet_scanner'); }
   }, { timezone: 'Europe/Rome' });
+  // Project Sync (deal Attio attivi → tabella projects) — ogni 2 ore 8-20.
+  // Mantiene popolata la casella progetti del weekly planner.
+  cron.schedule('0 8-20/2 * * *', async function() {
+    var locked = await acquireCronLock('project_sync', 15);
+    if (!locked) return;
+    try {
+      var { syncActiveProjectsFromAttio } = require('../jobs/projectSyncJob');
+      await syncActiveProjectsFromAttio();
+    } catch(e) { logger.error('[PROJECT-SYNC] Errore:', e.message); }
+    finally { await releaseCronLock('project_sync'); }
+  }, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Historical scan: ogni notte alle 1:00 (5 canali/run)');
   logger.info('PM Signals: lun-ven alle 6:30');
   logger.info('Sheet Scanner: ogni giorno alle 7:00');
+  logger.info('Project Sync: ogni 2 ore 8-20 (deal Attio → projects)');
   // Drive Watcher — ogni 30 min durante orario lavorativo
   cron.schedule('*/30 8-20 * * *', async function() {
     var locked = await acquireCronLock('drive_watcher', 15);
@@ -1422,8 +1434,9 @@ function scheduleCrons() {
     finally { await releaseCronLock('drive_watcher'); }
   }, { timezone: 'Europe/Rome' });
   logger.info('Drive Watcher: ogni 30 min 8-20');
-  // Memory maintenance — domenica notte
-  cron.schedule('0 2 * * 0', async function() {
+  // Memory maintenance — ogni notte alle 2:00 (prima girava solo la domenica,
+  // lasciando le memorie frammentate per giorni).
+  cron.schedule('0 2 * * *', async function() {
     var locked = await acquireCronLock('memory_consolidation', 60);
     if (!locked) return;
     try { var { runConsolidation } = require('../jobs/memoryConsolidationJob'); await runConsolidation(); }
@@ -1469,6 +1482,14 @@ function scheduleCrons() {
       var processed = await embService.backfillEmbeddings();
       logger.info('[BOOT] Embedding backfill completato:', processed, 'entry processate');
     } catch(e) { logger.error('[BOOT] Embedding backfill error:', e.message); }
+
+    // Popola subito la tabella projects dai deal Attio attivi, così la casella
+    // del weekly planner non è vuota al primo avvio dopo il deploy.
+    try {
+      var { syncActiveProjectsFromAttio } = require('../jobs/projectSyncJob');
+      var syncRes = await syncActiveProjectsFromAttio();
+      logger.info('[BOOT] Project sync completato:', syncRes.synced, 'attivi,', syncRes.archived, 'archiviati');
+    } catch(e) { logger.error('[BOOT] Project sync error:', e.message); }
 
     // Self-heal: if bot boots on a weekday between 09:00 and 11:30 Europe/Rome
     // and the daily standup hasn't been sent yet today, send it now.
