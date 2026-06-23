@@ -15,12 +15,10 @@
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var slackService = require('../services/slackService');
+var filters = require('./projectFilters');
 
-var ACTIVITY_DAYS = 60;
-
-function norm(s) {
-  return String(s == null ? '' : s).toLowerCase().replace(/\\/g, '').trim();
-}
+var ACTIVITY_DAYS = filters.ACTIVITY_WINDOW_DAYS;
+var norm = filters.norm;
 
 // Tipologia dai tag del canale. Priorità: interno → cliente → progetto.
 function deriveType(entry) {
@@ -72,16 +70,21 @@ async function syncProjectsFromChannels() {
     var entry = map[channelId] || {};
     var type = deriveType(entry);
 
+    // Canali generici/di servizio (daily, generale, casuale, ...) → esclusi
+    // anche se taggati "interno".
+    if (filters.isGenericChannel(entry.channel_name)) continue;
+
     // Canali generici (no cliente, no progetto, non interno) → esclusi.
     if (type !== 'tipo:interno' && !entry.cliente && !entry.progetto) continue;
 
-    // Verifica attività negli ultimi ~60g.
+    // Verifica attività nella finestra (ultimi 30g).
     var activity = await slackService.channelActivity(channelId, ACTIVITY_DAYS, 1);
     if (!activity.active) continue;
 
     var name = entry.progetto || entry.cliente || entry.channel_name;
     name = String(name == null ? '' : name).replace(/\\/g, '').trim();
     if (name.length < 2) continue;
+    if (filters.isJunkProjectName(name)) continue;
 
     // Dedup vs Attio: salta se cliente/nome coincide con un progetto Attio attivo.
     if (attioNames[norm(entry.cliente)] || attioNames[norm(name)]) {
