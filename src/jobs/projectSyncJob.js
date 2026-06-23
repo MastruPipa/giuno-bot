@@ -14,15 +14,28 @@ var logger = require('../utils/logger');
 var attio = require('../services/attioService');
 var db = require('../../supabase');
 
-// Stage dei deal che corrispondono a progetti in lavorazione (confronto
-// case-insensitive sul titolo). Deciso con il team: solo firmati/in corso.
-var ACTIVE_STAGES = ['contratto', 'in progress'];
+// Stage dei deal che corrispondono a progetti attivi. Deciso con il team:
+// Contratto e In Progress (in lavorazione) + Won (firmati/in consegna) — un
+// deal che passa a Contratto e poi a Won deve restare tra i progetti.
+// Il match è per SOTTOSTRINGA perché lo stage reale può contenere emoji o
+// suffissi (es. "Won 🎉"), quindi un confronto esatto fallirebbe.
+var ACTIVE_STAGES = ['contratto', 'in progress', 'won'];
 
 function firstOf(v) { return Array.isArray(v) ? v[0] : v; }
 
 function normStage(s) {
   s = firstOf(s);
   return s == null ? '' : String(s).toLowerCase().trim();
+}
+
+// Attivo se lo stage normalizzato CONTIENE una delle keyword attive.
+function isActiveStage(stage) {
+  var n = normStage(stage);
+  if (!n) return false;
+  for (var i = 0; i < ACTIVE_STAGES.length; i++) {
+    if (n.indexOf(ACTIVE_STAGES[i]) !== -1) return true;
+  }
+  return false;
 }
 
 // I nomi deal possono contenere caratteri spazzatura (es. "\\"): ripuliamo e
@@ -48,7 +61,7 @@ async function fetchActiveDeals() {
     for (var i = 0; i < batch.length; i++) {
       var d = batch[i];
       var v = d.values || {};
-      if (ACTIVE_STAGES.indexOf(normStage(v.stage)) === -1) continue;
+      if (!isActiveStage(v.stage)) continue;
       var name = cleanName(v.name);
       if (name.length < 2) continue;
       active.push({ record_id: d.record_id, name: name, values: v });
@@ -70,7 +83,7 @@ function dealToProjectRow(deal) {
     status: 'active',
     budget_quoted: budget,
     service_category: serviceCategory ? serviceCategory.substring(0, 200) : null,
-    tags: ['attio-sync'],
+    tags: ['attio-sync', 'tipo:cliente'],
   };
 }
 
@@ -92,7 +105,7 @@ async function syncActiveProjectsFromAttio() {
     var res = await db.upsertSyncedProject(row);
     if (res) synced++;
   }
-  var archived = await db.archiveStaleSyncedProjects(activeIds);
+  var archived = await db.archiveStaleSyncedProjects('attio_%', activeIds);
   logger.info('[PROJECT-SYNC] Sincronizzati', synced, 'progetti attivi da Attio,', archived, 'archiviati.');
   return { synced: synced, archived: archived };
 }

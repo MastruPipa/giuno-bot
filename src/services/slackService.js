@@ -101,6 +101,31 @@ async function leggiCanaleSlack(channelId, limit) {
   return res.messages || [];
 }
 
+// ─── Channel activity ────────────────────────────────────────────────────────
+// Verifica se un canale ha avuto attività (almeno un messaggio) negli ultimi
+// `days` giorni. Chiamata leggera: conversations.history con oldest=now-Ndays
+// e limit basso. Ritorna { active: bool, count: number } — count è il numero
+// di messaggi nel batch (≤ limit), utile solo come segnale grezzo. Non fa
+// join al canale: se il bot non è membro di un canale privato, ritorna
+// active=false silenziosamente.
+async function channelActivity(channelId, days, limit) {
+  days = days || 60;
+  limit = limit || 1;
+  var oldest = String(Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000));
+  try {
+    var res = await slackCall('SLACK.conversations.history.activity', function() {
+      return app.client.conversations.history({ channel: channelId, oldest: oldest, limit: limit });
+    }, { timeoutMs: 5000, retries: 1 });
+    var msgs = (res.messages || []).filter(function(m) {
+      return m && m.type === 'message' && !m.subtype;
+    });
+    return { active: msgs.length > 0, count: msgs.length };
+  } catch (e) {
+    logger.debug('[SLACK-SVC] channelActivity ignorato per ' + channelId + ':', e.message);
+    return { active: false, count: 0 };
+  }
+}
+
 // ─── Get channel map helper ────────────────────────────────────────────────────
 // Lazily imported to avoid circular dep with db.
 
@@ -114,5 +139,6 @@ module.exports = {
   getUtenti: getUtenti,
   resolveSlackMentions: resolveSlackMentions,
   leggiCanaleSlack: leggiCanaleSlack,
+  channelActivity: channelActivity,
   getChannelMapEntry: getChannelMapEntry,
 };

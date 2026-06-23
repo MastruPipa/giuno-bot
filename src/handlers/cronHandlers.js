@@ -1418,7 +1418,20 @@ function scheduleCrons() {
     } catch(e) { logger.error('[PROJECT-SYNC] Errore:', e.message); }
     finally { await releaseCronLock('project_sync'); }
   }, { timezone: 'Europe/Rome' });
+  // Channel Project Sync (canali Slack attivi ~60g → tabella projects) —
+  // giornaliero alle 6:30. Fa ~1 chiamata Slack per canale mappato, quindi
+  // gira una volta al giorno (non ogni 2h come il sync Attio).
+  cron.schedule('30 6 * * *', async function() {
+    var locked = await acquireCronLock('channel_project_sync', 20);
+    if (!locked) return;
+    try {
+      var { syncProjectsFromChannels } = require('../jobs/channelProjectSyncJob');
+      await syncProjectsFromChannels();
+    } catch(e) { logger.error('[CHANNEL-SYNC] Errore:', e.message); }
+    finally { await releaseCronLock('channel_project_sync'); }
+  }, { timezone: 'Europe/Rome' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
+  logger.info('Channel Project Sync: ogni giorno alle 6:30 (canali attivi → projects)');
   logger.info('Historical scan: ogni notte alle 1:00 (5 canali/run)');
   logger.info('PM Signals: lun-ven alle 6:30');
   logger.info('Sheet Scanner: ogni giorno alle 7:00');
@@ -1490,6 +1503,19 @@ function scheduleCrons() {
       var syncRes = await syncActiveProjectsFromAttio();
       logger.info('[BOOT] Project sync completato:', syncRes.synced, 'attivi,', syncRes.archived, 'archiviati');
     } catch(e) { logger.error('[BOOT] Project sync error:', e.message); }
+
+    // Seed slot fissi "mondo agency" (Prospect, Flussi interni, Formazione/Admin)
+    // e sync dei progetti dai canali Slack attivi (clienti storici + interni
+    // non su Attio). Dopo il sync Attio così il dedup vede i progetti attivi.
+    try {
+      var seeded = await db.seedCategorySlots();
+      logger.info('[BOOT] Slot categoria seedati:', seeded);
+    } catch(e) { logger.error('[BOOT] Seed slot categoria error:', e.message); }
+    try {
+      var { syncProjectsFromChannels } = require('../jobs/channelProjectSyncJob');
+      var chRes = await syncProjectsFromChannels();
+      logger.info('[BOOT] Channel sync completato:', chRes.synced, 'da canali,', chRes.archived, 'archiviati');
+    } catch(e) { logger.error('[BOOT] Channel sync error:', e.message); }
 
     // Self-heal: if bot boots on a weekday between 09:00 and 11:30 Europe/Rome
     // and the daily standup hasn't been sent yet today, send it now.

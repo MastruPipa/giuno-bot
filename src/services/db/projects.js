@@ -71,14 +71,17 @@ async function upsertSyncedProject(row) {
   } catch(e) { c.logErr('upsertSyncedProject', e); return null; }
 }
 
-// Archivia i progetti sincronizzati (id 'attio_%') che non sono più nel set
-// attivo corrente, così cadono fuori dal planner. Non tocca i progetti manuali.
-async function archiveStaleSyncedProjects(activeIds) {
+// Archivia i progetti sincronizzati da una data sorgente (id LIKE prefix, es.
+// 'attio_%' o 'chan_%') che non sono più nel set attivo corrente, così cadono
+// fuori dal planner. Non tocca i progetti manuali né le altre sorgenti.
+// Retro-compatibile: se chiamata con un solo argomento array, usa 'attio_%'.
+async function archiveStaleSyncedProjects(prefix, activeIds) {
   if (!c.useSupabase) return 0;
+  if (Array.isArray(prefix)) { activeIds = prefix; prefix = 'attio_%'; }
   try {
     var q = c.getClient().from('projects')
       .update({ status: 'archived', updated_at: new Date().toISOString() })
-      .like('id', 'attio_%').eq('status', 'active');
+      .like('id', prefix).eq('status', 'active');
     if (activeIds && activeIds.length) {
       q = q.not('id', 'in', '(' + activeIds.map(function(id) { return '"' + id + '"'; }).join(',') + ')');
     }
@@ -86,6 +89,34 @@ async function archiveStaleSyncedProjects(activeIds) {
     if (res.error) throw res.error;
     return (res.data || []).length;
   } catch(e) { c.logErr('archiveStaleSyncedProjects', e); return 0; }
+}
+
+// Slot fissi "mondo agency" (Prospect, Flussi interni, Formazione/Admin):
+// righe progetto idempotenti così possono essere selezionate nel planner/
+// check-in e accumulare ore come qualsiasi progetto. id con prefisso 'cat_'.
+var CATEGORY_SLOTS = [
+  { id: 'cat_prospect',         name: 'Prospect' },
+  { id: 'cat_flussi_interni',   name: 'Flussi interni' },
+  { id: 'cat_formazione_admin', name: 'Formazione/Admin' },
+];
+
+async function seedCategorySlots() {
+  if (!c.useSupabase) return 0;
+  var seeded = 0;
+  for (var i = 0; i < CATEGORY_SLOTS.length; i++) {
+    var slot = CATEGORY_SLOTS[i];
+    try {
+      var res = await c.getClient().from('projects').upsert({
+        id: slot.id,
+        name: slot.name,
+        status: 'active',
+        tags: ['categoria', 'tipo:categoria'],
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' }).select('id').single();
+      if (!res.error) seeded++;
+    } catch(e) { c.logErr('seedCategorySlots', e); }
+  }
+  return seeded;
 }
 
 // Cached lowercase project-name → status map. Used by the context builder to
@@ -220,6 +251,7 @@ module.exports = {
   searchProjects: searchProjects,
   upsertSyncedProject: upsertSyncedProject,
   archiveStaleSyncedProjects: archiveStaleSyncedProjects,
+  seedCategorySlots: seedCategorySlots,
   getProjectStatusMap: getProjectStatusMap,
   getProject: getProject,
   deleteProject: deleteProject,
