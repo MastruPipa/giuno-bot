@@ -29,16 +29,65 @@ async function getActiveProjectsCached() {
   return _projCache || [];
 }
 
+function projectOption(p) {
+  var name = String(p.name || p.id).substring(0, 75);
+  return { text: { type: 'plain_text', text: name }, value: String(p.id) };
+}
+
 function projectOptions(projects) {
-  return (projects || []).slice(0, 100).map(function(p) {
-    var name = String(p.name || p.id).substring(0, 75);
-    return { text: { type: 'plain_text', text: name }, value: String(p.id) };
+  return (projects || []).slice(0, 100).map(projectOption);
+}
+
+// Tipologia di un progetto dal tag 'tipo:*' (fallback su prefisso id).
+function projectTipo(p) {
+  var tags = (p && p.tags) || [];
+  for (var i = 0; i < tags.length; i++) {
+    var t = String(tags[i]);
+    if (t.indexOf('tipo:') === 0) return t.substring(5);
+  }
+  var id = String((p && p.id) || '');
+  if (id.indexOf('cat_') === 0) return 'categoria';
+  if (id.indexOf('attio_') === 0) return 'cliente';
+  return 'progetto';
+}
+
+// Costruisce la sorgente del static_select: raggruppata per tipologia
+// (option_groups) quando ci sono ≥2 gruppi valorizzati, altrimenti options
+// flat. Slack ammette max 100 opzioni totali: si troncano in ordine di gruppo.
+var GROUP_ORDER = [
+  { tipo: 'cliente',   label: 'Clienti' },
+  { tipo: 'progetto',  label: 'Progetti' },
+  { tipo: 'interno',   label: 'Interni' },
+  { tipo: 'categoria', label: 'Categorie' },
+];
+
+function buildProjectSelectSource(projects) {
+  var buckets = { cliente: [], progetto: [], interno: [], categoria: [] };
+  (projects || []).forEach(function(p) {
+    var tipo = projectTipo(p);
+    if (!buckets[tipo]) tipo = 'progetto';
+    buckets[tipo].push(projectOption(p));
   });
+
+  var groups = [];
+  var total = 0;
+  for (var i = 0; i < GROUP_ORDER.length && total < 100; i++) {
+    var g = GROUP_ORDER[i];
+    var opts = buckets[g.tipo];
+    if (!opts || opts.length === 0) continue;
+    if (total + opts.length > 100) opts = opts.slice(0, 100 - total);
+    total += opts.length;
+    groups.push({ label: { type: 'plain_text', text: g.label }, options: opts });
+  }
+
+  if (groups.length >= 2) return { option_groups: groups };
+  // Un solo gruppo (o nessuno) → options flat.
+  return { options: projectOptions(projects) };
 }
 
 // ─── Builder righe ───────────────────────────────────────────────────────────
 
-function buildRowBlocks(prefix, i, options) {
+function buildRowBlocks(prefix, i, selectSource) {
   // Il check-in è un giorno solo (max 24h); il planner copre l'intera
   // settimana su un progetto, quindi ammette fino a 60h per riga.
   var maxHours = prefix === 'wp' ? '60' : '24';
@@ -46,11 +95,10 @@ function buildRowBlocks(prefix, i, options) {
     {
       type: 'input', block_id: prefix + '_project_' + i, optional: i > 1,
       label: { type: 'plain_text', text: 'Progetto ' + i },
-      element: {
+      element: Object.assign({
         type: 'static_select', action_id: 'project_select',
         placeholder: { type: 'plain_text', text: 'Scegli un progetto...' },
-        options: options,
-      },
+      }, selectSource),
     },
     {
       type: 'input', block_id: prefix + '_hours_' + i, optional: i > 1,
@@ -78,7 +126,7 @@ function buildAddRowButton(actionId, currentCount) {
 // ─── Weekly Planner ──────────────────────────────────────────────────────────
 
 function buildPlannerBlocks(projects, rowCount, weekStart) {
-  var options = projectOptions(projects);
+  var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '🗓  Pianifica la prossima settimana' } });
   blocks.push({
@@ -86,7 +134,7 @@ function buildPlannerBlocks(projects, rowCount, weekStart) {
     elements: [{ type: 'mrkdwn', text: 'Ore stimate per progetto per la settimana che inizia *' + (weekStart || '') + '*. Aggiungi una riga per ogni progetto.' }],
   });
   for (var i = 1; i <= rowCount; i++) {
-    buildRowBlocks('wp', i, options).forEach(function(b) { blocks.push(b); });
+    buildRowBlocks('wp', i, selectSource).forEach(function(b) { blocks.push(b); });
   }
   if (rowCount < MAX_ROWS_PLANNER) blocks.push(buildAddRowButton('wp_add_row', rowCount));
   return blocks;
@@ -106,7 +154,7 @@ function buildPlannerView(projects, meta) {
 // ─── Daily Check-in ──────────────────────────────────────────────────────────
 
 function buildCheckinBlocks(projects, rowCount, logDate) {
-  var options = projectOptions(projects);
+  var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '⏱  Check-in giornaliero' } });
   blocks.push({
@@ -114,7 +162,7 @@ function buildCheckinBlocks(projects, rowCount, logDate) {
     elements: [{ type: 'mrkdwn', text: 'Ore effettivamente lavorate il *' + (logDate || 'oggi') + '*, progetto per progetto.' }],
   });
   for (var i = 1; i <= rowCount; i++) {
-    buildRowBlocks('tt', i, options).forEach(function(b) { blocks.push(b); });
+    buildRowBlocks('tt', i, selectSource).forEach(function(b) { blocks.push(b); });
   }
   if (rowCount < MAX_ROWS_CHECKIN) blocks.push(buildAddRowButton('tt_add_row', rowCount));
   blocks.push({ type: 'divider' });
@@ -171,6 +219,8 @@ module.exports = {
   MAX_ROWS_PLANNER: MAX_ROWS_PLANNER,
   MAX_ROWS_CHECKIN: MAX_ROWS_CHECKIN,
   getActiveProjectsCached: getActiveProjectsCached,
+  projectOptions: projectOptions,
+  buildProjectSelectSource: buildProjectSelectSource,
   buildPlannerBlocks: buildPlannerBlocks,
   buildPlannerView: buildPlannerView,
   buildCheckinBlocks: buildCheckinBlocks,

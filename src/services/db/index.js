@@ -176,6 +176,7 @@ module.exports = {
   searchProjects:       projects.searchProjects,
   upsertSyncedProject:  projects.upsertSyncedProject,
   archiveStaleSyncedProjects: projects.archiveStaleSyncedProjects,
+  seedCategorySlots:    projects.seedCategorySlots,
   getProjectStatusMap:  projects.getProjectStatusMap,
   getProject:           projects.getProject,
   deleteProject:        projects.deleteProject,
