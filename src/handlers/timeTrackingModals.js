@@ -9,6 +9,7 @@
 'use strict';
 
 var db = require('../../supabase');
+var norm = require('../jobs/projectFilters').norm;
 
 var MAX_ROWS_PLANNER = 8;
 var MAX_ROWS_CHECKIN = 6;
@@ -34,8 +35,17 @@ function projectOption(p) {
   return { text: { type: 'plain_text', text: name }, value: String(p.id) };
 }
 
+// Opzioni flat dedupate per nome normalizzato (primo id incontrato vince).
 function projectOptions(projects) {
-  return (projects || []).slice(0, 100).map(projectOption);
+  var seen = {};
+  var out = [];
+  (projects || []).forEach(function(p) {
+    var key = norm(p.name || p.id);
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(projectOption(p));
+  });
+  return out.slice(0, 100);
 }
 
 // Tipologia di un progetto dal tag 'tipo:*' (fallback su prefisso id).
@@ -69,14 +79,25 @@ function buildProjectSelectSource(projects) {
     buckets[tipo].push(projectOption(p));
   });
 
+  // Dedup per nome normalizzato attraverso i gruppi, in ordine di priorità
+  // (Clienti → Progetti → Interni → Categorie): un nome già visto in un gruppo
+  // a priorità più alta non si ripete. Es. "Hammersud" resta solo in Clienti,
+  // i deal omonimi ("DICAR"×2) si fondono in una voce.
+  var seen = {};
   var groups = [];
   var total = 0;
   for (var i = 0; i < GROUP_ORDER.length && total < 100; i++) {
     var g = GROUP_ORDER[i];
-    var opts = buckets[g.tipo];
-    if (!opts || opts.length === 0) continue;
-    if (total + opts.length > 100) opts = opts.slice(0, 100 - total);
-    total += opts.length;
+    var raw = buckets[g.tipo] || [];
+    var opts = [];
+    for (var j = 0; j < raw.length && total < 100; j++) {
+      var key = norm(raw[j].text && raw[j].text.text);
+      if (seen[key]) continue;
+      seen[key] = true;
+      opts.push(raw[j]);
+      total++;
+    }
+    if (opts.length === 0) continue;
     groups.push({ label: { type: 'plain_text', text: g.label }, options: opts });
   }
 
