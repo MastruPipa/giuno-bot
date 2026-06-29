@@ -11,10 +11,15 @@ graph/KB 03:00, decay/backfill 04:00–04:30, sweep 05:00).
     Railway lo riavvia **sempre**, invece di lasciarlo giù fino al mattino.
   - `numReplicas: 1` → **una sola istanza**. Un bot Slack in Socket Mode NON
     va replicato: due istanze = messaggi gestiti due volte e cron duplicati.
-  - `healthcheckPath: /healthz` → Railway interroga l'endpoint; se l'event loop
-    è bloccato (job appeso) la probe non risponde e il container viene
-    riavviato. Copre il caso "processo vivo ma appeso" che il crash-guard
-    in `index.js` non intercetta.
+
+> **Healthcheck — disattivato per ora.** L'endpoint `/healthz` esiste già in
+> `oauthHandler`, ma il server HTTP si avvia **alla fine** del boot (dopo
+> `db.initAll`, `app.start()` e il seed del roster team): al primo deploy quel
+> boot può superare il timeout dell'healthcheck → Railway considera il deploy
+> fallito e va in crash-loop. Per riabilitarlo va prima spostato
+> `startOAuthServer()` all'inizio di `main()` in `src/app.js`, così la probe
+> risponde subito; poi si possono rimettere `healthcheckPath: "/healthz"` e
+> `healthcheckTimeout` in `railway.json`.
 - **`index.js`** — `unhandledRejection` / `uncaughtException` loggati senza
   far morire il processo (`[FATAL-GUARD]`).
 - **`slackService.js`** — `app.error()` globale di Bolt (`[BOLT-ERROR]`).

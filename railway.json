@@ -6,8 +6,6 @@
   "deploy": {
     "startCommand": "npm start",
     "numReplicas": 1,
-    "restartPolicyType": "ALWAYS",
-    "healthcheckPath": "/healthz",
-    "healthcheckTimeout": 30
+    "restartPolicyType": "ALWAYS"
   }
 }
