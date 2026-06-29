@@ -24,6 +24,17 @@ var app = new BoltApp({
   appToken: process.env.SLACK_APP_TOKEN,
 });
 
+// Handler globale Bolt: un errore che sfugge da un listener (app.event /
+// app.message / app.command) altrimenti diventa una unhandled rejection e,
+// senza la rete di sicurezza in index.js, tirerebbe giù il processo. Qui lo
+// logghiamo e lo assorbiamo così la singola interazione fallisce ma il bot
+// resta in piedi.
+app.error(function (error) {
+  logger.error('[BOLT-ERROR] Errore non gestito da un listener:',
+    (error && error.stack) || (error && error.message) || error);
+  return Promise.resolve();
+});
+
 async function slackCall(label, fn, options) {
   options = options || {};
   var timeoutMs = options.timeoutMs || 4000;
