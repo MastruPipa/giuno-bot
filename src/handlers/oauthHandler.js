@@ -12,7 +12,10 @@ var logger = require('../utils/logger');
 var metricsService = require('../services/metricsService');
 var { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI, salvaTokenUtente } = require('../services/googleAuthService');
 
-var OAUTH_PORT = process.env.OAUTH_PORT || 3000;
+// Railway (e molti PaaS) iniettano la porta da usare via $PORT. Bindiamo lì
+// così l'healthcheck di Railway raggiunge il server; OAUTH_PORT resta come
+// override esplicito per dev locale.
+var OAUTH_PORT = process.env.OAUTH_PORT || process.env.PORT || 3000;
 var OAUTH_ADMIN_TOKEN = process.env.OAUTH_ADMIN_TOKEN || '';
 
 // Stats reference — set by app.js after slackHandlers loads
@@ -45,6 +48,17 @@ function isAuthorizedAdminRequest(req, parsed) {
 
 var oauthServer = http.createServer(async function(req, res) {
   var parsed = url.parse(req.url, true);
+
+  // Liveness probe per l'healthcheck di Railway: NON protetto, risposta
+  // immediata. Se l'event loop è bloccato (es. un job notturno che stalla)
+  // questa smette di rispondere e Railway riavvia il container — cosa che il
+  // crash-guard da solo non copre, perché il processo è "vivo" ma appeso.
+  if (parsed.pathname === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'ok', uptime: Math.round(process.uptime()) }));
+    return;
+  }
+
   if (isProtectedPath(parsed.pathname) && !isAuthorizedAdminRequest(req, parsed)) {
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'unauthorized' }));
