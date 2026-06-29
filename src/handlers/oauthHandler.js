@@ -15,7 +15,7 @@ var { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI, salvaTokenUten
 // Railway (e molti PaaS) iniettano la porta da usare via $PORT. Bindiamo lì
 // così l'healthcheck di Railway raggiunge il server; OAUTH_PORT resta come
 // override esplicito per dev locale.
-var OAUTH_PORT = process.env.OAUTH_PORT || process.env.PORT || 3000;
+var OAUTH_PORT = process.env.PORT || process.env.OAUTH_PORT || 3000;
 var OAUTH_ADMIN_TOKEN = process.env.OAUTH_ADMIN_TOKEN || '';
 
 // Stats reference — set by app.js after slackHandlers loads
