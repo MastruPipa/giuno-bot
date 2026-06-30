@@ -257,7 +257,10 @@ async function handleDailyResponse(userId, text, structured) {
 async function recordChannelDaily(userId, text, channelId) {
   if (!userId || channelId !== DAILY_CHANNEL_ID) return false;
   var clean = (text || '').trim();
-  if (clean.length < 10) return false;
+  // Euristica condivisa col recap: deve somigliare a un daily, non a una
+  // domanda/chiacchiera nel canale (es. "@Paolo ?"). Così possiamo agganciare
+  // anche i daily che menzionano un collega senza catturare il rumore.
+  if (!looksLikeDailyText(clean)) return false;
 
   var todayStr = oggi();
   var sd = db.getStandupCache();
@@ -282,6 +285,95 @@ async function recordChannelDaily(userId, text, channelId) {
   return true;
 }
 
+// ─── Recap-time channel scan ────────────────────────────────────────────────
+// La cattura in tempo reale (recordChannelDaily) è best-effort e ha dei buchi:
+// salta i messaggi che contengono menzioni, quelli inoltrati/condivisi (testo
+// negli attachments) e quelli dei bot/Workflow. Inoltre dopo un riavvio
+// sd.risposte può non riflettere ciò che è realmente in #daily. Per evitare di
+// marcare "mancante" chi ha condiviso il daily nel canale, al recap riscandiamo
+// davvero la cronologia del canale e accreditiamo i daily trovati.
+
+// Estrae tutto il testo utile di un messaggio: corpo + attachments inoltrati.
+function extractMessageText(msg) {
+  var parts = [];
+  if (msg.text) parts.push(msg.text);
+  if (Array.isArray(msg.attachments)) {
+    msg.attachments.forEach(function(a) {
+      if (a && a.text) parts.push(a.text);
+      if (a && a.fallback && !a.text) parts.push(a.fallback);
+    });
+  }
+  return parts.join('\n').trim();
+}
+
+// Euristica: il testo somiglia davvero a un daily? (evita di accreditare
+// chiacchiere tipo "@Paolo ?" o "ci sei?").
+function looksLikeDailyText(text) {
+  var t = (text || '').trim();
+  if (t.length < 15) return false;
+  var low = t.toLowerCase();
+  var structured = /(cosa hai fatto ieri|cosa farai oggi|qualcosa ti blocca)/i.test(t) ||
+    /^\s*\*?(ieri|oggi|blocchi)\*?\s*:/im.test(t);
+  if (structured) return true;
+  var keywordHits = (low.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore|min|\d+\s*h|\d+\s*min)/g) || []).length;
+  return keywordHits >= 2;
+}
+
+// Converte il ts Slack (epoch secondi, stringa) nel giorno Europe/Rome.
+function tsToRomeDay(ts) {
+  var ms = Math.floor(parseFloat(ts) * 1000);
+  if (!isFinite(ms)) return null;
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Rome' }).format(new Date(ms));
+}
+
+// Riscandisce #daily per la giornata corrente e accredita i daily trovati in
+// sd.risposte. Ritorna il numero di utenti accreditati ex-novo dallo scan.
+async function scanChannelDailies(sd, todayStr) {
+  sd.risposte = sd.risposte || {};
+  var credited = 0;
+  try {
+    try { await app.client.conversations.join({ channel: DAILY_CHANNEL_ID }); } catch(e) { /* già dentro */ }
+
+    var res = await app.client.conversations.history({ channel: DAILY_CHANNEL_ID, limit: 200 });
+    var messages = (res && res.messages) ? res.messages : [];
+
+    for (var i = 0; i < messages.length; i++) {
+      var msg = messages[i];
+      if (tsToRomeDay(msg.ts) !== todayStr) continue;
+
+      var text = extractMessageText(msg);
+      if (!text) continue;
+
+      // 1) Repost "Daily di <@U...>" (di Giuno o condiviso per conto altrui):
+      //    la menzione è l'attribuzione autorevole della persona del daily.
+      var reposted = text.match(/daily di\s+<@([A-Z0-9]+)>/i);
+      if (reposted) {
+        var ru = reposted[1];
+        if (!sd.risposte[ru]) {
+          sd.risposte[ru] = { testo: text, timestamp: Date.now(), source: 'channel_scan' };
+          credited++;
+        }
+        continue;
+      }
+
+      // 2) Messaggi normali scritti da una persona nel canale. I bot/Workflow
+      //    senza pattern "Daily di @X" non sono attribuibili: si saltano.
+      if (msg.bot_id || msg.subtype === 'bot_message') continue;
+      if (!msg.user) continue;
+      if (!looksLikeDailyText(text)) continue;
+      if (sd.risposte[msg.user]) continue;
+
+      sd.risposte[msg.user] = { testo: text, timestamp: Date.now(), source: 'channel_scan' };
+      credited++;
+    }
+
+    if (credited > 0) logger.info('[DAILY-V2] Scan canale: accreditati', credited, 'daily condivisi.');
+  } catch(e) {
+    logger.warn('[DAILY-V2] Scan canale fallito:', e.message);
+  }
+  return credited;
+}
+
 // ─── 11:30 — Publish unified summary in #daily ──────────────────────────────
 
 async function publishDailySummary() {
@@ -294,6 +386,13 @@ async function publishDailySummary() {
       logger.info('[DAILY-V2] Nessun dato standup per oggi, skip recap.');
       return;
     }
+
+    // Riscandisce #daily: aggancia i daily condivisi nel canale che la cattura
+    // in tempo reale può aver mancato (menzioni, inoltri, post di bot/Workflow,
+    // o stato perso dopo un riavvio). Senza questo, chi ha condiviso il daily
+    // nel canale risultava comunque "mancante" all'appello.
+    await scanChannelDailies(sd, todayStr);
+    await db.saveStandup(sd);
 
     var risposte = sd.risposte || {};
 
@@ -405,5 +504,7 @@ module.exports = {
   sendDailyRequests: sendDailyRequests,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
+  scanChannelDailies: scanChannelDailies,
+  looksLikeDailyText: looksLikeDailyText,
   oggi: oggi,
 };

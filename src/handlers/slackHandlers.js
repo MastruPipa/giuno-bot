@@ -38,6 +38,18 @@ var lastBotMessageByChannel = new Map(); // channelId -> { ts, userId, timestamp
 var stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
 var standupInAttesa = new Set();
 
+// Cache del bot user id (per escludere i messaggi rivolti a Giuno dalla cattura
+// dei daily nel canale). Risolto pigramente al primo uso.
+var cachedBotUserId = null;
+async function getBotUserId() {
+  if (cachedBotUserId) return cachedBotUserId;
+  try {
+    var authTest = await app.client.auth.test();
+    cachedBotUserId = authTest && authTest.user_id ? authTest.user_id : null;
+  } catch(e) { /* riprova al prossimo messaggio */ }
+  return cachedBotUserId;
+}
+
 // Called from app.js after db.initAll() has populated the standup cache.
 function rehydrateStandupInAttesa() {
   try {
@@ -325,9 +337,16 @@ app.message(async function(args) {
   if (message.channel_type !== 'im') {
     // Cattura i daily scritti direttamente nel canale #daily (non solo via DM/
     // modale): prima non venivano agganciati e gli utenti risultavano mancanti.
-    // Solo post "normali" (niente menzioni: quelli a Giuno passano da app_mention).
+    // Accettiamo anche i daily che menzionano un collega/cliente; escludiamo
+    // solo i messaggi rivolti a Giuno (gestiti da app_mention). La verifica che
+    // il testo somigli a un daily è dentro recordChannelDaily.
     var dailyV2Mod = require('./dailyStandupV2');
-    if (message.text && !/<@[A-Z0-9]+>/.test(message.text) &&
+    var mentionsGiunoInChannel = false;
+    if (message.text && message.channel === dailyV2Mod.DAILY_CHANNEL_ID) {
+      var botId = await getBotUserId();
+      mentionsGiunoInChannel = !!botId && message.text.indexOf('<@' + botId + '>') !== -1;
+    }
+    if (message.text && !mentionsGiunoInChannel &&
         message.channel === dailyV2Mod.DAILY_CHANNEL_ID) {
       var capturedChannelDaily = false;
       try {
