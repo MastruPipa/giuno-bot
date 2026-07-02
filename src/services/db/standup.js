@@ -15,11 +15,22 @@ async function loadStandup() {
   }
   try {
     var res = await c.getClient().from('standup_data').select('*').eq('id', 'current').single();
+    // PGRST116 = nessuna riga: stato vergine, ok. Su altri errori (rete, RLS)
+    // NON azzerare la cache in memoria: conteneva le risposte del giorno.
+    if (res.error && res.error.code !== 'PGRST116') {
+      c.logErr('loadStandup', res.error);
+      _standupCache = _standupCache || emptyCache();
+      return _standupCache;
+    }
     _standupCache = res.data
       ? { oggi: res.data.oggi, risposte: res.data.risposte || {}, inattesa: Array.isArray(res.data.inattesa) ? res.data.inattesa : [] }
       : emptyCache();
     return _standupCache;
-  } catch(e) { c.logErr('loadStandup', e); _standupCache = emptyCache(); return _standupCache; }
+  } catch(e) {
+    c.logErr('loadStandup', e);
+    _standupCache = _standupCache || emptyCache();
+    return _standupCache;
+  }
 }
 
 async function saveStandup(data) {
@@ -28,17 +39,22 @@ async function saveStandup(data) {
   try {
     var row = { id: 'current', oggi: data.oggi, risposte: data.risposte, updated_at: new Date().toISOString() };
     if (Array.isArray(data.inattesa)) row.inattesa = data.inattesa;
-    await c.getClient().from('standup_data').upsert(row);
-  } catch(e) {
-    // Graceful degradation: if the `inattesa` column doesn't exist yet (migration
-    // not applied), retry without it so the rest of the standup state still persists.
-    if (e && String(e.message || '').match(/inattesa/i)) {
-      try {
-        await c.getClient().from('standup_data').upsert({ id: 'current', oggi: data.oggi, risposte: data.risposte, updated_at: new Date().toISOString() });
-      } catch(e2) { c.logErr('saveStandup', e2); }
-    } else {
-      c.logErr('saveStandup', e);
+    var res = await c.getClient().from('standup_data').upsert(row);
+    // supabase-js non lancia sugli errori query: vanno letti da res.error,
+    // altrimenti un upsert fallito passa in silenzio e lo stato non viene
+    // mai persistito (le risposte spariscono al primo restart).
+    if (res && res.error) {
+      // Graceful degradation: if the `inattesa` column doesn't exist yet (migration
+      // not applied), retry without it so the rest of the standup state still persists.
+      if (String(res.error.message || '').match(/inattesa/i)) {
+        var retry = await c.getClient().from('standup_data').upsert({ id: 'current', oggi: data.oggi, risposte: data.risposte, updated_at: new Date().toISOString() });
+        if (retry && retry.error) c.logErr('saveStandup', retry.error);
+      } else {
+        c.logErr('saveStandup', res.error);
+      }
     }
+  } catch(e) {
+    c.logErr('saveStandup', e);
   }
 }
 

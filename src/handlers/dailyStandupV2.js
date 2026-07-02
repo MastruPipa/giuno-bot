@@ -32,6 +32,40 @@ function getStandupInAttesa() {
   return require('./slackHandlers').standupInAttesa;
 }
 
+// Ricarica lo stato standup dal DB prima di leggerlo. La cache è per-processo:
+// con più istanze attive (deploy sovrapposti su Railway) l'istanza che vince il
+// cron delle 10:30/11:00/11:30 non è per forza quella che ha ricevuto le
+// risposte, e taggava come "mancanti all'appello" persone che avevano già
+// consegnato il daily.
+async function refreshStandupCache() {
+  try { await db.loadStandup(); } catch(e) { logger.warn('[DAILY-V2] refresh standup fallito:', e.message); }
+  return db.getStandupCache();
+}
+
+// Chi ha risposto oggi: unione tra standup_data.risposte e le righe di
+// standup_entries. standup_entries ha una riga per utente/giorno scritta da
+// qualunque istanza, quindi è la fonte di verità che sopravvive a restart e
+// alle sovrascritture incrociate del blob unico standup_data.
+async function getRespondersOggi(todayStr) {
+  var responders = {};
+  var sd = db.getStandupCache();
+  if (sd.oggi === todayStr && sd.risposte) {
+    Object.keys(sd.risposte).forEach(function(uid) { responders[uid] = true; });
+  }
+  try {
+    var supabase = require('../services/db/client').getClient();
+    if (supabase) {
+      var res = await supabase.from('standup_entries').select('slack_user_id').eq('date', todayStr);
+      if (res && res.error) {
+        logger.warn('[DAILY-V2] lettura standup_entries fallita:', res.error.message);
+      } else if (res && Array.isArray(res.data)) {
+        res.data.forEach(function(r) { if (r.slack_user_id) responders[r.slack_user_id] = true; });
+      }
+    }
+  } catch(e) { logger.warn('[DAILY-V2] lettura standup_entries fallita:', e.message); }
+  return responders;
+}
+
 // YYYY-MM-DD in Europe/Rome — the standup cron schedule is Rome TZ, so the
 // storage key must match; otherwise a response submitted late at night (Rome)
 // can be written under the next UTC day and silently wipe sd.risposte.
@@ -48,7 +82,7 @@ async function sendDailyRequests() {
     var todayStr = oggi();
     logger.info('[DAILY-V2] Invio richieste daily per', todayStr);
 
-    var sd = db.getStandupCache();
+    var sd = await refreshStandupCache();
     // Only reset risposte when we're starting a genuinely new day.
     // sd.oggi is persisted in standup_data, so it survives restarts — use it
     // as the source of truth instead of sd.lastDay (which is process-local
@@ -65,11 +99,15 @@ async function sendDailyRequests() {
     var utenti = await getUtenti();
     var inviati = 0;
     var standupInAttesa = getStandupInAttesa();
+    // Se questo è un re-invio (es. recovery al boot dopo un crash mattutino),
+    // non richiedere il daily a chi l'ha già consegnato.
+    var responded = await getRespondersOggi(todayStr);
 
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
       if (isExcludedFromDaily(utente)) continue;
+      if (responded[utente.id]) continue;
       try {
         standupInAttesa.add(utente.id);
         var nome = utente.name.split(' ')[0];
@@ -116,18 +154,19 @@ async function pushMissingResponders(pushNumber) {
   if (!locked) return;
   try {
     var todayStr = oggi();
-    var sd = db.getStandupCache();
+    var sd = await refreshStandupCache();
     if (sd.oggi !== todayStr) return;
 
     var utenti = await getUtenti();
     var standupInAttesa = getStandupInAttesa();
+    var responded = await getRespondersOggi(todayStr);
     var pushed = 0;
 
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
       if (isExcludedFromDaily(utente)) continue;
-      if (sd.risposte && sd.risposte[utente.id]) continue; // Already responded
+      if (responded[utente.id]) continue; // Already responded
 
       try {
         standupInAttesa.add(utente.id);
@@ -152,7 +191,9 @@ async function pushMissingResponders(pushNumber) {
 
 async function handleDailyResponse(userId, text, structured) {
   var todayStr = oggi();
-  var sd = db.getStandupCache();
+  // Riparti dallo stato persistito: senza refresh, due istanze si
+  // sovrascrivevano a vicenda le risposte (last-writer-wins sul blob unico).
+  var sd = await refreshStandupCache();
   // Self-heal: if sd.oggi is stale (bot restart after 09:00 cron, etc.),
   // bootstrap today in-place instead of silently dropping the submission.
   if (sd.oggi !== todayStr) {
@@ -260,7 +301,7 @@ async function recordChannelDaily(userId, text, channelId) {
   if (clean.length < 10) return false;
 
   var todayStr = oggi();
-  var sd = db.getStandupCache();
+  var sd = await refreshStandupCache();
   if (sd.oggi !== todayStr) { sd.oggi = todayStr; sd.risposte = {}; sd.inattesa = []; }
   sd.risposte = sd.risposte || {};
   sd.risposte[userId] = { testo: clean, timestamp: Date.now(), source: 'channel' };
@@ -289,20 +330,20 @@ async function publishDailySummary() {
   if (!locked) return;
   try {
     var todayStr = oggi();
-    var sd = db.getStandupCache();
+    var sd = await refreshStandupCache();
     if (sd.oggi !== todayStr) {
       logger.info('[DAILY-V2] Nessun dato standup per oggi, skip recap.');
       return;
     }
 
-    var risposte = sd.risposte || {};
+    var responded = await getRespondersOggi(todayStr);
 
     // Get all team members (excluded users are out of the daily flow entirely)
     var utenti = await getUtenti();
     var enabledUsers = utenti.filter(function(u) {
       return getPrefs(u.id).standup_enabled && !isExcludedFromDaily(u);
     });
-    var missingUsers = enabledUsers.filter(function(u) { return !risposte[u.id]; });
+    var missingUsers = enabledUsers.filter(function(u) { return !responded[u.id]; });
 
     // Clear standup state (both in-memory Set and persisted list)
     getStandupInAttesa().clear();
