@@ -98,6 +98,7 @@ module.exports = {
   // Standup
   saveStandup:     standup.saveStandup,
   getStandupCache: standup.getStandupCache,
+  loadStandup:     standup.loadStandup,
 
   // Drive
   saveDriveFiles: drive.saveDriveFiles,
