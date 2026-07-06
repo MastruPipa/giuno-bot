@@ -12,14 +12,17 @@ graph/KB 03:00, decay/backfill 04:00–04:30, sweep 05:00).
   - `numReplicas: 1` → **una sola istanza**. Un bot Slack in Socket Mode NON
     va replicato: due istanze = messaggi gestiti due volte e cron duplicati.
 
-> **Healthcheck — disattivato per ora.** L'endpoint `/healthz` esiste già in
-> `oauthHandler`, ma il server HTTP si avvia **alla fine** del boot (dopo
-> `db.initAll`, `app.start()` e il seed del roster team): al primo deploy quel
-> boot può superare il timeout dell'healthcheck → Railway considera il deploy
-> fallito e va in crash-loop. Per riabilitarlo va prima spostato
-> `startOAuthServer()` all'inizio di `main()` in `src/app.js`, così la probe
-> risponde subito; poi si possono rimettere `healthcheckPath: "/healthz"` e
-> `healthcheckTimeout` in `railway.json`.
+> **Healthcheck — riattivato.** `startOAuthServer()` ora parte **all'inizio**
+> di `main()` in `src/app.js`, quindi `/healthz` risponde entro pochi secondi
+> dall'avvio del container, per tutta la durata del boot (db.initAll,
+> app.start, seed roster). `railway.json` ha di nuovo
+> `healthcheckPath: "/healthz"` + `healthcheckTimeout: 120`.
+> In più `src/utils/socketWatchdog.js` copre il caso "zombie" (crons vivi ma
+> websocket Socket Mode morta, come la mattina del 6/7): dopo 3 minuti di
+> disconnessione senza recupero il processo esce con exit(1) e
+> `restartPolicyType: ALWAYS` lo rialza pulito. Lo shutdown rapido su SIGTERM
+> in `app.js` riduce la finestra in cui vecchia e nuova istanza convivono
+> durante un redeploy (fonte dei cron duplicati).
 - **`index.js`** — `unhandledRejection` / `uncaughtException` loggati senza
   far morire il processo (`[FATAL-GUARD]`).
 - **`slackService.js`** — `app.error()` globale di Bolt (`[BOLT-ERROR]`).

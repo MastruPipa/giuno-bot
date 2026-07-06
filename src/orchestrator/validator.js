@@ -65,18 +65,53 @@ var COMMON_WORDS = new Set([
   'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica', 'gennaio', 'febbraio',
   'marzo', 'aprile', 'maggio', 'giugno', 'luglio', 'agosto', 'settembre',
   'ottobre', 'novembre', 'dicembre', 'katania', 'studio',
+  // Parole comuni italiane che finivano flaggate come "entità" solo perché
+  // maiuscole (dai log error_patterns: Buona, Ecco, Comunque, Tranquilla,
+  // Dimmi, Respira, Hai...) — con l'effetto che il bot rispondeva "preferisco
+  // non rispondere a memoria" a frasi del tutto normali.
+  'buongiorno', 'buonasera', 'buonanotte', 'buona', 'buon', 'grazie', 'ecco',
+  'comunque', 'tranquillo', 'tranquilla', 'dimmi', 'respira', 'hai', 'nota',
+  'ricorda', 'ricordati', 'attenzione', 'importante', 'perfetto', 'ottimo',
+  'bene', 'fatto', 'cosa', 'oppure', 'inoltre', 'infine', 'quindi', 'allora',
+  'adesso', 'ancora', 'sempre', 'subito', 'questo', 'questa', 'questi',
+  'queste', 'quando', 'dove', 'come', 'perché', 'chi', 'vuoi', 'puoi',
+  'andiamo', 'ciao', 'salve', 'scusa', 'occhio', 'agenda', 'priorità',
+  'meeting', 'call', 'email', 'mail', 'canale', 'progetto', 'progetti',
+  'cliente', 'clienti', 'team', 'daily', 'standup', 'recap', 'deadline',
 ]);
+
+// Confine di frase: se il carattere non-spazio precedente è uno di questi (o
+// il token è a inizio testo), la maiuscola è ortografia, non un nome proprio.
+// Include i marker di formattazione Slack (*grassetto*, _corsivo_, • elenchi).
+// La virgola resta fuori apposta: "con Antonio, Gianna e Paolo" è il caso in
+// cui la maiuscola È un segnale forte di nome.
+var BOUNDARY_CHARS = '.!?:;\n\r*_•·>([«"\'`~|';
+
+function isSentenceInitial(text, idx) {
+  var i = idx - 1;
+  while (i >= 0 && (text[i] === ' ' || text[i] === '\t')) i--;
+  if (i < 0) return true;
+  // Emoji/simboli non-ASCII prima del token (es. "👋 Ciao") → trattalo come inizio frase
+  if (text.charCodeAt(i) > 0x2000) return true;
+  return BOUNDARY_CHARS.indexOf(text[i]) !== -1;
+}
 
 function extractNamedEntities(text) {
   if (!text || typeof text !== 'string') return [];
-  var tokens = text.match(/\b[A-Z][a-zA-Zàèéìòù']{2,}(?:\s+[A-Z][a-zA-Zàèéìòù']{2,})?\b/g) || [];
+  var re = /\b[A-Z][a-zA-Zàèéìòù']{2,}(?:\s+[A-Z][a-zA-Zàèéìòù']{2,})?\b/g;
   var seen = {};
   var out = [];
-  for (var i = 0; i < tokens.length; i++) {
-    var t = tokens[i].trim();
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var t = m[0].trim();
     var low = t.toLowerCase();
     if (seen[low]) continue;
-    if (COMMON_WORDS.has(low)) continue;
+    if (COMMON_WORDS.has(low) || COMMON_WORDS.has(low.split(' ')[0])) continue;
+    // Tutto maiuscolo = intestazione/acronimo ("DATI RECUPERATI"), non un nome
+    if (t === t.toUpperCase()) continue;
+    // Maiuscola a inizio frase/riga/formattazione = ortografia, non un nome:
+    // conta solo i token che compaiono almeno una volta a metà frase.
+    if (isSentenceInitial(text, m.index)) continue;
     seen[low] = true;
     out.push(t);
   }

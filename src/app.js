@@ -18,6 +18,14 @@ async function main() {
     'SLACK_APP_TOKEN',
   ], 'APP_BOOT');
 
+  // HTTP server (OAuth + dashboard + /healthz) SUBITO, prima di db.initAll e
+  // app.start(): l'healthcheck Railway deve trovare /healthz che risponde
+  // durante tutto il boot, altrimenti un avvio lento manda il deploy in
+  // crash-loop (successo il 29/6, healthcheck poi rimosso — ora si può
+  // riattivare). Le route pesanti caricano le dipendenze lazy, quindi
+  // partire per primi è sicuro.
+  oauthHandler.startOAuthServer();
+
   // Importing slackHandlers registers all app.event / app.message / app.command
   // handlers onto the Bolt app as a side-effect of require().
   var slackService = require('./services/slackService');
@@ -118,9 +126,6 @@ async function main() {
       logger.info('[TEAM-ROSTER] Seed da Slack:', seeded, 'membri inseriti.');
     }
   } catch(e) { logger.warn('[TEAM-ROSTER] seed da Slack fallito:', e.message); }
-
-  // Start OAuth + Dashboard HTTP server
-  oauthHandler.startOAuthServer();
 
   // Schedule all cron jobs
   cronHandlers.scheduleCrons();
