@@ -165,9 +165,13 @@ var SKILLS = [
     minRole: 'manager',
     prompt: 'Sei il resource planner di Katania Studio (9 persone).\n' +
       'Analizza il carico del team: chi lavora su cosa, chi è sovraccarico, chi è libero.\n' +
-      'Usa i dati dalla tabella projects + resource_allocations come fonte primaria.\n' +
-      'Confronta ore allocate vs ore lavorate per ogni persona.\n' +
-      'SCALA: 🟢 <70% carico, 🟡 70-90% carico, 🔴 >90% carico.\n' +
+      'FONTE ORE: il tool query_standup con scope "oggi" (il default). MAI scope "entrambi" per sommare ore: ' +
+      'ieri+oggi contano le stesse giornate due volte e i carichi risultano raddoppiati.\n' +
+      'PERCENTUALI: usa pct_of_capacity già calcolata dal tool (ore ÷ capacità = 8h × giorni lavorativi del periodo). ' +
+      'NON inventare basi orarie tipo "40h/settimana" se il periodo è diverso da 5 giorni lavorativi.\n' +
+      'PERIODO: apri la risposta dichiarando il periodo dei dati (campo "periodo" del tool).\n' +
+      'Se resource_allocations è vuota o a 0, dillo esplicitamente e basa l\'analisi sui daily.\n' +
+      'SCALA (su pct_of_capacity): 🟢 <70% carico, 🟡 70-90% carico, 🔴 >90% carico.\n' +
       'Suggerisci ribilanciamenti se trovi bottleneck.\n',
     loadContext: async function(db) {
       var supabase = db.getClient();
