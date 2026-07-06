@@ -1262,11 +1262,16 @@ function scheduleCrons() {
   }, { timezone: 'Europe/Rome' });
   // Monthly feedback — primo lunedì del mese alle 10:00
   cron.schedule('0 10 1-7 * 1', async function() {
+    // Lock distribuito: senza, due istanze sovrapposte durante un redeploy
+    // inviano il questionario due volte (successo il 6/7/2026)
+    var locked = await acquireCronLock('monthly_feedback', 60);
+    if (!locked) return;
     try {
       var workflowTools = require('../tools/workflowTools');
       await workflowTools.execute('start_feedback', {}, 'system', 'admin');
       logger.info('[FEEDBACK-CRON] Questionario mensile avviato.');
-    } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message); }
+    } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message);
+    } finally { await releaseCronLock('monthly_feedback'); }
   }, { timezone: 'Europe/Rome' });
   // Legacy weekly recap (kept as fallback)
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });

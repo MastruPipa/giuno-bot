@@ -54,6 +54,25 @@ async function main() {
   // Start Slack in Socket Mode
   await app.start();
   logger.info('Giuno Bolt app avviata in Socket Mode');
+
+  // Se la websocket muore e non si riprende, meglio riavviare che restare zombie
+  require('./utils/socketWatchdog').arm(app);
+
+  // Shutdown rapido su SIGTERM/SIGINT: durante un redeploy Railway tiene in vita
+  // il container vecchio finché il nuovo non è su — se il vecchio non esce in
+  // fretta, per qualche minuto girano DUE istanze e i cron senza lock partono
+  // doppi (il check-in mensile del 6/7 è arrivato due volte a mezzo team).
+  ['SIGTERM', 'SIGINT'].forEach(function(sig) {
+    process.on(sig, function() {
+      logger.info('[SHUTDOWN] Ricevuto ' + sig + ' — chiudo Socket Mode ed esco.');
+      var hardExit = setTimeout(function() { process.exit(0); }, 5000);
+      if (hardExit.unref) hardExit.unref();
+      Promise.resolve()
+        .then(function() { return app.stop(); })
+        .then(function() { process.exit(0); })
+        .catch(function() { process.exit(0); });
+    });
+  });
   logger.info('SLACK_USER_TOKEN presente:', !!process.env.SLACK_USER_TOKEN);
   logger.info('SLACK_BOT_TOKEN presente:', !!process.env.SLACK_BOT_TOKEN);
   logger.info('ATTIO_API_KEY presente:', !!process.env.ATTIO_API_KEY,
