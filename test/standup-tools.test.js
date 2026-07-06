@@ -65,3 +65,45 @@ test('filtro progetto: substring case-insensitive sul testo del task', function(
   var res = aggregateStandupRows(dueDailyConsecutivi(), { project: 'bagno maria' }, '2026-06-29', '2026-06-30');
   assert.equal(res.total_minutes, 8 * 60); // solo il montaggio di lunedì (scope oggi)
 });
+
+// ─── Sistema di valutazione del carico ────────────────────────────────────────
+
+function dailySingolo(minutiOggi) {
+  return [{
+    slack_user_id: 'U_X',
+    date: '2026-07-06', // lunedì
+    ieri_tasks: [],
+    oggi_tasks: [{ task: 'Progetto Vario', hours: Math.floor(minutiOggi / 60), minutes: minutiOggi % 60 }],
+  }];
+}
+
+test('carico: settimana piena (~100%) è "pieno", non sovraccarico', function() {
+  var res = aggregateStandupRows(dailySingolo(8 * 60), {}, '2026-07-06', '2026-07-06');
+  assert.equal(res.by_user[0].pct_of_tracked_days, 100);
+  assert.equal(res.by_user[0].carico, 'pieno');
+});
+
+test('carico: sotto l\'85% è "ok"', function() {
+  var res = aggregateStandupRows(dailySingolo(6 * 60), {}, '2026-07-06', '2026-07-06'); // 75%
+  assert.equal(res.by_user[0].carico, 'ok');
+});
+
+test('carico: oltre il 105% è "sovraccarico"', function() {
+  var res = aggregateStandupRows(dailySingolo(9 * 60), {}, '2026-07-06', '2026-07-06'); // 112%
+  assert.equal(res.by_user[0].carico, 'sovraccarico');
+});
+
+test('carico valutato sui giorni CON daily, non sull\'intero periodo', function() {
+  // 8h dichiarate in 1 solo daily su una settimana di 5 giorni lavorativi:
+  // il carico del giorno tracciato è 100% (pieno), non 20% "libero".
+  var res = aggregateStandupRows(dailySingolo(8 * 60), {}, '2026-07-06', '2026-07-10');
+  assert.equal(res.by_user[0].days_with_daily, 1);
+  assert.equal(res.by_user[0].pct_of_tracked_days, 100);
+  assert.equal(res.by_user[0].carico, 'pieno');
+  assert.equal(res.by_user[0].missing_dailies, 4); // e i 4 giorni scoperti sono segnalati
+});
+
+test('con filtro progetto niente giudizio di carico (le ore sono un sottoinsieme)', function() {
+  var res = aggregateStandupRows(dueDailyConsecutivi(), { project: 'bagno maria' }, '2026-06-29', '2026-06-30');
+  assert.equal(res.by_user[0].carico, undefined);
+});

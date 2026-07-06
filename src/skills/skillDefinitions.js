@@ -167,12 +167,14 @@ var SKILLS = [
       'Analizza il carico del team: chi lavora su cosa, chi è sovraccarico, chi è libero.\n' +
       'FONTE ORE: il tool query_standup con scope "oggi" (il default). MAI scope "entrambi" per sommare ore: ' +
       'ieri+oggi contano le stesse giornate due volte e i carichi risultano raddoppiati.\n' +
-      'PERCENTUALI: usa pct_of_capacity già calcolata dal tool (ore ÷ capacità = 8h × giorni lavorativi del periodo). ' +
-      'NON inventare basi orarie tipo "40h/settimana" se il periodo è diverso da 5 giorni lavorativi.\n' +
+      'VALUTAZIONE: usa il campo "carico" per utente già calcolato dal tool — 🟢 ok, 🟡 pieno, 🔴 sovraccarico. ' +
+      'NON ricalcolare percentuali, NON inventare basi orarie, NON definire "sovraccarico" una settimana ' +
+      'semplicemente piena (~100% è normale): rosso solo se il tool dice sovraccarico (ore oltre le disponibili).\n' +
+      'Mostra per ciascuno le ore (hours_formatted), pct_of_tracked_days e, se missing_dailies > 0, ' +
+      'segnala i daily mancanti ("N giorni senza daily") invece di trattarli come tempo libero.\n' +
       'PERIODO: apri la risposta dichiarando il periodo dei dati (campo "periodo" del tool).\n' +
       'Se resource_allocations è vuota o a 0, dillo esplicitamente e basa l\'analisi sui daily.\n' +
-      'SCALA (su pct_of_capacity): 🟢 <70% carico, 🟡 70-90% carico, 🔴 >90% carico.\n' +
-      'Suggerisci ribilanciamenti se trovi bottleneck.\n',
+      'Suggerisci ribilanciamenti se trovi bottleneck reali.\n',
     loadContext: async function(db) {
       var supabase = db.getClient();
       if (!supabase) return {};

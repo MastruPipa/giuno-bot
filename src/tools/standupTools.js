@@ -24,8 +24,10 @@ var definitions = [
       'ATTENZIONE ORE: i task "ieri" e "oggi" di daily consecutivi descrivono in gran parte le STESSE ore ' +
       '(il lavoro di lunedì è "oggi" nel daily di lunedì e di nuovo "ieri" nel daily di martedì): per calcolare ' +
       'carico/effort usa lo scope di default "oggi" e MAI "entrambi". Il risultato include periodo, giorni lavorativi, ' +
-      'capacità per persona (8h × giorni lavorativi) e pct_of_capacity già calcolata per utente: usa quei numeri, ' +
-      'non inventare basi orarie. Riporta sempre all\'utente il periodo (campo "periodo").',
+      'capacità e SOPRATTUTTO la valutazione già fatta per utente: campo "carico" (ok / pieno / sovraccarico, ' +
+      'calcolato sui giorni con daily compilato), pct_of_tracked_days, pct_of_capacity e missing_dailies. ' +
+      'USA il campo "carico" così com\'è: non ricalcolare percentuali, non inventare basi orarie, non definire ' +
+      '"sovraccarico" chi ha semplicemente la settimana piena. Riporta sempre il periodo (campo "periodo").',
     input_schema: {
       type: 'object',
       properties: {
@@ -177,8 +179,13 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
   rows.forEach(function(r) {
     var uid = r.slack_user_id;
     if (!byUser[uid]) {
-      byUser[uid] = { slack_user_id: uid, minutes: 0, days_count: 0, projects: {} };
+      byUser[uid] = { slack_user_id: uid, minutes: 0, days_count: 0, projects: {}, entryDates: {} };
     }
+    // Giorni in cui la persona HA compilato un daily (indipendente dal filtro
+    // progetto): è la base giusta per valutare il carico — chi ha 3 daily su 5
+    // giorni va valutato su 3×8h, non sull'intera settimana, altrimenti i
+    // daily mancanti "diluiscono" il carico e nascondono i sovraccarichi.
+    byUser[uid].entryDates[r.date] = true;
     var daySet = {};
     var pickLists = [];
     if (scope === 'oggi' || scope === 'entrambi') pickLists.push({ tag: 'oggi', list: r.oggi_tasks || [] });
@@ -232,16 +239,32 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
     var projList = Object.keys(u.projects).map(function(p) {
       return { project: p, hours_formatted: formatHours(u.projects[p]), minutes: u.projects[p] };
     }).sort(function(a, b) { return b.minutes - a.minutes; });
+    var daysWithDaily = Object.keys(u.entryDates).length;
     var entry = {
       slack_user_id: uid,
       hours_formatted: formatHours(u.minutes),
       minutes: u.minutes,
       days_count: u.days_count,
+      days_with_daily: daysWithDaily,
       projects: projList.slice(0, 10),
     };
     if (!doubleCounted && capacityMinutes > 0) {
       entry.pct_of_capacity = Math.round((u.minutes / capacityMinutes) * 100);
     }
+    // Valutazione carico calcolata QUI, non lasciata al modello: percentuale
+    // sui giorni effettivamente tracciati (8h/giorno con daily compilato).
+    // Una settimana piena (~100%) è normale, non un'emergenza: rosso solo
+    // quando le ore dichiarate superano chiaramente le disponibili.
+    //   ok < 85% · pieno 85–105% · sovraccarico > 105%
+    // Con filtro progetto le ore sono un sottoinsieme → il giudizio non ha senso.
+    if (!doubleCounted && !projLower && daysWithDaily > 0) {
+      var trackedCapacity = daysWithDaily * 8 * 60;
+      var pctTracked = Math.round((u.minutes / trackedCapacity) * 100);
+      entry.pct_of_tracked_days = pctTracked;
+      entry.carico = pctTracked > 105 ? 'sovraccarico' : (pctTracked >= 85 ? 'pieno' : 'ok');
+      entry.missing_dailies = Math.max(0, workdays - daysWithDaily);
+    }
+    delete u.entryDates;
     return entry;
   }).sort(function(a, b) { return b.minutes - a.minutes; });
 
@@ -257,6 +280,10 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
     workdays_in_range: workdays,
     capacity_minutes_per_person: capacityMinutes,
     capacity_hours_per_person_formatted: formatHours(capacityMinutes),
+    criteri_valutazione: 'campo "carico" per utente, calcolato su 8h × giorni con daily compilato ' +
+      '(days_with_daily): ok <85%, pieno 85–105% (settimana piena, normale), ' +
+      'sovraccarico >105% (ore dichiarate oltre le disponibili). ' +
+      'missing_dailies = giorni lavorativi del periodo senza daily.',
     project_filter: input.project || null,
     scope: scope,
     total_hours_formatted: formatHours(totalMinutes),
