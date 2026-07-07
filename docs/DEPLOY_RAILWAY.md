@@ -53,3 +53,8 @@ una crash dopo il fatto, filtra i log per `[FATAL-GUARD]` o `[BOLT-ERROR]`.
 BASE_URL=https://<tuo-host> bash scripts/post-deploy-check.sh
 curl -fsS https://<tuo-host>/healthz   # -> {"status":"ok","uptime":...}
 ```
+
+> Nota (7/7/2026): la prima build post-merge di PR #116 è fallita su Railway
+> senza motivo riconducibile al codice (config JSON valide, dipendenze ok) —
+> retrigger con questo commit. Se una build fallisce di nuovo, guardare i
+> build logs dal link nell'email di Railway prima di toccare il codice.
