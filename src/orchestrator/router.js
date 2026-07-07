@@ -50,6 +50,19 @@ async function route(userId, message, options) {
   options = options || {};
 
   try {
+    // 0-bis. Comandi admin di test (trigger daily/planner/check-in): dritti
+    // all'assistente generale, che ha il toolset COMPLETO (workflowTools
+    // inclusi). Senza questo bypass l'intent classifier li smistava agli
+    // agenti specializzati: il dailyDigestAgent generava un finto "daily di
+    // test" discorsivo e il CRM agent rispondeva "non ho lo strumento" (7/7).
+    var ADMIN_TRIGGER_RE = /trigger_(daily|checkin|planner)_request|\b(daily|planner|weekly|check.?in)\b[^\n]{0,40}\bdi test\b/i;
+    if (ADMIN_TRIGGER_RE.test(message || '')) {
+      logger.info('[ROUTER] Comando di test admin → general assistant (toolset completo)');
+      var testCtx = await buildContext({ userId: userId, message: message, options: options, intent: 'GENERAL' });
+      testCtx = preflight(message, testCtx);
+      return await getGeneralAssistantAgent().run(message, testCtx);
+    }
+
     // 0. Try skill matching FIRST (before intent classification)
     var channelName = '';
     if (options.channelId) {
