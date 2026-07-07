@@ -267,6 +267,21 @@ function buildCheckinView(projects, meta) {
   };
 }
 
+// Testo del post pubblico in #weekly quando qualcuno invia la pianificazione
+// (come i daily postati in #daily). Puro e testabile.
+function buildPlannerPostText(userId, weekStart, rows, projectsById) {
+  var total = 0;
+  var sorted = (rows || []).slice().sort(function(a, b) { return (b.hours || 0) - (a.hours || 0); });
+  var lines = sorted.map(function(r) {
+    total += r.hours || 0;
+    var p = projectsById && projectsById[r.project_id];
+    return '• ' + (p && p.name ? p.name : r.project_id) + ': ' + r.hours + 'h';
+  });
+  var totalRounded = Math.round(total * 10) / 10;
+  return '🗓 *Pianificazione di <@' + userId + '> — settimana del ' + weekStart + '*: *' +
+    totalRounded + 'h totali*\n' + lines.join('\n');
+}
+
 // ─── Parsing submission ──────────────────────────────────────────────────────
 
 // Estrae le righe progetto+ore dallo state della view. Una riga è inclusa se
@@ -304,6 +319,7 @@ module.exports = {
   buildProjectSelectSource: buildProjectSelectSource,
   buildPlannerBlocks: buildPlannerBlocks,
   buildPlannerView: buildPlannerView,
+  buildPlannerPostText: buildPlannerPostText,
   buildCheckinBlocks: buildCheckinBlocks,
   buildCheckinView: buildCheckinView,
   extractRows: extractRows,

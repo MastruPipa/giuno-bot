@@ -125,11 +125,13 @@ var definitions = [
     description: 'Invia SUBITO il DM del Weekly Planner (bottone "🗓 Pianifica la tua prossima settimana", ' +
       'precompilato coi daily della settimana corrente) a un utente, fuori dal cron del giovedì e bypassando le ' +
       'esclusioni. Usalo quando un admin chiede di testare il previsionale: "mandami il planner di test", ' +
-      '"fammi provare la pianificazione settimanale". Solo admin.',
+      '"fammi provare la pianificazione settimanale". Con invito_canale=true posta ANCHE l\'invito pubblico col ' +
+      'bottone nel canale #weekly (per testare l\'invito del giovedì). Solo admin.',
     input_schema: {
       type: 'object',
       properties: {
         user_id: { type: 'string', description: 'Slack ID del destinatario (opzionale, default: chi lo chiede)' },
+        invito_canale: { type: 'boolean', description: 'true per postare anche l\'invito pubblico in #weekly' },
       },
     },
   },
@@ -164,8 +166,14 @@ async function execute(toolName, input, userId, userRole) {
       if (toolName === 'trigger_planner_request') {
         var planner = require('../handlers/weeklyPlanner');
         await planner.sendPlannerRequestTo(target);
-        return { success: true, sent_to: target.id, tipo: 'planner',
-          nota: 'DM col bottone "🗓 Pianifica" inviato. Il modale si precompila coi daily della settimana corrente; il recap di chiusura esce in #weekly.' };
+        var invitoCanale = false;
+        if (input.invito_canale === true) {
+          try { invitoCanale = await planner.sendPlannerChannelInvite(); }
+          catch(e) { logger.warn('[TRIGGER-PLANNER] invito canale fallito:', e.message); }
+        }
+        return { success: true, sent_to: target.id, tipo: 'planner', invito_canale: invitoCanale,
+          nota: 'DM col bottone "🗓 Pianifica" inviato' + (invitoCanale ? ' + invito pubblico in #weekly' : '') +
+            '. Il modale si precompila coi daily della settimana corrente; la pianificazione inviata viene postata in #weekly.' };
       }
 
       var timeTracking = require('../handlers/timeTracking');
