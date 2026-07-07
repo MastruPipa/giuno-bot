@@ -136,11 +136,13 @@ async function enrichTasksWithProjects(tasks, options) {
   return tasks;
 }
 
-// Arricchisce lo structured di un daily ({ieri, oggi, ...}).
+// Arricchisce lo structured di un daily ({oggi: fatto, domani: piano}).
+// "ieri" resta per i dati storici pre-daily-unico.
 async function enrichStructured(structured, options) {
   if (!structured) return structured;
-  await enrichTasksWithProjects(structured.ieri || [], options);
   await enrichTasksWithProjects(structured.oggi || [], options);
+  await enrichTasksWithProjects(structured.domani || [], options);
+  if (structured.ieri) await enrichTasksWithProjects(structured.ieri, options);
   return structured;
 }
 

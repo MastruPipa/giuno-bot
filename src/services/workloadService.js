@@ -77,9 +77,9 @@ function buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd) {
     byUser: byUser,
     // Il dettaglio per progetto dei consuntivi resta quello di getPlannedVsActual
     pva: pva || { byUser: {}, byProject: {} },
-    legenda: 'stimato = daily del mattino (ore dichiarate sui task); ' +
-      'effettivo = check-in serale (time_logs); pianificato = weekly planner. ' +
-      'carico (ok/pieno/sovraccarico) è calcolato sulle STIME dei giorni con daily compilato.',
+    legenda: 'dichiarato (estimated_hours) = ore reali dichiarate nel daily delle 16:00 (tutti i task); ' +
+      'effettivo (actual_hours) = time_logs per progetto, auto-derivati dai task del daily agganciati a un progetto; ' +
+      'pianificato = weekly planner. carico (ok/pieno/sovraccarico) è calcolato sul dichiarato dei giorni con daily compilato.',
   };
 }
 
@@ -108,7 +108,32 @@ async function getWeekOverview(weekStart) {
   return buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd);
 }
 
+// Righe time_logs derivate dai task "oggi" (fatto) del daily unico delle
+// 16:00: solo i task agganciati a un progetto contribuiscono al consuntivo
+// per progetto. Pura e testabile; la scrittura la fa dailyStandupV2.
+function deriveTimeLogRows(oggiTasks, userId, dateStr) {
+  var byProject = {};
+  (oggiTasks || []).forEach(function(t) {
+    if (!t || !t.project_id) return;
+    var h = (parseInt(t.hours, 10) || 0) + (parseInt(t.minutes, 10) || 0) / 60;
+    if (h <= 0) return;
+    byProject[t.project_id] = (byProject[t.project_id] || 0) + h;
+  });
+  return Object.keys(byProject).map(function(pid) {
+    return {
+      slack_user_id: userId,
+      project_id: pid,
+      log_date: dateStr,
+      log_type: 'daily',
+      hours: Math.round(byProject[pid] * 100) / 100,
+      notes: 'auto: dal daily',
+      validation: null,
+    };
+  });
+}
+
 module.exports = {
   getWeekOverview: getWeekOverview,
   buildOverview: buildOverview,
+  deriveTimeLogRows: deriveTimeLogRows,
 };

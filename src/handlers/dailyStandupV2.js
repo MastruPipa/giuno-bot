@@ -1,6 +1,7 @@
-// ─── Daily Standup V2 ────────────────────────────────────────────────────────
-// Complete workflow: 09:00 DM → 10:30 push → 11:00 push → 11:30 recap
-// Fixes #13 (daily va aggiustato) and #14 (riepilogo unico, non singoli messaggi)
+// ─── Daily Standup V2 — daily unico pomeridiano ─────────────────────────────
+// Workflow: 16:00 DM → 17:30 push → 18:00 recap. Struttura: FATTO OGGI (ore
+// reali → alimentano anche time_logs via project match) + DOMANI (piano) +
+// BLOCCHI. Sostituisce il vecchio daily mattutino e il check-in serale.
 'use strict';
 
 var logger = require('../utils/logger');
@@ -38,9 +39,9 @@ function oggi() {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Rome' }).format(new Date());
 }
 
-// ─── 09:00 — Send DM to all team members ────────────────────────────────────
+// ─── 16:00 — Send DM to all team members ────────────────────────────────────
 
-// Invio singolo del DM col bottone "Compila daily": usato dal cron delle 9:00
+// Invio singolo del DM col bottone "Compila daily": usato dal cron delle 16:00
 // e dal tool admin trigger_daily_request (test on-demand). Aggiunge l'utente
 // a standupInAttesa così anche una risposta testuale in DM viene riconosciuta.
 // persistInAttesa=true (invii fuori cron) salva subito lo stato: il cron lo
@@ -63,11 +64,11 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
     blocks: [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*, è il momento del daily!' },
+        text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*, com\'è andata oggi? Registra cosa hai fatto (con le ore), il piano di domani e gli eventuali blocchi.' },
       },
       {
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Il recap esce alle 11:30.' }],
+        elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Le ore contano come consuntivo. Il recap esce alle 18:00.' }],
       },
       {
         type: 'actions',
@@ -126,7 +127,7 @@ async function sendDailyRequests() {
   }
 }
 
-// ─── 10:30 / 11:00 — Push to missing responders ─────────────────────────────
+// ─── 17:30 — Push to missing responders ──────────────────────────────────────
 
 async function pushMissingResponders(pushNumber) {
   var locked = await acquireCronLock('daily_standup_v2_push_' + pushNumber, 5);
@@ -148,9 +149,7 @@ async function pushMissingResponders(pushNumber) {
 
       try {
         standupInAttesa.add(utente.id);
-        var pushMsg = pushNumber === 1
-          ? 'Ehi ' + utente.name.split(' ')[0] + ', manca il tuo daily! Il riepilogo esce alle 11:30.'
-          : utente.name.split(' ')[0] + ', ultimo reminder — il daily chiude tra 30 minuti!';
+        var pushMsg = 'Ehi ' + utente.name.split(' ')[0] + ', manca il tuo daily! Il recap esce alle 18:00 — ci vogliono 2 minuti.';
         await app.client.chat.postMessage({ channel: utente.id, text: pushMsg });
         pushed++;
       } catch(e) {
@@ -173,8 +172,8 @@ async function pushMissingResponders(pushNumber) {
 function classifyDailyText(txt) {
   txt = (txt || '').trim();
   var txtLow = txt.toLowerCase();
-  var looksStructured = /^\s*\*?(ieri|oggi|blocchi|cosa (hai fatto|farai))\*?\s*[:?]/im.test(txt);
-  var keywordHits = (txtLow.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
+  var looksStructured = /^\s*\*?(ieri|oggi|domani|blocchi|cosa (hai fatto|farai))\*?\s*[:?]/im.test(txt);
+  var keywordHits = (txtLow.match(/\b(ieri|oggi|domani|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
   var isDaily = looksStructured || keywordHits >= 2;
   var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
   var hasQuestionMark = /[?¿]/.test(txt);
@@ -201,6 +200,33 @@ function hasStructuredTasks(entry) {
     (entry.oggi_tasks && entry.oggi_tasks.length > 0)));
 }
 
+// ─── Consuntivo automatico (time_logs) ───────────────────────────────────────
+// Il daily unico delle 16:00 ha ore REALI sui task "oggi": quelle agganciate
+// a un progetto dal matcher diventano time_logs (log_type='daily') — il
+// vecchio check-in serale separato è stato ritirato. Replace semantics: un
+// daily ricompilato sovrascrive il consuntivo del giorno.
+async function syncTimeLogsFromDaily(userId, dateStr, structured) {
+  try {
+    if (!structured || !structured.oggi || structured.oggi.length === 0) return;
+    var workloadService = require('../services/workloadService');
+    var rows = workloadService.deriveTimeLogRows(structured.oggi, userId, dateStr);
+    if (rows.length === 0) return;
+    var res = await db.replaceTimeLogs(userId, dateStr, 'daily', rows);
+    if (res === null) {
+      logger.warn('[DAILY-V2] Consuntivo time_logs non scritto per', userId, dateStr);
+      return;
+    }
+    var touched = rows.map(function(r) { return r.project_id; })
+      .concat((res && res.removedProjectIds) || []);
+    for (var i = 0; i < touched.length; i++) {
+      await db.syncAllocationHoursLogged(userId, touched[i], dateStr);
+    }
+    logger.info('[DAILY-V2] Consuntivo derivato dal daily:', rows.length, 'progetti per', userId, dateStr);
+  } catch(e) {
+    logger.warn('[DAILY-V2] syncTimeLogsFromDaily fallito:', e.message);
+  }
+}
+
 // ─── Handle daily response from DM ──────────────────────────────────────────
 
 async function handleDailyResponse(userId, text, structured) {
@@ -224,7 +250,7 @@ async function handleDailyResponse(userId, text, structured) {
 
   var todayStr = oggi();
   var sd = db.getStandupCache();
-  // Self-heal: if sd.oggi is stale (bot restart after 09:00 cron, etc.),
+  // Self-heal: if sd.oggi is stale (bot restart after 16:00 cron, etc.),
   // bootstrap today in-place instead of silently dropping the submission.
   if (sd.oggi !== todayStr) {
     logger.warn('[DAILY-V2] sd.oggi stale (' + (sd.oggi || 'null') + '), self-heal a ' + todayStr);
@@ -253,11 +279,12 @@ async function handleDailyResponse(userId, text, structured) {
         source: viaModal ? 'modal' : 'dm',
       };
       if (structured) {
-        entry.ieri_tasks = structured.ieri || [];
+        // Daily unico delle 16:00: oggi = FATTO (ore reali), domani = piano.
         entry.oggi_tasks = structured.oggi || [];
+        entry.domani_tasks = structured.domani || [];
         entry.blocchi = structured.blocchi || null;
-        entry.total_hours_ieri = structured.totalIeri || 0;
         entry.total_hours_oggi = structured.totalOggi || 0;
+        entry.total_hours_domani = structured.totalDomani || 0;
       } else if (hasStructuredTasks(await getExistingEntry(userId, todayStr))) {
         // Merge non distruttivo: esiste già una entry con task strutturati e
         // questo testo non è parsabile — non degradarla a raw-only.
@@ -271,6 +298,7 @@ async function handleDailyResponse(userId, text, structured) {
       } else {
         logger.info('[DAILY-V2] Entry salvata per', userId, todayStr,
           '(source:', entry.source + (structured && !viaModal ? '+ai-parse' : '') + ')');
+        await syncTimeLogsFromDaily(userId, todayStr, structured);
       }
     }
   } catch(e) { logger.warn('[DAILY-V2] Save entry error:', e.message); }
@@ -285,24 +313,25 @@ async function handleDailyResponse(userId, text, structured) {
     var userName = userInfo && userInfo.user ? (userInfo.user.real_name || userInfo.user.name) : userId;
 
     var dailyMsg = '*Daily di <@' + userId + '>*\n\n';
-    if (structured && structured.ieri && structured.ieri.length > 0) {
-      dailyMsg += '*Cosa hai fatto ieri?*\n';
-      structured.ieri.forEach(function(t) {
-        dailyMsg += t.task;
-        if (t.hours || t.minutes) dailyMsg += ' ' + (t.hours ? t.hours + 'h' : '') + (t.minutes ? t.minutes + 'min' : '');
-        dailyMsg += '\n';
-      });
-      dailyMsg += '\n';
-    }
     if (structured && structured.oggi && structured.oggi.length > 0) {
-      dailyMsg += '*Cosa farai oggi?*\n';
+      dailyMsg += '*Cosa hai fatto oggi?*\n';
       structured.oggi.forEach(function(t) {
         dailyMsg += t.task;
         if (t.hours || t.minutes) dailyMsg += ' ' + (t.hours ? t.hours + 'h' : '') + (t.minutes ? t.minutes + 'min' : '');
         dailyMsg += '\n';
       });
       dailyMsg += '\n';
-    } else if (!structured) {
+    }
+    if (structured && structured.domani && structured.domani.length > 0) {
+      dailyMsg += '*Cosa farai domani?*\n';
+      structured.domani.forEach(function(t) {
+        dailyMsg += t.task;
+        if (t.hours || t.minutes) dailyMsg += ' ' + (t.hours ? t.hours + 'h' : '') + (t.minutes ? t.minutes + 'min' : '');
+        dailyMsg += '\n';
+      });
+      dailyMsg += '\n';
+    }
+    if (!structured) {
       // Text-based response — post as-is
       dailyMsg += text + '\n\n';
     }
@@ -359,11 +388,11 @@ async function recordChannelDaily(userId, text, channelId) {
     if (supabase) {
       var entry = { slack_user_id: userId, date: todayStr, raw_text: clean, source: 'channel' };
       if (structured) {
-        entry.ieri_tasks = structured.ieri || [];
         entry.oggi_tasks = structured.oggi || [];
+        entry.domani_tasks = structured.domani || [];
         entry.blocchi = structured.blocchi || null;
-        entry.total_hours_ieri = structured.totalIeri || 0;
         entry.total_hours_oggi = structured.totalOggi || 0;
+        entry.total_hours_domani = structured.totalDomani || 0;
       } else if (hasStructuredTasks(await getExistingEntry(userId, todayStr))) {
         // Merge non distruttivo: non degradare una entry già strutturata.
         logger.info('[DAILY-V2] Entry strutturata già presente per', userId, todayStr, '— skip overwrite da canale');
@@ -372,14 +401,17 @@ async function recordChannelDaily(userId, text, channelId) {
       var saveRes = await supabase.from('standup_entries')
         .upsert(entry, { onConflict: 'slack_user_id,date' });
       if (saveRes && saveRes.error) logger.warn('[DAILY-V2] Upsert daily da canale fallito:', saveRes.error.message);
-      else logger.info('[DAILY-V2] Daily da canale registrato per', userId, todayStr,
-        structured ? '(con ' + ((structured.ieri || []).length + (structured.oggi || []).length) + ' task strutturati)' : '(solo testo)');
+      else {
+        logger.info('[DAILY-V2] Daily da canale registrato per', userId, todayStr,
+          structured ? '(con ' + ((structured.oggi || []).length + (structured.domani || []).length) + ' task strutturati)' : '(solo testo)');
+        await syncTimeLogsFromDaily(userId, todayStr, structured);
+      }
     }
   } catch(e) { logger.warn('[DAILY-V2] recordChannelDaily error:', e.message); }
   return true;
 }
 
-// ─── 11:30 — Publish unified summary in #daily ──────────────────────────────
+// ─── 18:00 — Publish unified summary in #daily ──────────────────────────────
 
 async function publishDailySummary() {
   var locked = await acquireCronLock('daily_standup_v2_recap', 10);
@@ -469,29 +501,27 @@ async function publishDailySummary() {
 }
 
 // ─── Schedule all daily cron jobs ────────────────────────────────────────────
+// Daily unico pomeridiano: alle 16 la giornata è quasi chiusa, quindi le ore
+// dichiarate sono REALI (consuntivo) e non stime — sostituisce sia il vecchio
+// daily mattutino (ieri/oggi contati due volte) sia il check-in delle 17:30.
 
 function scheduleDailyJobs(cron) {
-  // 09:00 Mon-Fri — Send daily requests
-  cron.schedule('0 9 * * 1-5', function() {
+  // 16:00 Mon-Fri — Send daily requests
+  cron.schedule('0 16 * * 1-5', function() {
     sendDailyRequests().catch(function(e) { logger.error('[DAILY-V2] Errore invio:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  // 10:30 Mon-Fri — First push
-  cron.schedule('30 10 * * 1-5', function() {
-    pushMissingResponders(1).catch(function(e) { logger.error('[DAILY-V2] Errore push 1:', e.message); });
+  // 17:30 Mon-Fri — Push to missing responders
+  cron.schedule('30 17 * * 1-5', function() {
+    pushMissingResponders(1).catch(function(e) { logger.error('[DAILY-V2] Errore push:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  // 11:00 Mon-Fri — Second push
-  cron.schedule('0 11 * * 1-5', function() {
-    pushMissingResponders(2).catch(function(e) { logger.error('[DAILY-V2] Errore push 2:', e.message); });
-  }, { timezone: 'Europe/Rome' });
-
-  // 11:30 Mon-Fri — Publish unified summary
-  cron.schedule('30 11 * * 1-5', function() {
+  // 18:00 Mon-Fri — Publish unified summary
+  cron.schedule('0 18 * * 1-5', function() {
     publishDailySummary().catch(function(e) { logger.error('[DAILY-V2] Errore recap:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  logger.info('[DAILY-V2] Cron jobs schedulati: 09:00 send, 10:30 push1, 11:00 push2, 11:30 recap');
+  logger.info('[DAILY-V2] Cron jobs schedulati: 16:00 send, 17:30 push, 18:00 recap');
 }
 
 module.exports = {

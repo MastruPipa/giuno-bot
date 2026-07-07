@@ -415,6 +415,15 @@ function register(appInstance) {
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 
 function scheduleCheckinJobs(cron) {
+  // RITIRATO: il check-in serale è stato integrato nel daily unico delle
+  // 16:00 (le ore dei task "oggi" alimentano time_logs via project match).
+  // Le action/view (tt_open_modal, tt_submit) restano registrate per i
+  // bottoni legacy e per il tool admin trigger_checkin_request.
+  // Riattivabile con CHECKIN_LEGACY_CRON=true se servisse tornare indietro.
+  if (String(process.env.CHECKIN_LEGACY_CRON || 'false') !== 'true') {
+    logger.info('[CHECKIN] Cron check-in ritirati: consuntivo integrato nel daily delle 16:00');
+    return;
+  }
   if (!trackingActive()) {
     logger.info('[CHECKIN] TIME_TRACKING_ENABLED=false, cron check-in non schedulati');
     return;

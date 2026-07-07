@@ -12,20 +12,27 @@ var { withTimeout } = require('../utils/timeout');
 
 var PARSE_TIMEOUT_MS = 20000;
 
+// Il daily unico arriva alle 16:00: "oggi" = lavoro FATTO (consuntivo),
+// "domani" = piano. Chi scrive col vecchio schema ("cosa hai fatto ieri")
+// sta comunque descrivendo lavoro fatto → bucket "oggi".
 var SYSTEM_PROMPT =
-  'Sei un parser di daily standup di un\'agenzia creativa italiana. Dal testo estrai i task con le durate.\n' +
+  'Sei un parser di daily standup di un\'agenzia creativa italiana. Il daily viene compilato nel pomeriggio: ' +
+  'descrive il lavoro FATTO oggi e il piano per domani. Dal testo estrai i task con le durate.\n' +
   'Rispondi SOLO con JSON valido, nessun testo attorno:\n' +
-  '{"ieri":[{"task":"testo del task senza la durata","hours":N,"minutes":N}],"oggi":[...],"blocchi":"testo"|null}\n' +
+  '{"oggi":[{"task":"testo del task senza la durata","hours":N,"minutes":N}],"domani":[...],"blocchi":"testo"|null}\n' +
   'Regole:\n' +
   '- Durate: "3h"→3h0m; "1h30"/"1,5h"/"1h 30\'"→1h30m; "45min"/"45\'"→0h45m; "mezz\'ora"→0h30m. Senza durata→0h0m.\n' +
-  '- I task sotto intestazioni tipo "Cosa hai fatto ieri?"/"Ieri" vanno in "ieri"; "Cosa farai oggi?"/"Oggi" in "oggi".\n' +
-  '- Se non c\'è alcuna intestazione ieri/oggi, metti tutto in "oggi".\n' +
+  '- Lavoro FATTO (intestazioni tipo "Oggi", "Cosa hai fatto", anche "Ieri" per abitudine) → "oggi".\n' +
+  '- Piano FUTURO (intestazioni tipo "Domani", "Cosa farai") → "domani".\n' +
+  '- Se non c\'è alcuna intestazione, metti tutto in "oggi" (fatto).\n' +
   '- "blocchi" solo se esplicitamente indicati (es. "Qualcosa ti blocca?"), altrimenti null.\n' +
-  '- Una riga = un task. NON inventare task né durate. Se il testo non è un daily rispondi {"ieri":[],"oggi":[],"blocchi":null}.';
+  '- Una riga = un task. NON inventare task né durate. Se il testo non è un daily rispondi {"oggi":[],"domani":[],"blocchi":null}.';
 
-// Normalizza e valida l'output del modello in forma { ieri, oggi, blocchi,
-// totalIeri, totalOggi } compatibile con lo `structured` del modale.
+// Normalizza e valida l'output del modello in forma { oggi, domani, blocchi,
+// totalOggi, totalDomani } compatibile con lo `structured` del modale.
 // Pura e testabile. Ritorna null se non c'è nessun task utilizzabile.
+// Retrocompatibilità: se il modello (o un vecchio testo) produce "ieri",
+// quei task sono comunque lavoro fatto → confluiscono in "oggi".
 function normalizeParsed(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
 
@@ -41,9 +48,9 @@ function normalizeParsed(parsed) {
       });
   }
 
-  var ieri = cleanList(parsed.ieri);
-  var oggi = cleanList(parsed.oggi);
-  if (ieri.length === 0 && oggi.length === 0) return null;
+  var oggi = cleanList(parsed.oggi).concat(cleanList(parsed.ieri)).slice(0, 15);
+  var domani = cleanList(parsed.domani);
+  if (oggi.length === 0 && domani.length === 0) return null;
 
   function totalHours(list) {
     var mins = list.reduce(function(s, t) { return s + t.hours * 60 + t.minutes; }, 0);
@@ -54,11 +61,11 @@ function normalizeParsed(parsed) {
     ? parsed.blocchi.trim().substring(0, 500) : null;
 
   return {
-    ieri: ieri,
     oggi: oggi,
+    domani: domani,
     blocchi: blocchi,
-    totalIeri: totalHours(ieri),
     totalOggi: totalHours(oggi),
+    totalDomani: totalHours(domani),
   };
 }
 

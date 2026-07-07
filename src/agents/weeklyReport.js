@@ -95,9 +95,9 @@ async function buildWeeklyReport(userId, userRole) {
           .map(function(uid) {
             var u = overview.byUser[uid];
             var icon = CARICO_ICONS[u.carico] || '⚪';
-            var line = '• <@' + uid + '> ' + icon + ' stima daily ' + u.estimated_hours + 'h';
+            var line = '• <@' + uid + '> ' + icon + ' ' + u.estimated_hours + 'h dichiarate nei daily';
             if (u.pct_of_tracked_days != null) line += ' (' + u.pct_of_tracked_days + '% dei giorni tracciati)';
-            if (u.actual_hours > 0) line += ' · effettivo ' + u.actual_hours + 'h';
+            if (u.actual_hours > 0) line += ' · su progetti ' + u.actual_hours + 'h';
             if (u.missing_dailies > 0) line += ' · ' + u.missing_dailies + ' daily mancanti';
             return line;
           });

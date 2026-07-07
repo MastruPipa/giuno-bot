@@ -89,7 +89,7 @@ async function renderWorkloadPage(query) {
   var empty = users.length === 0
     ? '<p><i>Nessun time log per questa settimana.</i></p>' : '';
 
-  // ── 0. Stimato (daily) vs Effettivo (check-in) per risorsa ────────────────
+  // ── 0. Dichiarato (daily 16:00) vs Consuntivo per progetto ────────────────
   // La vista d'insieme che riconcilia i due sistemi: quello che il team
   // dichiara la mattina nei daily e quello che consuntiva la sera.
   var CARICO_ICONS = { ok: '🟢', pieno: '🟡', sovraccarico: '🔴' };
@@ -107,10 +107,10 @@ async function renderWorkloadPage(query) {
       '<td>' + icon + '</td><td>' + esc(copertura) + '</td></tr>';
   }).join('');
   var stimeTable = ovUsers.length === 0 ? '' :
-    '<h2>Stimato (daily) vs Effettivo (check-in)</h2>' +
-    '<p style="font-size:13px;color:#666">Carico calcolato sulle stime dei giorni con daily compilato: ' +
-    '🟢 ok &lt;85% · 🟡 pieno 85–105% · 🔴 sovraccarico &gt;105%</p>' +
-    '<table><thead><tr><th>Risorsa</th><th>Stima daily</th><th>Effettivo</th><th>Carico</th><th>Copertura</th></tr></thead>' +
+    '<h2>Ore dichiarate (daily 16:00) per risorsa</h2>' +
+    '<p style="font-size:13px;color:#666">Dichiarato = tutti i task del daily; consuntivo progetti = la parte agganciata a un progetto (auto-derivata). ' +
+    'Carico sui giorni con daily compilato: 🟢 ok &lt;85% · 🟡 pieno 85–105% · 🔴 sovraccarico &gt;105%</p>' +
+    '<table><thead><tr><th>Risorsa</th><th>Dichiarato</th><th>Su progetti</th><th>Carico</th><th>Copertura</th></tr></thead>' +
     '<tbody>' + stimeRows + '</tbody></table>';
 
   return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Giuno — Workload</title>' +

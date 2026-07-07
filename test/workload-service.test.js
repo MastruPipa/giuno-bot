@@ -54,5 +54,31 @@ test('buildOverview: periodo dichiarato e legenda delle fonti presenti', functio
   var ov = buildOverview(null, null, [], WEEK_START, WEEK_END);
   assert.equal(ov.workdays, 5);
   assert.ok(ov.periodo.indexOf(WEEK_START) !== -1);
-  assert.ok(/stimato/.test(ov.legenda) && /effettivo/.test(ov.legenda));
+  assert.ok(/dichiarato/.test(ov.legenda) && /effettivo/.test(ov.legenda));
+});
+
+// ─── Consuntivo auto-derivato dal daily unico ─────────────────────────────────
+
+var { deriveTimeLogRows } = require('../src/services/workloadService');
+
+test('deriveTimeLogRows: aggrega per progetto solo i task agganciati', function() {
+  var rows = deriveTimeLogRows([
+    { task: 'Bagno Maria montaggio', hours: 3, minutes: 0, project_id: 'attio_1' },
+    { task: 'Bagno Maria copy', hours: 1, minutes: 30, project_id: 'attio_1' },
+    { task: 'Tarocco caroselli', hours: 2, minutes: 0, project_id: 'attio_2' },
+    { task: 'mail varie', hours: 1, minutes: 0 }, // senza progetto → non consuntivato
+  ], 'U_X', '2026-07-07');
+  assert.equal(rows.length, 2);
+  var bm = rows.find(function(r) { return r.project_id === 'attio_1'; });
+  assert.equal(bm.hours, 4.5);
+  assert.equal(bm.log_type, 'daily');
+  assert.equal(bm.log_date, '2026-07-07');
+  assert.equal(bm.slack_user_id, 'U_X');
+});
+
+test('deriveTimeLogRows: nessun task con progetto → nessuna riga', function() {
+  assert.deepEqual(deriveTimeLogRows([{ task: 'x', hours: 2, minutes: 0 }], 'U_X', '2026-07-07'), []);
+  assert.deepEqual(deriveTimeLogRows([], 'U_X', '2026-07-07'), []);
+  // task con progetto ma 0 ore → non genera consuntivo
+  assert.deepEqual(deriveTimeLogRows([{ task: 'x', hours: 0, minutes: 0, project_id: 'p1' }], 'U_X', '2026-07-07'), []);
 });

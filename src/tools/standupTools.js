@@ -21,11 +21,11 @@ var definitions = [
       '"quante ore ha fatto il team su progetto Z?", "chi è sovraccarico?". Il match sul progetto è substring case-insensitive ' +
       'sul testo del task (es. project: "aitho" trova "Aitho - Documento Strategico 3h"). ' +
       'Se non specifichi intervallo di date, default = ultimi 14 giorni. ' +
-      'ATTENZIONE ORE: i task "ieri" e "oggi" di daily consecutivi descrivono in gran parte le STESSE ore ' +
-      '(il lavoro di lunedì è "oggi" nel daily di lunedì e di nuovo "ieri" nel daily di martedì): per calcolare ' +
-      'carico/effort usa lo scope di default "oggi" e MAI "entrambi". Il risultato include periodo, giorni lavorativi, ' +
-      'capacità e SOPRATTUTTO la valutazione già fatta per utente: campo "carico" (ok / pieno / sovraccarico, ' +
-      'calcolato sui giorni con daily compilato), pct_of_tracked_days, pct_of_capacity e missing_dailies. ' +
+      'SEMANTICA (daily unico delle 16:00): scope "oggi" (default) = lavoro FATTO con ore reali — è la fonte per ' +
+      'carico/effort; "domani" = piano dichiarato per il giorno dopo; "ieri" e "entrambi" = solo dati storici del ' +
+      'vecchio daily mattutino, MAI per sommare ore (giornate contate due volte). Il risultato include periodo, ' +
+      'giorni lavorativi, capacità e SOPRATTUTTO la valutazione già fatta per utente: campo "carico" (ok / pieno / ' +
+      'sovraccarico, calcolato sui giorni con daily compilato), pct_of_tracked_days, pct_of_capacity e missing_dailies. ' +
       'USA il campo "carico" così com\'è: non ricalcolare percentuali, non inventare basi orarie, non definire ' +
       '"sovraccarico" chi ha semplicemente la settimana piena. Riporta sempre il periodo (campo "periodo").',
     input_schema: {
@@ -51,10 +51,10 @@ var definitions = [
         },
         scope: {
           type: 'string',
-          description: 'Cosa considerare: "oggi" (default — i task pianificati nel giorno di ogni daily, ogni giornata ' +
-            'contata una volta sola), "ieri" (solo i consuntivi del giorno prima), "entrambi" (SOLO per leggere le liste ' +
-            'task, MAI per sommare ore: ieri+oggi contano le stesse giornate due volte).',
-          enum: ['oggi', 'ieri', 'entrambi'],
+          description: 'Cosa considerare: "oggi" (default — lavoro FATTO nel giorno del daily, ore reali, ogni giornata ' +
+            'contata una volta), "domani" (piano dichiarato per il giorno dopo), "ieri" (legacy del vecchio daily ' +
+            'mattutino), "entrambi" (SOLO per leggere le liste task, MAI per sommare ore).',
+          enum: ['oggi', 'domani', 'ieri', 'entrambi'],
         },
       },
     },
@@ -131,7 +131,7 @@ async function queryStandup(input) {
 
   // Query
   var q = supabase.from('standup_entries')
-    .select('slack_user_id, date, ieri_tasks, oggi_tasks, blocchi, raw_text, total_hours_ieri, total_hours_oggi')
+    .select('slack_user_id, date, ieri_tasks, oggi_tasks, domani_tasks, blocchi, raw_text, total_hours_ieri, total_hours_oggi, total_hours_domani')
     .gte('date', dateFrom)
     .lte('date', dateTo)
     .order('date', { ascending: true });
@@ -178,6 +178,7 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
     var daySet = {};
     var pickLists = [];
     if (scope === 'oggi' || scope === 'entrambi') pickLists.push({ tag: 'oggi', list: r.oggi_tasks || [] });
+    if (scope === 'domani') pickLists.push({ tag: 'domani', list: r.domani_tasks || [] });
     if (scope === 'ieri' || scope === 'entrambi') pickLists.push({ tag: 'ieri', list: r.ieri_tasks || [] });
 
     pickLists.forEach(function(pl) {

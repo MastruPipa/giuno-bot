@@ -98,7 +98,7 @@ var definitions = [
   {
     name: 'trigger_daily_request',
     description: 'Invia SUBITO il DM di richiesta daily (bottone "✏️ Compila daily") a un utente, fuori dal cron ' +
-      'delle 9:00 e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
+      'delle 16:00 e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
       'di test", "fammi provare il daily", "manda la richiesta daily a X". Solo admin.',
     input_schema: {
       type: 'object',
@@ -109,9 +109,9 @@ var definitions = [
   },
   {
     name: 'trigger_checkin_request',
-    description: 'Invia SUBITO il DM di richiesta check-in ore (bottone "⏱ Traccia le ore", precompilato dal daily ' +
-      'del giorno) a un utente, fuori dal cron delle 17:30 e bypassando le esclusioni. Usalo quando un admin chiede ' +
-      'di testare il check-in: "mandami il check-in di test", "fammi provare il tracciamento ore". Solo admin.',
+    description: 'LEGACY: invia il DM del vecchio check-in ore separato (bottone "⏱ Traccia le ore"). Il consuntivo ' +
+      'ora è integrato nel daily unico delle 16:00 (usa trigger_daily_request per testarlo); questo tool serve solo ' +
+      'per correzioni manuali una tantum del consuntivo di una data. Solo admin.',
     input_schema: {
       type: 'object',
       properties: {
@@ -142,7 +142,7 @@ async function execute(toolName, input, userId, userRole) {
 
   // ─── Trigger di test: richiesta daily / check-in on-demand ─────────────
   // Bypassano cron ed esclusioni: servono all'admin per testare bottoni e
-  // modali senza aspettare le 9:00/17:30. Non toccano il DB direttamente,
+  // modali senza aspettare i cron. Non toccano il DB direttamente,
   // quindi vivono PRIMA della guardia supabase.
   if (toolName === 'trigger_daily_request' || toolName === 'trigger_checkin_request' ||
       toolName === 'trigger_planner_request') {

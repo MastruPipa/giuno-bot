@@ -278,3 +278,10 @@ CREATE INDEX IF NOT EXISTS time_logs_project ON time_logs(project_id, log_date);
 
 -- Opt-out individuale dal tracking (DM planner/check-in)
 ALTER TABLE user_prefs ADD COLUMN IF NOT EXISTS tracking_enabled BOOLEAN DEFAULT TRUE;
+
+-- 2026-07-07: daily unico pomeridiano (16:00) — Fatto oggi + Domani + Blocchi.
+-- "oggi_tasks" = lavoro FATTO con ore reali; "domani_tasks" = piano;
+-- "ieri_tasks" resta come dato storico del vecchio daily mattutino.
+ALTER TABLE standup_entries
+  ADD COLUMN IF NOT EXISTS domani_tasks jsonb,
+  ADD COLUMN IF NOT EXISTS total_hours_domani numeric;

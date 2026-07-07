@@ -165,9 +165,9 @@ var SKILLS = [
     minRole: 'manager',
     prompt: 'Sei il resource planner di Katania Studio (9 persone).\n' +
       'Analizza il carico del team: chi lavora su cosa, chi è sovraccarico, chi è libero.\n' +
-      'DUE FONTI, dichiarale sempre: STIMATO = daily del mattino (tool query_standup, scope "oggi" — MAI ' +
-      '"entrambi": ieri+oggi contano le stesse giornate due volte); EFFETTIVO = check-in serale ' +
-      '(tool query_time_logs). Se divergono o una delle due è scoperta, dillo.\n' +
+      'FONTE ORE: il daily unico delle 16:00 — tool query_standup, scope "oggi" (= lavoro FATTO con ore reali; ' +
+      'MAI scope "entrambi"). query_time_logs dà il consuntivo per progetto, auto-derivato dagli stessi daily: ' +
+      'usalo per le domande per-progetto.\n' +
       'VALUTAZIONE: usa il campo "carico" per utente già calcolato da query_standup — 🟢 ok, 🟡 pieno, ' +
       '🔴 sovraccarico. NON ricalcolare percentuali, NON inventare basi orarie, NON definire "sovraccarico" ' +
       'una settimana semplicemente piena (~100% è normale): rosso solo se il tool dice sovraccarico.\n' +

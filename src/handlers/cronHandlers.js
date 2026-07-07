@@ -1247,7 +1247,7 @@ function scheduleCrons() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
     checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
-  // Daily priorities DM — 9:15 lun-ven (dopo standup delle 9:00)
+  // Daily priorities DM — 9:15 lun-ven (il daily unico è alle 16:00)
   cron.schedule('15 9 * * 1-5', lockedJob('daily_priorities', 30, async function() {
     try {
       var workflowTools = require('../tools/workflowTools');
@@ -1536,15 +1536,16 @@ function scheduleCrons() {
       logger.info('[BOOT] Channel sync completato:', chRes.synced, 'da canali,', chRes.archived, 'archiviati');
     } catch(e) { logger.error('[BOOT] Channel sync error:', e.message); }
 
-    // Self-heal: if bot boots on a weekday between 09:00 and 11:30 Europe/Rome
-    // and the daily standup hasn't been sent yet today, send it now.
-    // This recovers from crashes/restarts that missed the 09:00 cron.
+    // Self-heal: if bot boots on a weekday between 16:00 and 18:00 Europe/Rome
+    // (la finestra del daily unico pomeridiano) and the daily standup hasn't
+    // been sent yet today, send it now. Recovers from crashes/restarts that
+    // missed the 16:00 cron.
     try {
       var nowRome = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
       var dow = nowRome.getDay(); // 0=Sun, 6=Sat
       var hhmm = nowRome.getHours() * 100 + nowRome.getMinutes();
       var isWeekday = dow >= 1 && dow <= 5;
-      var isStandupWindow = hhmm >= 900 && hhmm < 1130;
+      var isStandupWindow = hhmm >= 1600 && hhmm < 1800;
       if (isWeekday && isStandupWindow) {
         var todayStr = dates.todayISO();
         var sd = db.getStandupCache();
