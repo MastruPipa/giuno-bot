@@ -111,6 +111,32 @@ app.event('app_mention', async function(args) {
 
     var text = event.text.replace(/<@[^>]+>/g, '').trim();
 
+    // Daily taggato in #daily ("@Giuno registra da qui il mio daily" + testo):
+    // prima finiva nella risposta LLM libera che DICEVA "registrato" senza
+    // salvare nulla (i messaggi con menzione erano esclusi dalla cattura in
+    // app.message). Ora si registra davvero, con parser AI e conferma secca.
+    try {
+      var dailyV2ForMention = require('./dailyStandupV2');
+      if (event.channel === dailyV2ForMention.DAILY_CHANNEL_ID && !event.thread_ts) {
+        var dailyClass = dailyV2ForMention.classifyDailyText(text);
+        if (dailyClass.isDaily && !dailyClass.isRequest) {
+          var capturedMention = false;
+          try {
+            capturedMention = await dailyV2ForMention.recordChannelDaily(event.user, text, event.channel);
+          } catch(e) { logger.warn('[STANDUP-V2] cattura daily da mention fallita:', e.message); }
+          if (capturedMention) {
+            try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
+            try { await app.client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'white_check_mark' }); } catch(e) { /* ignore */ }
+            await app.client.chat.postMessage({
+              channel: event.channel, thread_ts: event.ts,
+              text: 'Daily registrato ✅',
+            });
+            return;
+          }
+        }
+      }
+    } catch(e) { logger.warn('[STANDUP-V2] routing daily mention fallito:', e.message); }
+
     // Track behavior + classify sentiment for channel mentions
     behaviorTracker.trackInteraction(event.user, text, { channelId: event.channel, isDM: false });
     var mentionSentiment = sentimentClassifier.classify(text);
@@ -414,21 +440,12 @@ app.message(async function(args) {
     var dailyV2Sd = db.getStandupCache();
     if (dailyV2Sd.oggi === dailyV2Oggi) {
       var txt = (message.text || '').trim();
-      var txtLow = txt.toLowerCase();
 
-      // Positive detection: structured header or multiple standup keywords
-      var looksStructured = /^\s*\*?(ieri|oggi|blocchi)\*?\s*:/im.test(txt);
-      var keywordHits = (txtLow.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
-      var looksLikeDaily = looksStructured || keywordHits >= 2;
+      // Euristiche condivise con la cattura da canale/mention (una sola copia,
+      // vive in dailyStandupV2.classifyDailyText).
+      var dmDailyClass = require('./dailyStandupV2').classifyDailyText(txt);
 
-      // Hard rejection: message opens with a request/complaint addressed to the bot.
-      // Soft rejection: a question mark alone rejects ONLY when there's no strong daily
-      // signal ("Ieri? design. Oggi? mockup. Blocchi? niente." is a valid daily).
-      var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
-      var hasQuestionMark = /[?¿]/.test(txt);
-      var looksLikeRequest = startsLikeRequest || (hasQuestionMark && !looksLikeDaily);
-
-      if (!looksLikeRequest && looksLikeDaily) {
+      if (!dmDailyClass.isRequest && dmDailyClass.isDaily) {
         var dailyStandupV2 = require('./dailyStandupV2');
         var saved = false;
         try {

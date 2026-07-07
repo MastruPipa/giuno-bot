@@ -107,3 +107,26 @@ test('con filtro progetto niente giudizio di carico (le ore sono un sottoinsieme
   var res = aggregateStandupRows(dueDailyConsecutivi(), { project: 'bagno maria' }, '2026-06-29', '2026-06-30');
   assert.equal(res.by_user[0].carico, undefined);
 });
+
+test('by_project usa il project_name agganciato dal matcher quando presente', function() {
+  var rows = [{
+    slack_user_id: 'U_X', date: '2026-07-06', ieri_tasks: [],
+    oggi_tasks: [
+      { task: 'montaggio video', hours: 2, minutes: 0, project_id: 'attio_1', project_name: 'Bagno Maria' },
+      { task: 'Tarocco - caroselli', hours: 1, minutes: 0 }, // senza match → fallback prefisso
+    ],
+  }];
+  var res = aggregateStandupRows(rows, {}, '2026-07-06', '2026-07-06');
+  var names = res.by_project.map(function(p) { return p.project; });
+  assert.ok(names.indexOf('bagno maria') !== -1, 'bucket dal project_name reale');
+  assert.ok(names.indexOf('tarocco') !== -1, 'fallback prefisso testuale');
+});
+
+test('il filtro progetto matcha anche il project_name (non solo il testo del task)', function() {
+  var rows = [{
+    slack_user_id: 'U_X', date: '2026-07-06', ieri_tasks: [],
+    oggi_tasks: [{ task: 'montaggio video x1', hours: 2, minutes: 0, project_id: 'attio_1', project_name: 'Bagno Maria' }],
+  }];
+  var res = aggregateStandupRows(rows, { project: 'bagno maria' }, '2026-07-06', '2026-07-06');
+  assert.equal(res.total_minutes, 120, 'il task senza "bagno maria" nel testo si trova via project_name');
+});

@@ -86,20 +86,9 @@ function formatHours(minutes) {
   return h + 'h ' + m + 'min';
 }
 
-// Giorni lavorativi (lun-ven) tra due date ISO incluse. Serve a dare al
-// modello una capacità corretta sul periodo reale invece del "40h/settimana"
-// inventato quando il periodo è più corto o più lungo di una settimana.
-function workdaysBetween(fromIso, toIso) {
-  var from = new Date(fromIso + 'T00:00:00Z');
-  var to = new Date(toIso + 'T00:00:00Z');
-  if (isNaN(from) || isNaN(to) || from > to) return 0;
-  var count = 0;
-  for (var d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
-    var dow = d.getUTCDay();
-    if (dow !== 0 && dow !== 6) count++;
-  }
-  return count;
-}
+// Giorni lavorativi lun-ven del periodo — implementazione condivisa in
+// utils/dates (usata anche da workloadService e timeTrackingTools).
+var workdaysBetween = dates.workdaysBetween;
 
 async function resolveUser(input) {
   if (input.slack_user_id) return input.slack_user_id;
@@ -195,15 +184,22 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
       pl.list.forEach(function(t) {
         if (!t || !t.task) return;
         var taskText = String(t.task);
-        if (projLower && taskText.toLowerCase().indexOf(projLower) === -1) return;
+        // Il filtro progetto matcha sia il testo del task sia il project_name
+        // agganciato all'ingestion dal projectMatcher (più affidabile).
+        var projectName = t.project_name ? String(t.project_name) : null;
+        if (projLower &&
+            taskText.toLowerCase().indexOf(projLower) === -1 &&
+            (!projectName || projectName.toLowerCase().indexOf(projLower) === -1)) return;
 
         var mins = toMinutes(t);
         byUser[uid].minutes += mins;
         totalMinutes += mins;
         daySet[r.date] = true;
 
-        // Project bucket: extract prefix before ' - ' if available
-        var projKey = projLower || (taskText.split(/\s+[-–—]\s+/)[0] || 'generico').toLowerCase().trim();
+        // Bucket progetto: il project_name reale (dal matcher) vince sul
+        // fallback testuale (prefisso prima di ' - ').
+        var projKey = projLower || (projectName ? projectName.toLowerCase()
+          : (taskText.split(/\s+[-–—]\s+/)[0] || 'generico').toLowerCase().trim());
         if (!byProject[projKey]) byProject[projKey] = { project: projKey, minutes: 0, tasks: 0 };
         byProject[projKey].minutes += mins;
         byProject[projKey].tasks++;

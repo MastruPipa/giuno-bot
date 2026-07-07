@@ -165,11 +165,12 @@ var SKILLS = [
     minRole: 'manager',
     prompt: 'Sei il resource planner di Katania Studio (9 persone).\n' +
       'Analizza il carico del team: chi lavora su cosa, chi è sovraccarico, chi è libero.\n' +
-      'FONTE ORE: il tool query_standup con scope "oggi" (il default). MAI scope "entrambi" per sommare ore: ' +
-      'ieri+oggi contano le stesse giornate due volte e i carichi risultano raddoppiati.\n' +
-      'VALUTAZIONE: usa il campo "carico" per utente già calcolato dal tool — 🟢 ok, 🟡 pieno, 🔴 sovraccarico. ' +
-      'NON ricalcolare percentuali, NON inventare basi orarie, NON definire "sovraccarico" una settimana ' +
-      'semplicemente piena (~100% è normale): rosso solo se il tool dice sovraccarico (ore oltre le disponibili).\n' +
+      'DUE FONTI, dichiarale sempre: STIMATO = daily del mattino (tool query_standup, scope "oggi" — MAI ' +
+      '"entrambi": ieri+oggi contano le stesse giornate due volte); EFFETTIVO = check-in serale ' +
+      '(tool query_time_logs). Se divergono o una delle due è scoperta, dillo.\n' +
+      'VALUTAZIONE: usa il campo "carico" per utente già calcolato da query_standup — 🟢 ok, 🟡 pieno, ' +
+      '🔴 sovraccarico. NON ricalcolare percentuali, NON inventare basi orarie, NON definire "sovraccarico" ' +
+      'una settimana semplicemente piena (~100% è normale): rosso solo se il tool dice sovraccarico.\n' +
       'Mostra per ciascuno le ore (hours_formatted), pct_of_tracked_days e, se missing_dailies > 0, ' +
       'segnala i daily mancanti ("N giorni senza daily") invece di trattarli come tempo libero.\n' +
       'PERIODO: apri la risposta dichiarando il periodo dei dati (campo "periodo" del tool).\n' +

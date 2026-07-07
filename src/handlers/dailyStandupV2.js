@@ -13,13 +13,12 @@ var DAILY_CHANNEL_ID = process.env.DAILY_CHANNEL_ID || 'C05846AEV6D';
 
 // ─── Exclusions ──────────────────────────────────────────────────────────────
 // Persone che NON partecipano al daily (niente richiesta, niente push, niente
-// "mancano all'appello"). Match case-insensitive su substring del real_name.
-var DAILY_EXCLUDED_NAME_PATTERNS = ['antonio', 'gloria', 'corrado', 'cellulare', 'telefono'];
+// "mancano all'appello"). Lista condivisa col check-in serale in
+// config/tracking (override via env TRACKING_EXCLUDED_NAMES).
+var trackingConfig = require('../config/tracking');
 
 function isExcludedFromDaily(utente) {
-  var n = (utente && utente.name ? utente.name : '').toLowerCase();
-  if (!n) return false;
-  return DAILY_EXCLUDED_NAME_PATTERNS.some(function(p) { return n.indexOf(p) !== -1; });
+  return trackingConfig.isExcludedName(utente && utente.name);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -148,9 +147,63 @@ async function pushMissingResponders(pushNumber) {
   }
 }
 
+// ─── Classificazione daily testuali ──────────────────────────────────────────
+// Euristiche condivise tra DM (slackHandlers app.message) e menzioni in
+// #daily (app_mention): decidono se un testo È un daily da registrare o una
+// richiesta al bot. Vivono qui per non avere due copie che divergono.
+
+function classifyDailyText(txt) {
+  txt = (txt || '').trim();
+  var txtLow = txt.toLowerCase();
+  var looksStructured = /^\s*\*?(ieri|oggi|blocchi|cosa (hai fatto|farai))\*?\s*[:?]/im.test(txt);
+  var keywordHits = (txtLow.match(/\b(ieri|oggi|fatto|far[oò]|bloccat|blocco|blocchi|task|consegn|finito|iniziato|call|meeting|ore\b|min\b|h\b|\d+\s*h\b|\d+\s*min\b)/g) || []).length;
+  var isDaily = looksStructured || keywordHits >= 2;
+  var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
+  var hasQuestionMark = /[?¿]/.test(txt);
+  var isRequest = startsLikeRequest || (hasQuestionMark && !looksStructured);
+  return { isDaily: isDaily, isRequest: isRequest };
+}
+
+// La entry esistente di (utente, giorno) ha già task strutturati? Serve per il
+// merge non distruttivo: un daily testuale che arriva DOPO il modale non deve
+// degradare la entry a solo raw_text.
+async function getExistingEntry(userId, dateStr) {
+  try {
+    var supabase = require('../services/db/client').getClient();
+    if (!supabase) return null;
+    var res = await supabase.from('standup_entries')
+      .select('ieri_tasks, oggi_tasks, source')
+      .eq('slack_user_id', userId).eq('date', dateStr).limit(1);
+    return (res.data && res.data[0]) || null;
+  } catch(e) { return null; }
+}
+
+function hasStructuredTasks(entry) {
+  return !!(entry && ((entry.ieri_tasks && entry.ieri_tasks.length > 0) ||
+    (entry.oggi_tasks && entry.oggi_tasks.length > 0)));
+}
+
 // ─── Handle daily response from DM ──────────────────────────────────────────
 
 async function handleDailyResponse(userId, text, structured) {
+  var viaModal = !!structured;
+
+  // Daily testuale (DM): prima si salvava solo raw_text — zero ore, zero task,
+  // e la persona risultava "scarica" nel calcolo carico. Ora il parser AI
+  // estrae task e durate; se fallisce si degrada al comportamento precedente.
+  if (!structured) {
+    try {
+      structured = await require('../services/dailyParser').parseDailyText(text);
+    } catch(e) { logger.warn('[DAILY-V2] Parser AI fallito:', e.message); }
+  }
+
+  // Aggancio ai progetti veri (project_id/project_name dentro ogni task)
+  if (structured) {
+    try {
+      await require('../services/projectMatcher').enrichStructured(structured);
+    } catch(e) { logger.warn('[DAILY-V2] Project match fallito:', e.message); }
+  }
+
   var todayStr = oggi();
   var sd = db.getStandupCache();
   // Self-heal: if sd.oggi is stale (bot restart after 09:00 cron, etc.),
@@ -179,7 +232,7 @@ async function handleDailyResponse(userId, text, structured) {
         slack_user_id: userId,
         date: todayStr,
         raw_text: text,
-        source: structured ? 'modal' : 'dm',
+        source: viaModal ? 'modal' : 'dm',
       };
       if (structured) {
         entry.ieri_tasks = structured.ieri || [];
@@ -187,13 +240,19 @@ async function handleDailyResponse(userId, text, structured) {
         entry.blocchi = structured.blocchi || null;
         entry.total_hours_ieri = structured.totalIeri || 0;
         entry.total_hours_oggi = structured.totalOggi || 0;
+      } else if (hasStructuredTasks(await getExistingEntry(userId, todayStr))) {
+        // Merge non distruttivo: esiste già una entry con task strutturati e
+        // questo testo non è parsabile — non degradarla a raw-only.
+        logger.info('[DAILY-V2] Entry strutturata già presente per', userId, todayStr, '— skip overwrite raw-only');
+        return true;
       }
       var saveRes = await supabase.from('standup_entries')
         .upsert(entry, { onConflict: 'slack_user_id,date' });
       if (saveRes && saveRes.error) {
         logger.warn('[DAILY-V2] Upsert standup_entries fallito:', saveRes.error.message);
       } else {
-        logger.info('[DAILY-V2] Entry salvata per', userId, todayStr);
+        logger.info('[DAILY-V2] Entry salvata per', userId, todayStr,
+          '(source:', entry.source + (structured && !viaModal ? '+ai-parse' : '') + ')');
       }
     }
   } catch(e) { logger.warn('[DAILY-V2] Save entry error:', e.message); }
@@ -269,14 +328,34 @@ async function recordChannelDaily(userId, text, channelId) {
   sd.inattesa = Array.from(standupInAttesa);
   await db.saveStandup(sd);
 
+  // Parser AI + aggancio progetti: il daily scritto in canale vale quanto
+  // quello da modale (prima: solo raw_text, ore perse).
+  var structured = null;
+  try {
+    structured = await require('../services/dailyParser').parseDailyText(clean);
+    if (structured) await require('../services/projectMatcher').enrichStructured(structured);
+  } catch(e) { logger.warn('[DAILY-V2] Parse daily da canale fallito:', e.message); }
+
   try {
     var supabase = require('../services/db/client').getClient();
     if (supabase) {
+      var entry = { slack_user_id: userId, date: todayStr, raw_text: clean, source: 'channel' };
+      if (structured) {
+        entry.ieri_tasks = structured.ieri || [];
+        entry.oggi_tasks = structured.oggi || [];
+        entry.blocchi = structured.blocchi || null;
+        entry.total_hours_ieri = structured.totalIeri || 0;
+        entry.total_hours_oggi = structured.totalOggi || 0;
+      } else if (hasStructuredTasks(await getExistingEntry(userId, todayStr))) {
+        // Merge non distruttivo: non degradare una entry già strutturata.
+        logger.info('[DAILY-V2] Entry strutturata già presente per', userId, todayStr, '— skip overwrite da canale');
+        return true;
+      }
       var saveRes = await supabase.from('standup_entries')
-        .upsert({ slack_user_id: userId, date: todayStr, raw_text: clean, source: 'channel' },
-          { onConflict: 'slack_user_id,date' });
+        .upsert(entry, { onConflict: 'slack_user_id,date' });
       if (saveRes && saveRes.error) logger.warn('[DAILY-V2] Upsert daily da canale fallito:', saveRes.error.message);
-      else logger.info('[DAILY-V2] Daily da canale registrato per', userId, todayStr);
+      else logger.info('[DAILY-V2] Daily da canale registrato per', userId, todayStr,
+        structured ? '(con ' + ((structured.ieri || []).length + (structured.oggi || []).length) + ' task strutturati)' : '(solo testo)');
     }
   } catch(e) { logger.warn('[DAILY-V2] recordChannelDaily error:', e.message); }
   return true;
@@ -402,6 +481,7 @@ module.exports = {
   scheduleDailyJobs: scheduleDailyJobs,
   handleDailyResponse: handleDailyResponse,
   recordChannelDaily: recordChannelDaily,
+  classifyDailyText: classifyDailyText,
   sendDailyRequests: sendDailyRequests,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,

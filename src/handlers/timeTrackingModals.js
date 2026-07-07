@@ -108,27 +108,52 @@ function buildProjectSelectSource(projects) {
 
 // ─── Builder righe ───────────────────────────────────────────────────────────
 
-function buildRowBlocks(prefix, i, selectSource) {
+// Trova l'option del select con un dato value (serve per initial_option:
+// Slack esige l'oggetto option esatto, non basta il value).
+function findOptionByValue(selectSource, value) {
+  if (!value) return null;
+  var pools = selectSource.option_groups
+    ? selectSource.option_groups.map(function(g) { return g.options; })
+    : [selectSource.options || []];
+  for (var i = 0; i < pools.length; i++) {
+    for (var j = 0; j < pools[i].length; j++) {
+      if (pools[i][j].value === String(value)) return pools[i][j];
+    }
+  }
+  return null;
+}
+
+function buildRowBlocks(prefix, i, selectSource, prefillRow) {
   // Il check-in è un giorno solo (max 24h); il planner copre l'intera
   // settimana su un progetto, quindi ammette fino a 60h per riga.
   var maxHours = prefix === 'wp' ? '60' : '24';
+  var selectElement = Object.assign({
+    type: 'static_select', action_id: 'project_select',
+    placeholder: { type: 'plain_text', text: 'Scegli un progetto...' },
+  }, selectSource);
+  var hoursElement = {
+    type: 'number_input', action_id: 'hours_input',
+    is_decimal_allowed: true, min_value: '0.5', max_value: maxHours,
+    placeholder: { type: 'plain_text', text: 'Es. 4 o 4.5' },
+  };
+  // Prefill dal daily del mattino: progetto e ore stimate già selezionati,
+  // l'utente conferma o corregge (leva principale per l'adozione del check-in).
+  if (prefillRow) {
+    var initialOption = findOptionByValue(selectSource, prefillRow.project_id);
+    if (initialOption) selectElement.initial_option = initialOption;
+    var h = parseFloat(prefillRow.hours);
+    if (h >= 0.5) hoursElement.initial_value = String(Math.min(h, parseFloat(maxHours)));
+  }
   return [
     {
       type: 'input', block_id: prefix + '_project_' + i, optional: i > 1,
       label: { type: 'plain_text', text: 'Progetto ' + i },
-      element: Object.assign({
-        type: 'static_select', action_id: 'project_select',
-        placeholder: { type: 'plain_text', text: 'Scegli un progetto...' },
-      }, selectSource),
+      element: selectElement,
     },
     {
       type: 'input', block_id: prefix + '_hours_' + i, optional: i > 1,
       label: { type: 'plain_text', text: '⏱ Ore' },
-      element: {
-        type: 'number_input', action_id: 'hours_input',
-        is_decimal_allowed: true, min_value: '0.5', max_value: maxHours,
-        placeholder: { type: 'plain_text', text: 'Es. 4 o 4.5' },
-      },
+      element: hoursElement,
     },
   ];
 }
@@ -174,7 +199,7 @@ function buildPlannerView(projects, meta) {
 
 // ─── Daily Check-in ──────────────────────────────────────────────────────────
 
-function buildCheckinBlocks(projects, rowCount, logDate) {
+function buildCheckinBlocks(projects, rowCount, logDate, prefill) {
   var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '⏱  Check-in giornaliero' } });
@@ -182,8 +207,14 @@ function buildCheckinBlocks(projects, rowCount, logDate) {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: 'Ore effettivamente lavorate il *' + (logDate || 'oggi') + '*, progetto per progetto.' }],
   });
+  if (prefill && prefill.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '✨ Precompilato dal tuo daily di stamattina — conferma o correggi le ore reali.' }],
+    });
+  }
   for (var i = 1; i <= rowCount; i++) {
-    buildRowBlocks('tt', i, selectSource).forEach(function(b) { blocks.push(b); });
+    buildRowBlocks('tt', i, selectSource, prefill && prefill[i - 1]).forEach(function(b) { blocks.push(b); });
   }
   if (rowCount < MAX_ROWS_CHECKIN) blocks.push(buildAddRowButton('tt_add_row', rowCount));
   blocks.push({ type: 'divider' });
@@ -205,7 +236,7 @@ function buildCheckinView(projects, meta) {
     title: { type: 'plain_text', text: 'Check-in giornaliero' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildCheckinBlocks(projects, meta.rows || 2, meta.log_date),
+    blocks: buildCheckinBlocks(projects, meta.rows || 2, meta.log_date, meta.prefill),
   };
 }
 
@@ -239,6 +270,7 @@ function extractNote(stateValues) {
 module.exports = {
   MAX_ROWS_PLANNER: MAX_ROWS_PLANNER,
   MAX_ROWS_CHECKIN: MAX_ROWS_CHECKIN,
+  findOptionByValue: findOptionByValue,
   getActiveProjectsCached: getActiveProjectsCached,
   projectOptions: projectOptions,
   buildProjectSelectSource: buildProjectSelectSource,

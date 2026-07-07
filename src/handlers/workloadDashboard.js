@@ -34,9 +34,10 @@ async function renderWorkloadPage(query) {
   var prevWeek = dates.addDays(weekStart, -7);
   var nextWeek = dates.addDays(weekStart, 7);
 
-  var data = await db.getPlannedVsActual(weekStart);
-  var byUser = data.byUser || {};
-  var byProject = data.byProject || {};
+  var workloadService = require('../services/workloadService');
+  var overview = await workloadService.getWeekOverview(weekStart);
+  var byUser = (overview.pva && overview.pva.byUser) || {};
+  var byProject = (overview.pva && overview.pva.byProject) || {};
   var tokenParam = query && query.token ? '&token=' + encodeURIComponent(query.token) : '';
 
   function weekLink(w) { return '/dashboard/workload?week=' + w + tokenParam; }
@@ -88,6 +89,30 @@ async function renderWorkloadPage(query) {
   var empty = users.length === 0
     ? '<p><i>Nessun time log per questa settimana.</i></p>' : '';
 
+  // ── 0. Stimato (daily) vs Effettivo (check-in) per risorsa ────────────────
+  // La vista d'insieme che riconcilia i due sistemi: quello che il team
+  // dichiara la mattina nei daily e quello che consuntiva la sera.
+  var CARICO_ICONS = { ok: '🟢', pieno: '🟡', sovraccarico: '🔴' };
+  var ovUsers = Object.keys(overview.byUser || {}).sort(function(a, b) {
+    return overview.byUser[b].estimated_hours - overview.byUser[a].estimated_hours;
+  });
+  var stimeRows = ovUsers.map(function(uid) {
+    var u = overview.byUser[uid];
+    var icon = u.carico ? (CARICO_ICONS[u.carico] || '') + ' ' + u.carico : '—';
+    var copertura = u.days_with_daily + '/' + overview.workdays + ' daily';
+    if (u.missing_checkins < overview.workdays) copertura += ' · ' + u.days_with_checkin + '/' + overview.workdays + ' check-in';
+    return '<tr><td>' + esc(userLabel(uid)) + '</td>' +
+      '<td>' + round1(u.estimated_hours) + 'h' + (u.pct_of_tracked_days != null ? ' (' + u.pct_of_tracked_days + '%)' : '') + '</td>' +
+      '<td>' + (u.actual_hours > 0 ? round1(u.actual_hours) + 'h' : '—') + '</td>' +
+      '<td>' + icon + '</td><td>' + esc(copertura) + '</td></tr>';
+  }).join('');
+  var stimeTable = ovUsers.length === 0 ? '' :
+    '<h2>Stimato (daily) vs Effettivo (check-in)</h2>' +
+    '<p style="font-size:13px;color:#666">Carico calcolato sulle stime dei giorni con daily compilato: ' +
+    '🟢 ok &lt;85% · 🟡 pieno 85–105% · 🔴 sovraccarico &gt;105%</p>' +
+    '<table><thead><tr><th>Risorsa</th><th>Stima daily</th><th>Effettivo</th><th>Carico</th><th>Copertura</th></tr></thead>' +
+    '<tbody>' + stimeRows + '</tbody></table>';
+
   return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Giuno — Workload</title>' +
     '<style>body{font-family:sans-serif;padding:32px;background:#f5f5f5;max-width:900px}' +
     'h1,h2{margin-top:28px}a{color:#2c6}' +
@@ -109,6 +134,7 @@ async function renderWorkloadPage(query) {
     '<a href="/export/timelogs.csv?from=' + weekStart + '&to=' + weekEnd + tokenParam + '">Export CSV</a> | ' +
     '<a href="/dashboard' + (tokenParam ? '?' + tokenParam.slice(1) : '') + '">Dashboard</a></p>' +
     empty +
+    stimeTable +
     '<h2>Capacità per risorsa (ore consuntivate)</h2>' +
     '<p style="font-size:13px;color:#666">Soglie: <span style="color:#e67e22">33h</span> / <span style="color:#c0392b">40h</span></p>' +
     capacityRows +

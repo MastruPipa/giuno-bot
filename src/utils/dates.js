@@ -95,6 +95,23 @@ function isValidISODate(s) {
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
+/**
+ * Giorni lavorativi (lun-ven) tra due date ISO incluse. È la base per la
+ * capacità sul periodo reale (8h × workdays) invece del "40h/settimana"
+ * fisso, che sbaglia su periodi diversi da 5 giorni lavorativi.
+ */
+function workdaysBetween(fromIso, toIso) {
+  var from = new Date(fromIso + 'T00:00:00Z');
+  var to = new Date(toIso + 'T00:00:00Z');
+  if (isNaN(from) || isNaN(to) || from > to) return 0;
+  var count = 0;
+  for (var d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+    var dow = d.getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+
 module.exports = {
   todayISO: todayISO,
   daysFromTodayISO: daysFromTodayISO,
@@ -104,4 +121,5 @@ module.exports = {
   dateContextIt: dateContextIt,
   ageLabelIt: ageLabelIt,
   isValidISODate: isValidISODate,
+  workdaysBetween: workdaysBetween,
 };
