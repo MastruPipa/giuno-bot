@@ -120,6 +120,19 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'trigger_planner_request',
+    description: 'Invia SUBITO il DM del Weekly Planner (bottone "🗓 Pianifica la tua prossima settimana", ' +
+      'precompilato coi daily della settimana corrente) a un utente, fuori dal cron del giovedì e bypassando le ' +
+      'esclusioni. Usalo quando un admin chiede di testare il previsionale: "mandami il planner di test", ' +
+      '"fammi provare la pianificazione settimanale". Solo admin.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'Slack ID del destinatario (opzionale, default: chi lo chiede)' },
+      },
+    },
+  },
 ];
 
 // ─── Execution ──────────────────────────────────────────────────────────────
@@ -131,7 +144,8 @@ async function execute(toolName, input, userId, userRole) {
   // Bypassano cron ed esclusioni: servono all'admin per testare bottoni e
   // modali senza aspettare le 9:00/17:30. Non toccano il DB direttamente,
   // quindi vivono PRIMA della guardia supabase.
-  if (toolName === 'trigger_daily_request' || toolName === 'trigger_checkin_request') {
+  if (toolName === 'trigger_daily_request' || toolName === 'trigger_checkin_request' ||
+      toolName === 'trigger_planner_request') {
     if (userRole !== 'admin') return { error: 'Solo admin può inviare le richieste di test.' };
     try {
       var targetId = input.user_id || userId;
@@ -145,6 +159,13 @@ async function execute(toolName, input, userId, userRole) {
         await dailyV2.sendDailyRequestTo(target, true);
         return { success: true, sent_to: target.id, tipo: 'daily',
           nota: 'DM col bottone "✏️ Compila daily" inviato. Vale anche una risposta testuale in DM (parser AI).' };
+      }
+
+      if (toolName === 'trigger_planner_request') {
+        var planner = require('../handlers/weeklyPlanner');
+        await planner.sendPlannerRequestTo(target);
+        return { success: true, sent_to: target.id, tipo: 'planner',
+          nota: 'DM col bottone "🗓 Pianifica" inviato. Il modale si precompila coi daily della settimana corrente; il recap di chiusura esce in #weekly.' };
       }
 
       var timeTracking = require('../handlers/timeTracking');

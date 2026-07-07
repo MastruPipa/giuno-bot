@@ -108,6 +108,27 @@ function buildProjectSelectSource(projects) {
 
 // ─── Builder righe ───────────────────────────────────────────────────────────
 
+// Aggrega una lista flat di task dei daily ({project_id, hours, minutes}) in
+// righe di prefill [{project_id, hours}] ordinate per ore decrescenti. Usata
+// dal check-in serale (task del giorno) e dal weekly planner (task dell'intera
+// settimana). minHours = minimo del number_input (0.5), maxHours = cap riga.
+function prefillRowsFromTasks(tasks, maxRows, maxHoursPerRow) {
+  var byProject = {};
+  (tasks || []).forEach(function(t) {
+    if (!t || !t.project_id) return;
+    var h = (parseInt(t.hours, 10) || 0) + (parseInt(t.minutes, 10) || 0) / 60;
+    byProject[t.project_id] = (byProject[t.project_id] || 0) + h;
+  });
+  return Object.keys(byProject)
+    .map(function(pid) {
+      var hours = Math.max(0.5, Math.round(byProject[pid] * 100) / 100);
+      if (maxHoursPerRow) hours = Math.min(hours, maxHoursPerRow);
+      return { project_id: pid, hours: hours };
+    })
+    .sort(function(a, b) { return b.hours - a.hours; })
+    .slice(0, maxRows);
+}
+
 // Trova l'option del select con un dato value (serve per initial_option:
 // Slack esige l'oggetto option esatto, non basta il value).
 function findOptionByValue(selectSource, value) {
@@ -171,7 +192,7 @@ function buildAddRowButton(actionId, currentCount) {
 
 // ─── Weekly Planner ──────────────────────────────────────────────────────────
 
-function buildPlannerBlocks(projects, rowCount, weekStart) {
+function buildPlannerBlocks(projects, rowCount, weekStart, prefill) {
   var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '🗓  Pianifica la prossima settimana' } });
@@ -179,8 +200,14 @@ function buildPlannerBlocks(projects, rowCount, weekStart) {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: 'Ore stimate per progetto per la settimana che inizia *' + (weekStart || '') + '*. Aggiungi una riga per ogni progetto.' }],
   });
+  if (prefill && prefill.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '✨ Precompilato dai tuoi daily di questa settimana — conferma o aggiusta per la prossima.' }],
+    });
+  }
   for (var i = 1; i <= rowCount; i++) {
-    buildRowBlocks('wp', i, selectSource).forEach(function(b) { blocks.push(b); });
+    buildRowBlocks('wp', i, selectSource, prefill && prefill[i - 1]).forEach(function(b) { blocks.push(b); });
   }
   if (rowCount < MAX_ROWS_PLANNER) blocks.push(buildAddRowButton('wp_add_row', rowCount));
   return blocks;
@@ -193,7 +220,7 @@ function buildPlannerView(projects, meta) {
     title: { type: 'plain_text', text: 'Weekly Planner' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start),
+    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start, meta.prefill),
   };
 }
 
@@ -271,6 +298,7 @@ module.exports = {
   MAX_ROWS_PLANNER: MAX_ROWS_PLANNER,
   MAX_ROWS_CHECKIN: MAX_ROWS_CHECKIN,
   findOptionByValue: findOptionByValue,
+  prefillRowsFromTasks: prefillRowsFromTasks,
   getActiveProjectsCached: getActiveProjectsCached,
   projectOptions: projectOptions,
   buildProjectSelectSource: buildProjectSelectSource,

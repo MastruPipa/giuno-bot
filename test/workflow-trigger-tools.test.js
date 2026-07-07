@@ -27,3 +27,10 @@ test('le definition dei trigger esistono e dichiarano quando usarle', function()
   assert.ok(/test/i.test(daily.description), 'la description deve menzionare il caso d\'uso di test');
   assert.ok(/admin/i.test(daily.description));
 });
+
+test('trigger_planner_request: negato ai non-admin e definition presente', async function() {
+  var res = await workflowTools.execute('trigger_planner_request', {}, 'U_MEMBER', 'member');
+  assert.ok(res.error && /admin/i.test(res.error));
+  var def = workflowTools.definitions.find(function(d) { return d.name === 'trigger_planner_request'; });
+  assert.ok(def && /test/i.test(def.description));
+});

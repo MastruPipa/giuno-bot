@@ -131,3 +131,43 @@ test('findOptionByValue: trova le option anche dentro option_groups', function()
   assert.equal(modals.findOptionByValue(grouped, 'p1').value, 'p1');
   assert.equal(modals.findOptionByValue(grouped, 'px'), null);
 });
+
+// ─── Weekly Planner: prefill dai daily della settimana ───────────────────────
+
+test('prefillRowsFromTasks: aggrega per progetto, ordina per ore, rispetta i cap', function() {
+  var tasks = [
+    { project_id: 'p1', hours: 2, minutes: 30 },
+    { project_id: 'p2', hours: 1, minutes: 0 },
+    { project_id: 'p1', hours: 3, minutes: 0 },  // stesso progetto, giorno diverso
+    { task: 'senza progetto', hours: 5, minutes: 0 }, // ignorato: nessun project_id
+  ];
+  var rows = modals.prefillRowsFromTasks(tasks, 8, 60);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].project_id, 'p1'); // 5.5h, primo
+  assert.equal(rows[0].hours, 5.5);
+  assert.equal(rows[1].project_id, 'p2');
+  assert.equal(rows[1].hours, 1);
+});
+
+test('prefillRowsFromTasks: minimo 0.5h (limite del number_input) e cap per riga', function() {
+  var rows = modals.prefillRowsFromTasks([
+    { project_id: 'p1', hours: 0, minutes: 15 },  // 0.25 → alzato a 0.5
+    { project_id: 'p2', hours: 70, minutes: 0 },  // oltre il cap → 60
+  ], 8, 60);
+  var p1 = rows.find(function(r) { return r.project_id === 'p1'; });
+  var p2 = rows.find(function(r) { return r.project_id === 'p2'; });
+  assert.equal(p1.hours, 0.5);
+  assert.equal(p2.hours, 60);
+});
+
+test('buildPlannerBlocks: prefill imposta progetto e ore, col banner dei daily', function() {
+  var blocks = modals.buildPlannerBlocks(PROJECTS, 2, '2026-07-13', [{ project_id: 'p1', hours: 12 }]);
+  var proj1 = blocks.find(function(b) { return b.block_id === 'wp_project_1'; });
+  assert.equal(proj1.element.initial_option.value, 'p1');
+  var hours1 = blocks.find(function(b) { return b.block_id === 'wp_hours_1'; });
+  assert.equal(hours1.element.initial_value, '12');
+  var hasBanner = blocks.some(function(b) {
+    return b.type === 'context' && b.elements && /precompilato/i.test(b.elements[0].text || '');
+  });
+  assert.ok(hasBanner);
+});
