@@ -116,6 +116,30 @@ async function sendPlannerRequestTo(utente) {
   });
 }
 
+// Invito pubblico in #weekly: un solo post col bottone 🗓 — chi clicca apre il
+// PROPRIO modale precompilato (wp_open_modal usa body.user.id). Usato dal cron
+// del giovedì e dal tool admin trigger_planner_request {invito_canale: true}.
+async function sendPlannerChannelInvite() {
+  if (!WEEKLY_CHANNEL_ID) return false;
+  var weekStart = dates.nextMonday(dates.oggiRome());
+  try { await app.client.conversations.join({ channel: WEEKLY_CHANNEL_ID }); } catch(e) { /* già dentro o privato */ }
+  await app.client.chat.postMessage({
+    channel: WEEKLY_CHANNEL_ID,
+    text: 'È il momento di pianificare la settimana che inizia lunedì ' + weekStart + '!',
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: '🗓 *È il momento di pianificare la settimana che inizia lunedì ' + weekStart + '!*\nIl modulo è già precompilato coi tuoi daily di questa settimana — conferma o aggiusta.' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Finestra aperta fino a venerdì alle 12:00; il recap esce qui.' }] },
+      { type: 'actions', elements: [{
+        type: 'button', style: 'primary',
+        text: { type: 'plain_text', text: '🗓 Pianifica la tua prossima settimana', emoji: true },
+        action_id: 'wp_open_modal',
+      }] },
+    ],
+    unfurl_links: false,
+  });
+  return true;
+}
+
 async function sendPlannerRequests() {
   var locked = await acquireCronLock('weekly_planner_send', 10);
   if (!locked) return;
@@ -133,7 +157,9 @@ async function sendPlannerRequests() {
         logger.error('[PLANNER] Errore invio a', u.id + ':', e.message);
       }
     }
-    logger.info('[PLANNER] Richieste inviate a', inviati, 'utenti.');
+    // Invito pubblico in #weekly, oltre ai DM: il rito è visibile a tutti
+    try { await sendPlannerChannelInvite(); } catch(e) { logger.error('[PLANNER] Errore invito #weekly:', e.message); }
+    logger.info('[PLANNER] Richieste inviate a', inviati, 'utenti (+ invito in #weekly).');
   } finally {
     await releaseCronLock('weekly_planner_send');
   }
@@ -349,6 +375,19 @@ function register(appInstance) {
         text: 'Settimana del *' + weekStart + '* pianificata: *' + total + 'h* totali ✅\n' + recapLines,
       });
     } catch(e) { logger.debug('[PLANNER] recap DM fallito:', e.message); }
+
+    // Post pubblico in #weekly (come i daily in #daily): la pianificazione è
+    // visibile a tutti appena inviata. Se fallisce, la submission resta valida.
+    if (WEEKLY_CHANNEL_ID) {
+      try {
+        try { await app.client.conversations.join({ channel: WEEKLY_CHANNEL_ID }); } catch(e) { /* già dentro */ }
+        await app.client.chat.postMessage({
+          channel: WEEKLY_CHANNEL_ID,
+          text: modals.buildPlannerPostText(userId, weekStart, rows, projectsById),
+          unfurl_links: false,
+        });
+      } catch(e) { logger.warn('[PLANNER] post pianificazione in #weekly fallito:', e.message); }
+    }
     logger.info('[PLANNER] Pianificazione salvata:', userId, weekStart, total + 'h su', rows.length, 'progetti');
   });
 }
@@ -386,6 +425,7 @@ module.exports = {
   schedulePlannerJobs: schedulePlannerJobs,
   sendPlannerRequests: sendPlannerRequests,
   sendPlannerRequestTo: sendPlannerRequestTo,
+  sendPlannerChannelInvite: sendPlannerChannelInvite,
   sendPlannerReminder: sendPlannerReminder,
   closePlannerWindow: closePlannerWindow,
   buildPrefillFromWeekDailies: buildPrefillFromWeekDailies,

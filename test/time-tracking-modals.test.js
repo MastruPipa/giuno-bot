@@ -171,3 +171,16 @@ test('buildPlannerBlocks: prefill imposta progetto e ore, col banner dei daily',
   });
   assert.ok(hasBanner);
 });
+
+test('buildPlannerPostText: totale, ordinamento per ore e nomi progetto con fallback', function() {
+  var projectsById = { p1: { id: 'p1', name: 'Dicar' } };
+  var text = modals.buildPlannerPostText('U_X', '2026-07-13', [
+    { project_id: 'p_sconosciuto', hours: 4 },
+    { project_id: 'p1', hours: 12.5 },
+  ], projectsById);
+  assert.ok(text.indexOf('<@U_X>') !== -1);
+  assert.ok(text.indexOf('settimana del 2026-07-13') !== -1);
+  assert.ok(text.indexOf('16.5h totali') !== -1);
+  // ordinato per ore decrescenti: Dicar prima
+  assert.ok(text.indexOf('• Dicar: 12.5h') < text.indexOf('• p_sconosciuto: 4h'));
+});
