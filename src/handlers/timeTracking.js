@@ -94,24 +94,19 @@ async function buildPrefillFromDaily(userId, logDate) {
 
 // ─── Apertura modale (pattern open_daily_modal: timeout+retry+fallback) ─────
 
+// Pattern open-then-update (come il planner): views.open subito, prefill
+// iniettato dopo con views.update — niente più corsa da 800ms.
 async function openCheckinModal(triggerId, userId, logDate) {
   var ackStart = Date.now();
+  var openRes = null;
+  var projects = null;
   try {
-    var projects = await modals.getActiveProjectsCached();
-    // Budget stretto: il trigger_id scade in ~3s, il prefill non deve bruciarlo.
-    // Se il DB è lento si apre il modale vuoto come prima.
-    var prefill = null;
-    try {
-      prefill = await withTimeout(function() {
-        return buildPrefillFromDaily(userId, logDate);
-      }, 800, 'checkin prefill');
-    } catch(e) { logger.debug('[CHECKIN] prefill saltato:', e.message); }
-    var rows = Math.max(2, (prefill || []).length);
-    await withTimeout(function() {
+    projects = await modals.getActiveProjectsCached();
+    openRes = await withTimeout(function() {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: modals.buildCheckinView(projects, { rows: rows, log_date: logDate, prefill: prefill }),
+          view: modals.buildCheckinView(projects, { rows: 2, log_date: logDate, loading: true }),
         });
       }, {
         retries: 1,
@@ -123,6 +118,24 @@ async function openCheckinModal(triggerId, userId, logDate) {
         },
       });
     }, 2500, 'views.open checkin modal');
+
+    // Fase 2 — prefill dal daily del giorno, poi update della view
+    try {
+      var viewId = openRes && openRes.view && openRes.view.id;
+      if (viewId) {
+        var prefill = null;
+        try {
+          prefill = await withTimeout(function() {
+            return buildPrefillFromDaily(userId, logDate);
+          }, 5000, 'checkin prefill');
+        } catch(e2) { logger.debug('[CHECKIN] prefill non disponibile:', e2.message); }
+        var rows = Math.max(2, (prefill || []).length);
+        await app.client.views.update({
+          view_id: viewId,
+          view: modals.buildCheckinView(projects, { rows: rows, log_date: logDate, prefill: prefill }),
+        });
+      }
+    } catch(e3) { logger.warn('[CHECKIN] views.update prefill fallita:', e3.message); }
   } catch(e) {
     var slackCode = e && ((e.data && e.data.error) || e.code || e.name || '');
     logger.error('[CHECKIN] views.open fallita', {

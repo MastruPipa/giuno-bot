@@ -192,7 +192,7 @@ function buildAddRowButton(actionId, currentCount) {
 
 // ─── Weekly Planner ──────────────────────────────────────────────────────────
 
-function buildPlannerBlocks(projects, rowCount, weekStart, prefill) {
+function buildPlannerBlocks(projects, rowCount, weekStart, prefill, loading) {
   var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '🗓  Pianifica la prossima settimana' } });
@@ -200,7 +200,14 @@ function buildPlannerBlocks(projects, rowCount, weekStart, prefill) {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: 'Ore stimate per progetto per la settimana che inizia *' + (weekStart || '') + '*. Aggiungi una riga per ogni progetto.' }],
   });
-  if (prefill && prefill.length > 0) {
+  if (loading) {
+    // Pattern open-then-update: il modale si apre subito (trigger_id ~3s) e
+    // il prefill arriva con una views.update appena pronto.
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '⏳ Sto recuperando i tuoi daily della settimana per precompilare…' }],
+    });
+  } else if (prefill && prefill.length > 0) {
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: '✨ Precompilato dai tuoi daily di questa settimana — conferma o aggiusta per la prossima.' }],
@@ -216,17 +223,17 @@ function buildPlannerBlocks(projects, rowCount, weekStart, prefill) {
 function buildPlannerView(projects, meta) {
   return {
     type: 'modal', callback_id: 'wp_submit',
-    private_metadata: JSON.stringify(meta),
+    private_metadata: JSON.stringify({ rows: meta.rows, week_start: meta.week_start, prefill: meta.prefill }),
     title: { type: 'plain_text', text: 'Weekly Planner' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start, meta.prefill),
+    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start, meta.prefill, meta.loading),
   };
 }
 
 // ─── Daily Check-in ──────────────────────────────────────────────────────────
 
-function buildCheckinBlocks(projects, rowCount, logDate, prefill) {
+function buildCheckinBlocks(projects, rowCount, logDate, prefill, loading) {
   var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '⏱  Check-in giornaliero' } });
@@ -234,10 +241,15 @@ function buildCheckinBlocks(projects, rowCount, logDate, prefill) {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: 'Ore effettivamente lavorate il *' + (logDate || 'oggi') + '*, progetto per progetto.' }],
   });
-  if (prefill && prefill.length > 0) {
+  if (loading) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '✨ Precompilato dal tuo daily di stamattina — conferma o correggi le ore reali.' }],
+      elements: [{ type: 'mrkdwn', text: '⏳ Sto recuperando il tuo daily per precompilare…' }],
+    });
+  } else if (prefill && prefill.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '✨ Precompilato dal tuo daily — conferma o correggi le ore reali.' }],
     });
   }
   for (var i = 1; i <= rowCount; i++) {
@@ -259,11 +271,11 @@ function buildCheckinBlocks(projects, rowCount, logDate, prefill) {
 function buildCheckinView(projects, meta) {
   return {
     type: 'modal', callback_id: 'tt_submit',
-    private_metadata: JSON.stringify(meta),
+    private_metadata: JSON.stringify({ rows: meta.rows, log_date: meta.log_date, prefill: meta.prefill }),
     title: { type: 'plain_text', text: 'Check-in giornaliero' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildCheckinBlocks(projects, meta.rows || 2, meta.log_date, meta.prefill),
+    blocks: buildCheckinBlocks(projects, meta.rows || 2, meta.log_date, meta.prefill, meta.loading),
   };
 }
 
