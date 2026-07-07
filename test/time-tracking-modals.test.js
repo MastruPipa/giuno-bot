@@ -184,3 +184,21 @@ test('buildPlannerPostText: totale, ordinamento per ore e nomi progetto con fall
   // ordinato per ore decrescenti: Dicar prima
   assert.ok(text.indexOf('• Dicar: 12.5h') < text.indexOf('• p_sconosciuto: 4h'));
 });
+
+test('buildPlannerBlocks: stato loading mostra il context "sto recuperando" e nessun banner prefill', function() {
+  var blocks = modals.buildPlannerBlocks(PROJECTS, 2, '2026-07-13', null, true);
+  var hasLoading = blocks.some(function(b) {
+    return b.type === 'context' && b.elements && /sto recuperando/i.test(b.elements[0].text || '');
+  });
+  assert.ok(hasLoading);
+  // dopo l'update col prefill, il loading sparisce e appare il banner
+  var updated = modals.buildPlannerBlocks(PROJECTS, 2, '2026-07-13', [{ project_id: 'p1', hours: 8 }], false);
+  var stillLoading = updated.some(function(b) {
+    return b.type === 'context' && b.elements && /sto recuperando/i.test(b.elements[0].text || '');
+  });
+  assert.equal(stillLoading, false);
+  var hasBanner = updated.some(function(b) {
+    return b.type === 'context' && b.elements && /precompilato/i.test(b.elements[0].text || '');
+  });
+  assert.ok(hasBanner);
+});

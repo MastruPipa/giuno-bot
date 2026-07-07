@@ -41,7 +41,21 @@ async function buildPrefillFromWeekDailies(userId) {
     var tasks = [];
     (res.data || []).forEach(function(r) { tasks = tasks.concat(r.oggi_tasks || []); });
     var prefill = modals.prefillRowsFromTasks(tasks, modals.MAX_ROWS_PLANNER, 60);
-    return prefill.length > 0 ? prefill : null;
+    if (prefill.length > 0) return prefill;
+
+    // Fallback: nessun task agganciato a progetti questa settimana (daily
+    // generici o assenti) → proponi l'ultima pianificazione (il piano fatto
+    // giovedì scorso per la settimana in corso). Copre le prime settimane di
+    // adozione e chi scrive task senza nome progetto.
+    var planned = await db.getWeekPlanned(userId, weekStart);
+    var fromPlan = Object.keys(planned || {})
+      .map(function(pid) {
+        var hours = Math.min(60, Math.max(0.5, Math.round((planned[pid] || 0) * 100) / 100));
+        return { project_id: pid, hours: hours };
+      })
+      .sort(function(a, b) { return b.hours - a.hours; })
+      .slice(0, modals.MAX_ROWS_PLANNER);
+    return fromPlan.length > 0 ? fromPlan : null;
   } catch(e) {
     logger.debug('[PLANNER] prefill dai daily non disponibile:', e.message);
     return null;
@@ -50,24 +64,22 @@ async function buildPrefillFromWeekDailies(userId) {
 
 // ─── Apertura modale ─────────────────────────────────────────────────────────
 
+// Pattern open-then-update: views.open SUBITO (il trigger_id scade in ~3s),
+// poi il prefill viene calcolato con calma e iniettato con views.update sul
+// view_id. Prima c'era un budget di 800ms pre-open che a query fredda
+// scartava il prefill in silenzio — il modale arrivava vuoto anche coi dati.
 async function openPlannerModal(triggerId, userId) {
   var ackStart = Date.now();
   var weekStart = dates.nextMonday(dates.oggiRome());
+  var openRes = null;
+  var projects = null;
   try {
-    var projects = await modals.getActiveProjectsCached();
-    // Budget stretto: il trigger_id scade in ~3s, il prefill non deve bruciarlo.
-    var prefill = null;
-    try {
-      prefill = await withTimeout(function() {
-        return buildPrefillFromWeekDailies(userId);
-      }, 800, 'planner prefill');
-    } catch(e) { logger.debug('[PLANNER] prefill saltato:', e.message); }
-    var rows = Math.max(2, (prefill || []).length);
-    await withTimeout(function() {
+    projects = await modals.getActiveProjectsCached();
+    openRes = await withTimeout(function() {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: modals.buildPlannerView(projects, { rows: rows, week_start: weekStart, prefill: prefill }),
+          view: modals.buildPlannerView(projects, { rows: 2, week_start: weekStart, loading: true }),
         });
       }, {
         retries: 1,
@@ -91,6 +103,28 @@ async function openPlannerModal(triggerId, userId) {
         text: 'Non riesco ad aprire il modulo di pianificazione in questo momento. Riprova tra un attimo cliccando di nuovo il bottone.',
       });
     } catch(e2) { logger.debug('[PLANNER] fallback DM error:', e2 && e2.message); }
+    return;
+  }
+
+  // Fase 2 — prefill senza fretta, poi update della view già aperta
+  try {
+    var viewId = openRes && openRes.view && openRes.view.id;
+    if (!viewId) return;
+    var prefill = null;
+    try {
+      prefill = await withTimeout(function() {
+        return buildPrefillFromWeekDailies(userId);
+      }, 5000, 'planner prefill');
+    } catch(e) { logger.debug('[PLANNER] prefill non disponibile:', e.message); }
+    var rows = Math.max(2, (prefill || []).length);
+    await app.client.views.update({
+      view_id: viewId,
+      view: modals.buildPlannerView(projects, { rows: rows, week_start: weekStart, prefill: prefill }),
+    });
+    if (prefill) logger.info('[PLANNER] Prefill iniettato:', prefill.length, 'righe per', userId);
+  } catch(e) {
+    // Se l'update fallisce il modale resta comunque usabile (vuoto)
+    logger.warn('[PLANNER] views.update prefill fallita:', e.message);
   }
 }
 
