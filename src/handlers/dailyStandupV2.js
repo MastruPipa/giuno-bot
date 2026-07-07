@@ -40,6 +40,48 @@ function oggi() {
 
 // ─── 09:00 — Send DM to all team members ────────────────────────────────────
 
+// Invio singolo del DM col bottone "Compila daily": usato dal cron delle 9:00
+// e dal tool admin trigger_daily_request (test on-demand). Aggiunge l'utente
+// a standupInAttesa così anche una risposta testuale in DM viene riconosciuta.
+// persistInAttesa=true (invii fuori cron) salva subito lo stato: il cron lo
+// fa già in blocco a fine loop.
+async function sendDailyRequestTo(utente, persistInAttesa) {
+  var standupInAttesa = getStandupInAttesa();
+  standupInAttesa.add(utente.id);
+  if (persistInAttesa) {
+    try {
+      var sd = db.getStandupCache();
+      if (sd.oggi !== oggi()) { sd.oggi = oggi(); sd.risposte = {}; }
+      sd.inattesa = Array.from(standupInAttesa);
+      await db.saveStandup(sd);
+    } catch(e) { logger.warn('[DAILY-V2] persist inattesa fallito:', e.message); }
+  }
+  var nome = (utente.name || '').split(' ')[0] || 'ciao';
+  await app.client.chat.postMessage({
+    channel: utente.id,
+    text: 'Ciao ' + nome + ', è il momento del daily!',
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*, è il momento del daily!' },
+      },
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Il recap esce alle 11:30.' }],
+      },
+      {
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: '✏️ Compila daily', emoji: true },
+          style: 'primary',
+          action_id: 'open_daily_modal',
+        }],
+      },
+    ],
+  });
+}
+
 async function sendDailyRequests() {
   var locked = await acquireCronLock('daily_standup_v2_send', 10);
   if (!locked) return;
@@ -70,31 +112,7 @@ async function sendDailyRequests() {
       if (!getPrefs(utente.id).standup_enabled) continue;
       if (isExcludedFromDaily(utente)) continue;
       try {
-        standupInAttesa.add(utente.id);
-        var nome = utente.name.split(' ')[0];
-        await app.client.chat.postMessage({
-          channel: utente.id,
-          text: 'Ciao ' + nome + ', è il momento del daily!',
-          blocks: [
-            {
-              type: 'section',
-              text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*, è il momento del daily!' },
-            },
-            {
-              type: 'context',
-              elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Il recap esce alle 11:30.' }],
-            },
-            {
-              type: 'actions',
-              elements: [{
-                type: 'button',
-                text: { type: 'plain_text', text: '✏️ Compila daily', emoji: true },
-                style: 'primary',
-                action_id: 'open_daily_modal',
-              }],
-            },
-          ],
-        });
+        await sendDailyRequestTo(utente);
         inviati++;
       } catch(e) {
         logger.error('[DAILY-V2] Errore invio a', utente.id + ':', e.message);
@@ -483,6 +501,7 @@ module.exports = {
   recordChannelDaily: recordChannelDaily,
   classifyDailyText: classifyDailyText,
   sendDailyRequests: sendDailyRequests,
+  sendDailyRequestTo: sendDailyRequestTo,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
   oggi: oggi,

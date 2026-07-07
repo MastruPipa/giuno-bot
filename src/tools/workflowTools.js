@@ -95,12 +95,67 @@ var definitions = [
       required: ['questions'],
     },
   },
+  {
+    name: 'trigger_daily_request',
+    description: 'Invia SUBITO il DM di richiesta daily (bottone "✏️ Compila daily") a un utente, fuori dal cron ' +
+      'delle 9:00 e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
+      'di test", "fammi provare il daily", "manda la richiesta daily a X". Solo admin.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'Slack ID del destinatario (opzionale, default: chi lo chiede)' },
+      },
+    },
+  },
+  {
+    name: 'trigger_checkin_request',
+    description: 'Invia SUBITO il DM di richiesta check-in ore (bottone "⏱ Traccia le ore", precompilato dal daily ' +
+      'del giorno) a un utente, fuori dal cron delle 17:30 e bypassando le esclusioni. Usalo quando un admin chiede ' +
+      'di testare il check-in: "mandami il check-in di test", "fammi provare il tracciamento ore". Solo admin.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        user_id: { type: 'string', description: 'Slack ID del destinatario (opzionale, default: chi lo chiede)' },
+        date: { type: 'string', description: 'Data YYYY-MM-DD del check-in (opzionale, default: oggi)' },
+      },
+    },
+  },
 ];
 
 // ─── Execution ──────────────────────────────────────────────────────────────
 
 async function execute(toolName, input, userId, userRole) {
   input = input || {};
+
+  // ─── Trigger di test: richiesta daily / check-in on-demand ─────────────
+  // Bypassano cron ed esclusioni: servono all'admin per testare bottoni e
+  // modali senza aspettare le 9:00/17:30. Non toccano il DB direttamente,
+  // quindi vivono PRIMA della guardia supabase.
+  if (toolName === 'trigger_daily_request' || toolName === 'trigger_checkin_request') {
+    if (userRole !== 'admin') return { error: 'Solo admin può inviare le richieste di test.' };
+    try {
+      var targetId = input.user_id || userId;
+      if (!targetId || targetId === 'system') return { error: 'Nessun destinatario: specifica user_id.' };
+      var { getUtenti } = require('../services/slackService');
+      var allUsers = await getUtenti();
+      var target = allUsers.find(function(u) { return u.id === targetId; }) || { id: targetId, name: '' };
+
+      if (toolName === 'trigger_daily_request') {
+        var dailyV2 = require('../handlers/dailyStandupV2');
+        await dailyV2.sendDailyRequestTo(target, true);
+        return { success: true, sent_to: target.id, tipo: 'daily',
+          nota: 'DM col bottone "✏️ Compila daily" inviato. Vale anche una risposta testuale in DM (parser AI).' };
+      }
+
+      var timeTracking = require('../handlers/timeTracking');
+      var trackingDatesMod = require('../utils/trackingDates');
+      var logDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.date || '')) ? input.date : trackingDatesMod.oggiRome();
+      await timeTracking.sendCheckinRequestTo(target, logDate);
+      return { success: true, sent_to: target.id, tipo: 'checkin', log_date: logDate,
+        nota: 'DM col bottone "⏱ Traccia le ore" inviato. Il modale si precompila dal daily del ' + logDate + '.' };
+    } catch(e) { return { error: e.message }; }
+  }
+
   var supabase = db.getClient ? db.getClient() : null;
   if (!supabase) return { error: 'DB non disponibile.' };
 

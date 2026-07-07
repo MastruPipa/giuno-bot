@@ -140,6 +140,25 @@ async function openCheckinModal(triggerId, userId, logDate) {
 
 // ─── 17:30 lun-ven — Richiesta check-in ──────────────────────────────────────
 
+// Invio singolo del DM col bottone "Traccia le ore": usato dal cron delle
+// 17:30 e dal tool admin trigger_checkin_request (test on-demand).
+async function sendCheckinRequestTo(utente, logDate) {
+  var nome = (utente.name || '').split(' ')[0] || 'ciao';
+  await app.client.chat.postMessage({
+    channel: utente.id,
+    text: 'Ciao ' + nome + '! È il momento del check-in giornaliero.',
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! È il momento del check-in giornaliero: quante ore hai lavorato oggi, e su cosa?' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Se non riesci ora, puoi compilarlo domattina entro le 09:30.' }] },
+      { type: 'actions', elements: [{
+        type: 'button', style: 'primary',
+        text: { type: 'plain_text', text: '⏱ Traccia le ore di oggi', emoji: true },
+        action_id: 'tt_open_modal', value: logDate,
+      }] },
+    ],
+  });
+}
+
 async function sendCheckinRequests() {
   var locked = await acquireCronLock('daily_checkin_send', 10);
   if (!locked) return;
@@ -151,20 +170,7 @@ async function sendCheckinRequests() {
     for (var i = 0; i < participants.length; i++) {
       var u = participants[i];
       try {
-        var nome = (u.name || '').split(' ')[0] || 'ciao';
-        await app.client.chat.postMessage({
-          channel: u.id,
-          text: 'Ciao ' + nome + '! È il momento del check-in giornaliero.',
-          blocks: [
-            { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! È il momento del check-in giornaliero: quante ore hai lavorato oggi, e su cosa?' } },
-            { type: 'context', elements: [{ type: 'mrkdwn', text: 'Se non riesci ora, puoi compilarlo domattina entro le 09:30.' }] },
-            { type: 'actions', elements: [{
-              type: 'button', style: 'primary',
-              text: { type: 'plain_text', text: '⏱ Traccia le ore di oggi', emoji: true },
-              action_id: 'tt_open_modal', value: todayStr,
-            }] },
-          ],
-        });
+        await sendCheckinRequestTo(u, todayStr);
         inviati++;
       } catch(e) {
         logger.error('[CHECKIN] Errore invio a', u.id + ':', e.message);
@@ -435,6 +441,7 @@ module.exports = {
   register: register,
   scheduleCheckinJobs: scheduleCheckinJobs,
   sendCheckinRequests: sendCheckinRequests,
+  sendCheckinRequestTo: sendCheckinRequestTo,
   sendMorningCorrection: sendMorningCorrection,
   closeCorrectionWindow: closeCorrectionWindow,
   getParticipants: getParticipants,
