@@ -18,6 +18,14 @@ async function main() {
     'SLACK_APP_TOKEN',
   ], 'APP_BOOT');
 
+  // HTTP server (OAuth + dashboard + /healthz) SUBITO, prima di db.initAll e
+  // app.start(): l'healthcheck Railway deve trovare /healthz che risponde
+  // durante tutto il boot, altrimenti un avvio lento manda il deploy in
+  // crash-loop (successo il 29/6, healthcheck poi rimosso — ora si può
+  // riattivare). Le route pesanti caricano le dipendenze lazy, quindi
+  // partire per primi è sicuro.
+  oauthHandler.startOAuthServer();
+
   // Importing slackHandlers registers all app.event / app.message / app.command
   // handlers onto the Bolt app as a side-effect of require().
   var slackService = require('./services/slackService');
@@ -54,6 +62,25 @@ async function main() {
   // Start Slack in Socket Mode
   await app.start();
   logger.info('Giuno Bolt app avviata in Socket Mode');
+
+  // Se la websocket muore e non si riprende, meglio riavviare che restare zombie
+  require('./utils/socketWatchdog').arm(app);
+
+  // Shutdown rapido su SIGTERM/SIGINT: durante un redeploy Railway tiene in vita
+  // il container vecchio finché il nuovo non è su — se il vecchio non esce in
+  // fretta, per qualche minuto girano DUE istanze e i cron senza lock partono
+  // doppi (il check-in mensile del 6/7 è arrivato due volte a mezzo team).
+  ['SIGTERM', 'SIGINT'].forEach(function(sig) {
+    process.on(sig, function() {
+      logger.info('[SHUTDOWN] Ricevuto ' + sig + ' — chiudo Socket Mode ed esco.');
+      var hardExit = setTimeout(function() { process.exit(0); }, 5000);
+      if (hardExit.unref) hardExit.unref();
+      Promise.resolve()
+        .then(function() { return app.stop(); })
+        .then(function() { process.exit(0); })
+        .catch(function() { process.exit(0); });
+    });
+  });
   logger.info('SLACK_USER_TOKEN presente:', !!process.env.SLACK_USER_TOKEN);
   logger.info('SLACK_BOT_TOKEN presente:', !!process.env.SLACK_BOT_TOKEN);
   logger.info('ATTIO_API_KEY presente:', !!process.env.ATTIO_API_KEY,
@@ -99,9 +126,6 @@ async function main() {
       logger.info('[TEAM-ROSTER] Seed da Slack:', seeded, 'membri inseriti.');
     }
   } catch(e) { logger.warn('[TEAM-ROSTER] seed da Slack fallito:', e.message); }
-
-  // Start OAuth + Dashboard HTTP server
-  oauthHandler.startOAuthServer();
 
   // Schedule all cron jobs
   cronHandlers.scheduleCrons();

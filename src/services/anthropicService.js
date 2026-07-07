@@ -1043,6 +1043,7 @@ async function askGiuno(userId, userMessage, options) {
   var finalReply = '';
   var retryCount = 0;
   var toolsCalled = [];
+  var toolEvidence = [];
 
   while (true) {
     var response;
@@ -1079,6 +1080,7 @@ async function askGiuno(userId, userMessage, options) {
           var result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
           var resultStr = JSON.stringify(result);
           logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
+          toolEvidence.push(resultStr);
 
           return { type: 'tool_result', tool_use_id: tu.id, content: resultStr };
         })
@@ -1100,7 +1102,18 @@ async function askGiuno(userId, userMessage, options) {
   // hard "non sono sicuro" fallback; suppressing wrong-sounding answers is
   // better than confidently inventing several names.
   try {
-    var ungrounded = validator.findUngroundedEntities(finalReply, [resolvedMessage, contextData]);
+    // L'evidenza deve includere TUTTO ciò che il modello ha davvero visto:
+    // senza i risultati dei tool, ogni nome letto da un documento risultava
+    // "non ancorato" e la risposta veniva soppressa (caso Nicolò 9/6: tre
+    // rifiuti di fila su un documento appena letto via tool). Idem lo storico
+    // conversazione: un nome citato dall'utente due messaggi fa è legittimo.
+    var historyEvidence = messages.map(function(m) {
+      return typeof m.content === 'string' ? m.content : '';
+    });
+    var ungrounded = validator.findUngroundedEntities(
+      finalReply,
+      [resolvedMessage, contextData].concat(historyEvidence, toolEvidence)
+    );
     if (ungrounded.length > 0) {
       logger.warn('[VALIDATOR] Entità non ancorate nel contesto:', ungrounded.join(', '),
         '| user:', userId, '| reply:', finalReply.substring(0, 120));

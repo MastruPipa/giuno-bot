@@ -1193,6 +1193,20 @@ async function consolidaMemorie() {
   logger.info('[CONSOLIDATE] Completato. Memorie consolidate/rimosse:', totalConsolidated);
 }
 
+// Avvolge un job in un lock distribuito: durante un redeploy Railway la
+// vecchia e la nuova istanza convivono per qualche istante e i cron senza
+// lock partono DOPPI (il 6/7 mezzo team ha ricevuto due volte il check-in
+// mensile). Ogni job che invia messaggi o muta dati deve passare da qui.
+function lockedJob(lockName, ttlMinutes, fn) {
+  return async function() {
+    var locked = await acquireCronLock(lockName, ttlMinutes);
+    if (!locked) return;
+    try { await fn(); }
+    catch(e) { logger.error('[CRON:' + lockName + '] Errore:', e.message); }
+    finally { await releaseCronLock(lockName); }
+  };
+}
+
 function scheduleCrons() {
   cron.schedule('30 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
@@ -1234,7 +1248,7 @@ function scheduleCrons() {
     checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome' });
   // Daily priorities DM — 9:15 lun-ven (dopo standup delle 9:00)
-  cron.schedule('15 9 * * 1-5', async function() {
+  cron.schedule('15 9 * * 1-5', lockedJob('daily_priorities', 30, async function() {
     try {
       var workflowTools = require('../tools/workflowTools');
       var { getUtenti } = require('../services/slackService');
@@ -1259,21 +1273,26 @@ function scheduleCrons() {
         } catch(e) { logger.debug('[DAILY-PRIO] Errore per', u.id + ':', e.message); }
       }
     } catch(e) { logger.error('[DAILY-PRIO] Errore generale:', e.message); }
-  }, { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome' });
   // Monthly feedback — primo lunedì del mese alle 10:00
   cron.schedule('0 10 1-7 * 1', async function() {
+    // Lock distribuito: senza, due istanze sovrapposte durante un redeploy
+    // inviano il questionario due volte (successo il 6/7/2026)
+    var locked = await acquireCronLock('monthly_feedback', 60);
+    if (!locked) return;
     try {
       var workflowTools = require('../tools/workflowTools');
       await workflowTools.execute('start_feedback', {}, 'system', 'admin');
       logger.info('[FEEDBACK-CRON] Questionario mensile avviato.');
-    } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message); }
+    } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message);
+    } finally { await releaseCronLock('monthly_feedback'); }
   }, { timezone: 'Europe/Rome' });
   // Legacy weekly recap (kept as fallback)
   cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
-  cron.schedule('0 */2 * * *', indicizzaDriveTutti, { timezone: 'Europe/Rome' });
+  cron.schedule('0 */2 * * *', lockedJob('drive_index_all', 60, indicizzaDriveTutti), { timezone: 'Europe/Rome' });
   cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
-  cron.schedule('0 10 * * 1-5', invitaNonConnessi, { timezone: 'Europe/Rome' });
-  cron.schedule('30 */2 * * 1-5', monitoraDomandeInSospeso, { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
+  cron.schedule('0 10 * * 1-5', lockedJob('push_google_invite', 10, invitaNonConnessi), { timezone: 'Europe/Rome' });
+  cron.schedule('30 */2 * * 1-5', lockedJob('monitor_domande', 30, monitoraDomandeInSospeso), { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
   // Proactive monitor (10:00/16:00, alert budget/lead/scadenze) — DISATTIVATO
   // di default: gli alert risultavano caotici (lead interni stantii segnalati
   // come critici). Riattivabile con PROACTIVE_ALERTS_ENABLED=true quando i
@@ -1287,7 +1306,7 @@ function scheduleCrons() {
     logger.info('[PROACTIVE-CRON] Proactive monitor disattivato (PROACTIVE_ALERTS_ENABLED != true)');
   }
   // Memory decay — ogni notte alle 4:00, abbassa confidence memorie vecchie non usate
-  cron.schedule('0 4 * * *', async function() {
+  cron.schedule('0 4 * * *', lockedJob('memory_decay_daily', 60, async function() {
     try {
       var supabase = db.getClient ? db.getClient() : null;
       if (!supabase) return;
@@ -1333,14 +1352,14 @@ function scheduleCrons() {
 
       if (decayed > 0 || boosted > 0) logger.info('[MEMORY-DECAY] Decayed:', decayed, '| Boosted:', boosted);
     } catch(e) { logger.error('[MEMORY-DECAY] Errore:', e.message); }
-  }, { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome' });
 
   // Behavior tracker flush — ogni 5 minuti
   cron.schedule('*/5 * * * *', function() {
     var behaviorTracker = require('../services/behaviorTracker');
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
   });
-  cron.schedule('0 3 * * 0,3', consolidaMemorie, { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
+  cron.schedule('0 3 * * 0,3', lockedJob('consolida_memorie', 60, consolidaMemorie), { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
   // 03:30 (non 04:00): alle 4 gira già il decay giornaliero della confidence
   // sulla stessa tabella — sfalsati per non aggiornare le stesse righe insieme
   cron.schedule('30 3 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 3:30
@@ -1471,13 +1490,13 @@ function scheduleCrons() {
     finally { await releaseCronLock('entity_backfill'); }
   }, { timezone: 'Europe/Rome' });
   // Embedding backfill — ogni notte alle 4:30, genera embeddings per memorie/KB che non li hanno
-  cron.schedule('30 4 * * *', async function() {
+  cron.schedule('30 4 * * *', lockedJob('embedding_backfill', 60, async function() {
     try {
       var embService = require('../services/embeddingService');
       var processed = await embService.backfillEmbeddings();
       if (processed > 0) logger.info('[EMBEDDING-BACKFILL] Processed:', processed);
     } catch(e) { logger.error('[EMBEDDING-BACKFILL] Errore:', e.message); }
-  }, { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome' });
   cron.schedule('0 5 1-7 * 1', async function() {
     var locked = await acquireCronLock('kb_quality_sweep', 60);
     if (!locked) return;
