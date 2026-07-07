@@ -19,6 +19,34 @@ var dates = require('../utils/trackingDates');
 var timeTracking = require('./timeTracking');
 
 var OPS_ALERTS_CHANNEL_ID = process.env.OPS_ALERTS_CHANNEL_ID || null;
+// Canale del recap di pianificazione (#weekly). Override via env.
+var WEEKLY_CHANNEL_ID = process.env.WEEKLY_CHANNEL_ID || 'C0BFPU51ZMG';
+
+// ─── Prefill dai daily della settimana corrente ──────────────────────────────
+// Il modale del giovedì non parte più vuoto: i task "oggi" dei daily di
+// QUESTA settimana (con project_id dal matcher) diventano righe precompilate
+// per la settimana prossima — la maggior parte delle settimane si assomiglia,
+// confermare costa 10 secondi, ricompilare da zero era il motivo per cui
+// nessuno ha mai pianificato.
+async function buildPrefillFromWeekDailies(userId) {
+  try {
+    var supabase = db.getClient ? db.getClient() : null;
+    if (!supabase) return null;
+    var weekStart = dates.weekStartOf(dates.oggiRome());
+    var res = await supabase.from('standup_entries')
+      .select('oggi_tasks')
+      .eq('slack_user_id', userId)
+      .gte('date', weekStart)
+      .lte('date', dates.oggiRome());
+    var tasks = [];
+    (res.data || []).forEach(function(r) { tasks = tasks.concat(r.oggi_tasks || []); });
+    var prefill = modals.prefillRowsFromTasks(tasks, modals.MAX_ROWS_PLANNER, 60);
+    return prefill.length > 0 ? prefill : null;
+  } catch(e) {
+    logger.debug('[PLANNER] prefill dai daily non disponibile:', e.message);
+    return null;
+  }
+}
 
 // ─── Apertura modale ─────────────────────────────────────────────────────────
 
@@ -27,11 +55,19 @@ async function openPlannerModal(triggerId, userId) {
   var weekStart = dates.nextMonday(dates.oggiRome());
   try {
     var projects = await modals.getActiveProjectsCached();
+    // Budget stretto: il trigger_id scade in ~3s, il prefill non deve bruciarlo.
+    var prefill = null;
+    try {
+      prefill = await withTimeout(function() {
+        return buildPrefillFromWeekDailies(userId);
+      }, 800, 'planner prefill');
+    } catch(e) { logger.debug('[PLANNER] prefill saltato:', e.message); }
+    var rows = Math.max(2, (prefill || []).length);
     await withTimeout(function() {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: modals.buildPlannerView(projects, { rows: 2, week_start: weekStart }),
+          view: modals.buildPlannerView(projects, { rows: rows, week_start: weekStart, prefill: prefill }),
         });
       }, {
         retries: 1,
@@ -60,6 +96,26 @@ async function openPlannerModal(triggerId, userId) {
 
 // ─── Giovedì 15:00 — Richiesta pianificazione ────────────────────────────────
 
+// Invio singolo del DM col bottone di pianificazione: usato dal cron del
+// giovedì e dal tool admin trigger_planner_request (test on-demand).
+async function sendPlannerRequestTo(utente) {
+  var weekStart = dates.nextMonday(dates.oggiRome());
+  var nome = (utente.name || '').split(' ')[0] || 'ciao';
+  await app.client.chat.postMessage({
+    channel: utente.id,
+    text: 'Ciao ' + nome + ', pianifica la tua prossima settimana!',
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! Su quali progetti lavorerai la settimana che inizia il *' + weekStart + '*, e per quante ore? Il modulo è già precompilato coi tuoi daily di questa settimana.' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Hai tempo fino a domani (venerdì) alle 12:00. Il recap esce in #weekly.' }] },
+      { type: 'actions', elements: [{
+        type: 'button', style: 'primary',
+        text: { type: 'plain_text', text: '🗓 Pianifica la tua prossima settimana', emoji: true },
+        action_id: 'wp_open_modal',
+      }] },
+    ],
+  });
+}
+
 async function sendPlannerRequests() {
   var locked = await acquireCronLock('weekly_planner_send', 10);
   if (!locked) return;
@@ -71,20 +127,7 @@ async function sendPlannerRequests() {
     for (var i = 0; i < participants.length; i++) {
       var u = participants[i];
       try {
-        var nome = (u.name || '').split(' ')[0] || 'ciao';
-        await app.client.chat.postMessage({
-          channel: u.id,
-          text: 'Ciao ' + nome + ', pianifica la tua prossima settimana!',
-          blocks: [
-            { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! Su quali progetti lavorerai la settimana che inizia il *' + weekStart + '*, e per quante ore?' } },
-            { type: 'context', elements: [{ type: 'mrkdwn', text: 'Hai tempo fino alle 18:00 di oggi.' }] },
-            { type: 'actions', elements: [{
-              type: 'button', style: 'primary',
-              text: { type: 'plain_text', text: '🗓 Pianifica la tua prossima settimana', emoji: true },
-              action_id: 'wp_open_modal',
-            }] },
-          ],
-        });
+        await sendPlannerRequestTo(u);
         inviati++;
       } catch(e) {
         logger.error('[PLANNER] Errore invio a', u.id + ':', e.message);
@@ -108,7 +151,7 @@ async function getPlannedUserSet(weekStart) {
   return { participants: participants, planned: planned };
 }
 
-// ─── Giovedì 17:15 — Reminder ai mancanti ────────────────────────────────────
+// ─── Venerdì 09:30 — Reminder ai mancanti ────────────────────────────────────
 
 async function sendPlannerReminder() {
   var locked = await acquireCronLock('weekly_planner_reminder', 5);
@@ -125,7 +168,7 @@ async function sendPlannerReminder() {
           channel: u.id,
           text: 'Ehi, manca ancora il tuo inserimento dei tempi. Clicca qui per completarlo ora.',
           blocks: [
-            { type: 'section', text: { type: 'mrkdwn', text: 'Ehi, manca ancora la tua *pianificazione della prossima settimana*. La finestra chiude alle *18:00*.' } },
+            { type: 'section', text: { type: 'mrkdwn', text: 'Ehi, manca ancora la tua *pianificazione della prossima settimana*. La finestra chiude *oggi alle 12:00* — è già precompilata coi tuoi daily, ci vogliono 10 secondi.' } },
             { type: 'actions', elements: [{
               type: 'button', style: 'primary',
               text: { type: 'plain_text', text: '🗓 Completa ora', emoji: true },
@@ -144,7 +187,37 @@ async function sendPlannerReminder() {
   }
 }
 
-// ─── Giovedì 18:00 — Chiusura finestra ───────────────────────────────────────
+// ─── Venerdì 12:00 — Chiusura finestra + recap in #weekly ────────────────────
+
+// Il recap pubblico è il valore restituito del rito: la settimana pianificata
+// per persona (ore per progetto), i totali e chi manca — tutto in #weekly.
+async function buildWeeklyRecapText(weekStart, state) {
+  var projects = await modals.getActiveProjectsCached();
+  var nameById = {};
+  projects.forEach(function(p) { nameById[p.id] = p.name; });
+
+  var lines = ['🗓 *Pianificazione settimana ' + weekStart + '*', ''];
+  var planned = state.participants.filter(function(u) { return state.planned[u.id]; });
+  for (var i = 0; i < planned.length; i++) {
+    var u = planned[i];
+    var byProject = await db.getWeekPlanned(u.id, weekStart);
+    var total = 0;
+    var projParts = Object.keys(byProject)
+      .sort(function(a, b) { return byProject[b] - byProject[a]; })
+      .map(function(pid) {
+        total += byProject[pid];
+        return (nameById[pid] || pid) + ' ' + byProject[pid] + 'h';
+      });
+    lines.push('• <@' + u.id + '> — *' + Math.round(total * 10) / 10 + 'h*: ' + projParts.join(', '));
+  }
+  var missing = state.participants.filter(function(u) { return !state.planned[u.id]; });
+  if (planned.length === 0) lines.push('_Nessuna pianificazione ricevuta questa settimana._');
+  if (missing.length > 0) {
+    lines.push('');
+    lines.push('*Mancano all\'appello:* ' + missing.map(function(u) { return '<@' + u.id + '>'; }).join(', '));
+  }
+  return lines.join('\n');
+}
 
 async function closePlannerWindow() {
   var locked = await acquireCronLock('weekly_planner_close', 5);
@@ -154,6 +227,23 @@ async function closePlannerWindow() {
     var state = await getPlannedUserSet(weekStart);
     var missing = state.participants.filter(function(u) { return !state.planned[u.id]; });
     logger.info('[PLANNER] Finestra chiusa per', weekStart + ':', (state.participants.length - missing.length) + '/' + state.participants.length, 'hanno pianificato.');
+
+    // Recap pubblico in #weekly (pianificazioni + mancanti)
+    if (WEEKLY_CHANNEL_ID) {
+      try {
+        var recap = await buildWeeklyRecapText(weekStart, state);
+        try { await app.client.conversations.join({ channel: WEEKLY_CHANNEL_ID }); } catch(e) { /* già dentro o privato */ }
+        await app.client.chat.postMessage({
+          channel: WEEKLY_CHANNEL_ID,
+          text: recap,
+          unfurl_links: false,
+        });
+      } catch(e) {
+        logger.error('[PLANNER] Errore recap #weekly:', e.message);
+      }
+    }
+
+    // Alert ops (se configurato) sui soli mancanti
     if (missing.length === 0 || !OPS_ALERTS_CHANNEL_ID) return;
     try {
       try { await app.client.conversations.join({ channel: OPS_ALERTS_CHANNEL_ID }); } catch(e) { /* canale privato o già dentro */ }
@@ -270,28 +360,33 @@ function schedulePlannerJobs(cron) {
     logger.info('[PLANNER] TIME_TRACKING_ENABLED=false, cron planner non schedulati');
     return;
   }
-  // Giovedì 15:00 — richiesta pianificazione
+  // Giovedì 15:00 — richiesta pianificazione. La finestra resta aperta fino
+  // a venerdì 12:00: le vecchie 3 ore del giovedì pomeriggio (15-18) erano
+  // troppo strette — chi era in call o in delivery perdeva il treno, e in
+  // mesi di attività NESSUNO ha mai compilato una pianificazione.
   cron.schedule('0 15 * * 4', function() {
     sendPlannerRequests().catch(function(e) { logger.error('[PLANNER] Errore invio:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  // Giovedì 17:15 — reminder (non 17:00: già occupato da follow-up agent)
-  cron.schedule('15 17 * * 4', function() {
+  // Venerdì 09:30 — reminder ai soli mancanti
+  cron.schedule('30 9 * * 5', function() {
     sendPlannerReminder().catch(function(e) { logger.error('[PLANNER] Errore reminder:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  // Giovedì 18:00 — chiusura finestra
-  cron.schedule('0 18 * * 4', function() {
+  // Venerdì 12:00 — chiusura finestra + recap in #weekly
+  cron.schedule('0 12 * * 5', function() {
     closePlannerWindow().catch(function(e) { logger.error('[PLANNER] Errore chiusura:', e.message); });
   }, { timezone: 'Europe/Rome' });
 
-  logger.info('[PLANNER] Cron jobs schedulati: gio 15:00 send, 17:15 reminder, 18:00 close');
+  logger.info('[PLANNER] Cron jobs schedulati: gio 15:00 send, ven 09:30 reminder, ven 12:00 close+recap');
 }
 
 module.exports = {
   register: register,
   schedulePlannerJobs: schedulePlannerJobs,
   sendPlannerRequests: sendPlannerRequests,
+  sendPlannerRequestTo: sendPlannerRequestTo,
   sendPlannerReminder: sendPlannerReminder,
   closePlannerWindow: closePlannerWindow,
+  buildPrefillFromWeekDailies: buildPrefillFromWeekDailies,
 };

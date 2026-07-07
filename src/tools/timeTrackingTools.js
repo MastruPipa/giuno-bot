@@ -20,7 +20,9 @@ var definitions = [
       'e sull\'EFFORT/carico di una risorsa rispetto al monte orario: "quante ore ho tracciato?", ' +
       '"quanto ha lavorato X su Y?", "qual è l\'effort di X questa settimana?", "quanto è carico il team?", ' +
       '"pianificato vs effettivo". Ritorna, per ogni persona, ore pianificate, ore effettive ed effort_pct ' +
-      'rispetto al monte orario settimanale (40h). NB: per le ore dichiarate nei daily standup testuali usa query_standup.',
+      'su capacita_ore_riferimento (8h × giorni lavorativi della settimana trascorsi). ' +
+      'NB: queste sono le ore EFFETTIVE consuntivate col check-in serale; per le ore STIMATE dichiarate ' +
+      'nei daily del mattino usa query_standup. Se citi entrambe, di\' sempre quale è quale.',
     input_schema: {
       type: 'object',
       properties: {
@@ -47,7 +49,16 @@ var definitions = [
 
 // ─── Implementation ──────────────────────────────────────────────────────────
 
-var WEEKLY_TARGET_HOURS = 40; // monte orario settimanale di riferimento (full-time)
+var { workdaysBetween } = require('../utils/dates');
+
+// Capacità di riferimento: 8h × giorni lavorativi della settimana GIÀ
+// trascorsi (fino a oggi incluso). Per una settimana conclusa fa 40h; per la
+// settimana in corso evita percentuali schiacciate (lunedì: 8h, non 40h).
+function weekCapacityHours(weekStart, weekEnd, today) {
+  var upTo = today < weekEnd ? today : weekEnd;
+  if (upTo < weekStart) return 0;
+  return workdaysBetween(weekStart, upTo) * 8;
+}
 
 function round1(n) { return Math.round((n || 0) * 10) / 10; }
 
@@ -81,6 +92,7 @@ async function queryTimeLogs(input) {
 
   var pva = await db.getPlannedVsActual(weekStart);
   var byUser = pva.byUser || {};
+  var capacityHours = weekCapacityHours(weekStart, dates.addDays(weekStart, 6), dates.oggiRome());
 
   var users = Object.keys(byUser).filter(function(uid) {
     return !uidFilter || uid === uidFilter;
@@ -100,7 +112,7 @@ async function queryTimeLogs(input) {
       name: userLabel(uid),
       hours_planned: round1(planned),
       hours_actual: round1(actual),
-      effort_pct: round1(actual / WEEKLY_TARGET_HOURS * 100), // effort su monte orario 40h
+      effort_pct: capacityHours > 0 ? round1(actual / capacityHours * 100) : 0, // su 8h × giorni lavorativi trascorsi
       projects: projects.map(function(p) {
         return { project: p.name, hours_planned: round1(p.planned), hours_actual: round1(p.actual) };
       }).sort(function(a, b) { return b.hours_actual - a.hours_actual; }),
@@ -113,7 +125,8 @@ async function queryTimeLogs(input) {
     week_end: dates.addDays(weekStart, 6),
     user_filter: uidFilter,
     project_filter: input.project || null,
-    monte_orario_settimanale: WEEKLY_TARGET_HOURS,
+    capacita_ore_riferimento: capacityHours,
+    nota_capacita: '8h × giorni lavorativi della settimana trascorsi fino a oggi',
     total_hours_planned: round1(totalPlanned),
     total_hours_actual: round1(totalActual),
     by_user: userList,

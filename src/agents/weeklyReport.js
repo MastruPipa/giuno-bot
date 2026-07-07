@@ -79,26 +79,29 @@ async function buildWeeklyReport(userId, userRole) {
     } catch(e) { /* ignore */ }
   }
 
-  // 3. Team workload (admin only) — pianificato vs effettivo dai time_logs
-  // della settimana corrente; fallback agli aggregati allocations se il
-  // tracking non ha ancora dati.
+  // 3. Team workload (admin only) — vista riconciliata dal workloadService:
+  // stimato (daily del mattino) + effettivo (check-in serale) nella stessa
+  // riga, con il giudizio di carico calcolato nel codice (non improvvisato).
   if (isAdmin) {
     try {
       var trackingDates = require('../utils/trackingDates');
       var weekStartStr = trackingDates.weekStartOf(trackingDates.oggiRome());
-      var pva = await db.getPlannedVsActual(weekStartStr);
-      var pvaUsers = Object.keys(pva.byUser || {});
-      if (pvaUsers.length > 0) {
-        var pvaLines = pvaUsers.sort(function(a, b) { return pva.byUser[b].actual - pva.byUser[a].actual; })
+      var overview = await require('../services/workloadService').getWeekOverview(weekStartStr);
+      var CARICO_ICONS = { ok: '🟢', pieno: '🟡', sovraccarico: '🔴' };
+      var ovUsers = Object.keys(overview.byUser || {});
+      if (ovUsers.length > 0) {
+        var ovLines = ovUsers
+          .sort(function(a, b) { return overview.byUser[b].estimated_hours - overview.byUser[a].estimated_hours; })
           .map(function(uid) {
-            var u = pva.byUser[uid];
-            var pct = u.planned > 0 ? Math.round((u.actual / u.planned) * 100) : 0;
-            var icon = u.actual > 40 ? '🔴' : (u.actual > 33 ? '🟡' : '🟢');
-            var line = '• <@' + uid + '> ' + icon + ' ' + Math.round(u.actual * 10) / 10 + 'h effettive';
-            if (u.planned > 0) line += ' / ' + Math.round(u.planned * 10) / 10 + 'h pianificate (' + pct + '%)';
+            var u = overview.byUser[uid];
+            var icon = CARICO_ICONS[u.carico] || '⚪';
+            var line = '• <@' + uid + '> ' + icon + ' ' + u.estimated_hours + 'h dichiarate nei daily';
+            if (u.pct_of_tracked_days != null) line += ' (' + u.pct_of_tracked_days + '% dei giorni tracciati)';
+            if (u.actual_hours > 0) line += ' · su progetti ' + u.actual_hours + 'h';
+            if (u.missing_dailies > 0) line += ' · ' + u.missing_dailies + ' daily mancanti';
             return line;
           });
-        parts.push('*Carico team (settimana ' + weekStartStr + '):*\n' + pvaLines.join('\n'));
+        parts.push('*Carico team (' + overview.periodo + '):*\n' + ovLines.join('\n'));
       } else {
         var workload = await db.getTeamWorkload();
         if (workload.length > 0) {

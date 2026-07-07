@@ -29,8 +29,9 @@ function trackingActive() {
 
 // ─── Partecipanti ────────────────────────────────────────────────────────────
 // Fonte primaria: team_members (roster autorevole, già filtrato su active).
-// Fallback: lista utenti Slack con le stesse esclusioni del daily standup.
-var EXCLUDED_NAME_PATTERNS = ['antonio', 'gloria', 'corrado', 'cellulare', 'telefono'];
+// Fallback: lista utenti Slack. Esclusioni condivise col daily standup in
+// config/tracking (override via env TRACKING_EXCLUDED_NAMES).
+var trackingConfig = require('../config/tracking');
 
 function trackingEnabled(userId) {
   var p = db.getPrefsCache()[userId] || {};
@@ -45,18 +46,50 @@ async function getParticipants() {
         // Roster = tutti, ma le stesse esclusioni del daily valgono per il
         // check-in: leadership (Antonio/Gloria/Corrado) e numeri di servizio
         // restano nel roster ma non ricevono la richiesta di tracciamento ore.
-        var n = (m.canonical_name || '').toLowerCase();
-        return !EXCLUDED_NAME_PATTERNS.some(function(p) { return n.indexOf(p) !== -1; });
+        return !trackingConfig.isExcludedName(m.canonical_name);
       })
       .map(function(m) { return { id: m.slack_user_id, name: m.canonical_name || m.slack_user_id }; })
       .filter(function(u) { return trackingEnabled(u.id); });
   }
   var utenti = await getUtenti();
   return utenti.filter(function(u) {
-    var n = (u.name || '').toLowerCase();
-    if (EXCLUDED_NAME_PATTERNS.some(function(p) { return n.indexOf(p) !== -1; })) return false;
+    if (trackingConfig.isExcludedName(u.name)) return false;
     return trackingEnabled(u.id);
   }).map(function(u) { return { id: u.id, name: u.name }; });
+}
+
+// ─── Prefill dal daily del mattino ───────────────────────────────────────────
+// Il ponte tra i due sistemi: i task "oggi" del daily (con project_id dal
+// projectMatcher) diventano righe precompilate del check-in serale. L'utente
+// conferma o corregge le ore reali in pochi secondi.
+
+async function buildPrefillFromDaily(userId, logDate) {
+  try {
+    var supabase = db.getClient ? db.getClient() : null;
+    if (!supabase) return null;
+    var res = await supabase.from('standup_entries')
+      .select('oggi_tasks')
+      .eq('slack_user_id', userId).eq('date', logDate).limit(1);
+    var tasks = (res.data && res.data[0] && res.data[0].oggi_tasks) || [];
+    var byProject = {};
+    tasks.forEach(function(t) {
+      if (!t || !t.project_id) return;
+      var h = (parseInt(t.hours, 10) || 0) + (parseInt(t.minutes, 10) || 0) / 60;
+      byProject[t.project_id] = (byProject[t.project_id] || 0) + h;
+    });
+    var prefill = Object.keys(byProject)
+      .map(function(pid) {
+        // number_input ha min 0.5: stime più piccole si arrotondano al minimo
+        var hours = Math.max(0.5, Math.round(byProject[pid] * 100) / 100);
+        return { project_id: pid, hours: hours };
+      })
+      .sort(function(a, b) { return b.hours - a.hours; })
+      .slice(0, modals.MAX_ROWS_CHECKIN);
+    return prefill.length > 0 ? prefill : null;
+  } catch(e) {
+    logger.debug('[CHECKIN] prefill dal daily non disponibile:', e.message);
+    return null;
+  }
 }
 
 // ─── Apertura modale (pattern open_daily_modal: timeout+retry+fallback) ─────
@@ -65,11 +98,20 @@ async function openCheckinModal(triggerId, userId, logDate) {
   var ackStart = Date.now();
   try {
     var projects = await modals.getActiveProjectsCached();
+    // Budget stretto: il trigger_id scade in ~3s, il prefill non deve bruciarlo.
+    // Se il DB è lento si apre il modale vuoto come prima.
+    var prefill = null;
+    try {
+      prefill = await withTimeout(function() {
+        return buildPrefillFromDaily(userId, logDate);
+      }, 800, 'checkin prefill');
+    } catch(e) { logger.debug('[CHECKIN] prefill saltato:', e.message); }
+    var rows = Math.max(2, (prefill || []).length);
     await withTimeout(function() {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: modals.buildCheckinView(projects, { rows: 2, log_date: logDate }),
+          view: modals.buildCheckinView(projects, { rows: rows, log_date: logDate, prefill: prefill }),
         });
       }, {
         retries: 1,
@@ -98,6 +140,25 @@ async function openCheckinModal(triggerId, userId, logDate) {
 
 // ─── 17:30 lun-ven — Richiesta check-in ──────────────────────────────────────
 
+// Invio singolo del DM col bottone "Traccia le ore": usato dal cron delle
+// 17:30 e dal tool admin trigger_checkin_request (test on-demand).
+async function sendCheckinRequestTo(utente, logDate) {
+  var nome = (utente.name || '').split(' ')[0] || 'ciao';
+  await app.client.chat.postMessage({
+    channel: utente.id,
+    text: 'Ciao ' + nome + '! È il momento del check-in giornaliero.',
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! È il momento del check-in giornaliero: quante ore hai lavorato oggi, e su cosa?' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Se non riesci ora, puoi compilarlo domattina entro le 09:30.' }] },
+      { type: 'actions', elements: [{
+        type: 'button', style: 'primary',
+        text: { type: 'plain_text', text: '⏱ Traccia le ore di oggi', emoji: true },
+        action_id: 'tt_open_modal', value: logDate,
+      }] },
+    ],
+  });
+}
+
 async function sendCheckinRequests() {
   var locked = await acquireCronLock('daily_checkin_send', 10);
   if (!locked) return;
@@ -109,20 +170,7 @@ async function sendCheckinRequests() {
     for (var i = 0; i < participants.length; i++) {
       var u = participants[i];
       try {
-        var nome = (u.name || '').split(' ')[0] || 'ciao';
-        await app.client.chat.postMessage({
-          channel: u.id,
-          text: 'Ciao ' + nome + '! È il momento del check-in giornaliero.',
-          blocks: [
-            { type: 'section', text: { type: 'mrkdwn', text: 'Ciao *' + nome + '*! È il momento del check-in giornaliero: quante ore hai lavorato oggi, e su cosa?' } },
-            { type: 'context', elements: [{ type: 'mrkdwn', text: 'Se non riesci ora, puoi compilarlo domattina entro le 09:30.' }] },
-            { type: 'actions', elements: [{
-              type: 'button', style: 'primary',
-              text: { type: 'plain_text', text: '⏱ Traccia le ore di oggi', emoji: true },
-              action_id: 'tt_open_modal', value: todayStr,
-            }] },
-          ],
-        });
+        await sendCheckinRequestTo(u, todayStr);
         inviati++;
       } catch(e) {
         logger.error('[CHECKIN] Errore invio a', u.id + ':', e.message);
@@ -367,6 +415,15 @@ function register(appInstance) {
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 
 function scheduleCheckinJobs(cron) {
+  // RITIRATO: il check-in serale è stato integrato nel daily unico delle
+  // 16:00 (le ore dei task "oggi" alimentano time_logs via project match).
+  // Le action/view (tt_open_modal, tt_submit) restano registrate per i
+  // bottoni legacy e per il tool admin trigger_checkin_request.
+  // Riattivabile con CHECKIN_LEGACY_CRON=true se servisse tornare indietro.
+  if (String(process.env.CHECKIN_LEGACY_CRON || 'false') !== 'true') {
+    logger.info('[CHECKIN] Cron check-in ritirati: consuntivo integrato nel daily delle 16:00');
+    return;
+  }
   if (!trackingActive()) {
     logger.info('[CHECKIN] TIME_TRACKING_ENABLED=false, cron check-in non schedulati');
     return;
@@ -393,6 +450,7 @@ module.exports = {
   register: register,
   scheduleCheckinJobs: scheduleCheckinJobs,
   sendCheckinRequests: sendCheckinRequests,
+  sendCheckinRequestTo: sendCheckinRequestTo,
   sendMorningCorrection: sendMorningCorrection,
   closeCorrectionWindow: closeCorrectionWindow,
   getParticipants: getParticipants,
