@@ -17,11 +17,12 @@ var trackingDates = require('../utils/trackingDates');
 var { workdaysBetween } = require('../utils/dates');
 var { aggregateStandupRows } = require('../tools/standupTools');
 
-// Merge puro (testabile senza DB) delle tre serie per una settimana.
-// standupAgg: output di aggregateStandupRows; pva: output di getPlannedVsActual;
-// weekLogs: righe raw time_logs della settimana (per contare i giorni con check-in).
-function buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd) {
-  var workdays = workdaysBetween(weekStart, weekEnd);
+// Merge puro (testabile senza DB) delle tre serie su un intervallo di date
+// arbitrario (storicamente la settimana, da cui i nomi legacy week_start/end).
+// standupAgg: output di aggregateStandupRows; pva: output di foldPlannedVsActual;
+// rangeLogs: righe raw time_logs del periodo (per contare i giorni con check-in).
+function buildOverview(standupAgg, pva, rangeLogs, dateFrom, dateTo) {
+  var workdays = workdaysBetween(dateFrom, dateTo);
   var byUser = {};
 
   function ensure(uid) {
@@ -56,7 +57,7 @@ function buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd) {
 
   // Giorni con check-in (distinct log_date daily per utente)
   var checkinDays = {};
-  (weekLogs || []).forEach(function(r) {
+  (rangeLogs || []).forEach(function(r) {
     if (r.log_type !== 'daily') return;
     if (!checkinDays[r.slack_user_id]) checkinDays[r.slack_user_id] = {};
     checkinDays[r.slack_user_id][r.log_date] = true;
@@ -70,9 +71,12 @@ function buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd) {
   });
 
   return {
-    week_start: weekStart,
-    week_end: weekEnd,
-    periodo: 'dal ' + weekStart + ' al ' + weekEnd + ' (' + workdays + ' giorni lavorativi)',
+    // Chiavi legacy (consumate da weeklyReport e test esistenti) + alias range.
+    week_start: dateFrom,
+    week_end: dateTo,
+    date_from: dateFrom,
+    date_to: dateTo,
+    periodo: 'dal ' + dateFrom + ' al ' + dateTo + ' (' + workdays + ' giorni lavorativi)',
     workdays: workdays,
     byUser: byUser,
     // Il dettaglio per progetto dei consuntivi resta quello di getPlannedVsActual
@@ -83,29 +87,60 @@ function buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd) {
   };
 }
 
-// Panoramica completa della settimana che inizia a weekStart (lunedì).
-async function getWeekOverview(weekStart) {
-  var weekEnd = trackingDates.addDays(weekStart, 6);
+// Panoramica su un intervallo di date arbitrario, con filtri opzionali:
+// opts = { userId, projectId, projectName }. I filtri restringono le serie;
+// totals_all resta calcolato sull'intero periodo non filtrato (serve al
+// drill-down per la "% del totale").
+async function getRangeOverview(dateFrom, dateTo, opts) {
+  opts = opts || {};
 
   var standupAgg = null;
   try {
     var supabase = dbClient.getClient();
     if (supabase) {
-      var res = await supabase.from('standup_entries')
+      var q = supabase.from('standup_entries')
         .select('slack_user_id, date, ieri_tasks, oggi_tasks, total_hours_ieri, total_hours_oggi')
-        .gte('date', weekStart).lte('date', weekEnd);
-      if (!res.error) standupAgg = aggregateStandupRows(res.data || [], {}, weekStart, weekEnd);
+        .gte('date', dateFrom).lte('date', dateTo);
+      if (opts.userId) q = q.eq('slack_user_id', opts.userId);
+      var res = await q;
+      var aggInput = opts.projectName ? { project: opts.projectName } : {};
+      if (!res.error) standupAgg = aggregateStandupRows(res.data || [], aggInput, dateFrom, dateTo);
     }
   } catch(e) { logger.warn('[WORKLOAD-SVC] standup_entries non disponibili:', e.message); }
 
   var pva = { byUser: {}, byProject: {} };
-  var weekLogs = [];
+  var totalsAll = { actual: 0, planned: 0 };
+  var rangeLogs = [];
+  var truncated = false;
   try {
-    pva = await db.getPlannedVsActual(weekStart);
-    weekLogs = await db.getWeekLogs(weekStart);
+    var allRows = await db.getRangeLogs(dateFrom, dateTo);
+    truncated = allRows.length >= db.RANGE_LOGS_LIMIT;
+    var allPva = db.foldPlannedVsActual(allRows);
+    Object.keys(allPva.byProject).forEach(function(pid) {
+      totalsAll.actual += allPva.byProject[pid].actual;
+      totalsAll.planned += allPva.byProject[pid].planned;
+    });
+    rangeLogs = allRows.filter(function(r) {
+      if (opts.userId && r.slack_user_id !== opts.userId) return false;
+      if (opts.projectId && r.project_id !== opts.projectId) return false;
+      return true;
+    });
+    pva = db.foldPlannedVsActual(rangeLogs);
   } catch(e) { logger.warn('[WORKLOAD-SVC] time_logs non disponibili:', e.message); }
 
-  return buildOverview(standupAgg, pva, weekLogs, weekStart, weekEnd);
+  var overview = buildOverview(standupAgg, pva, rangeLogs, dateFrom, dateTo);
+  // Il pianificato ha granularità settimanale: su range non allineati alla
+  // settimana il confronto con l'effettivo è indicativo (vedi dashboard).
+  overview.week_aligned = dateFrom === trackingDates.weekStartOf(dateFrom) &&
+    dateTo === trackingDates.addDays(trackingDates.weekStartOf(dateTo), 6);
+  overview.totals_all = { actual: Math.round(totalsAll.actual * 10) / 10, planned: Math.round(totalsAll.planned * 10) / 10 };
+  overview.truncated = truncated;
+  return overview;
+}
+
+// Panoramica completa della settimana che inizia a weekStart (lunedì).
+async function getWeekOverview(weekStart) {
+  return getRangeOverview(weekStart, trackingDates.addDays(weekStart, 6), {});
 }
 
 // Righe time_logs derivate dai task "oggi" (fatto) del daily unico delle
@@ -134,6 +169,7 @@ function deriveTimeLogRows(oggiTasks, userId, dateStr) {
 
 module.exports = {
   getWeekOverview: getWeekOverview,
+  getRangeOverview: getRangeOverview,
   buildOverview: buildOverview,
   deriveTimeLogRows: deriveTimeLogRows,
 };

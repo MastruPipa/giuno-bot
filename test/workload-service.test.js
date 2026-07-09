@@ -57,6 +57,26 @@ test('buildOverview: periodo dichiarato e legenda delle fonti presenti', functio
   assert.ok(/dichiarato/.test(ov.legenda) && /effettivo/.test(ov.legenda));
 });
 
+test('buildOverview: emette sia le chiavi legacy week_* sia date_from/date_to', function() {
+  var ov = buildOverview(null, null, [], WEEK_START, WEEK_END);
+  assert.equal(ov.week_start, WEEK_START);
+  assert.equal(ov.week_end, WEEK_END);
+  assert.equal(ov.date_from, WEEK_START);
+  assert.equal(ov.date_to, WEEK_END);
+});
+
+test('buildOverview: range di un solo giorno feriale → carico su 8h', function() {
+  var day = '2026-07-07'; // martedì
+  var agg = aggregateStandupRows([
+    { slack_user_id: 'U_GIUSY', date: day, ieri_tasks: [], oggi_tasks: [{ task: 'Bagno Maria', hours: 9, minutes: 0 }] },
+  ], {}, day, day);
+  var ov = buildOverview(agg, null, [], day, day);
+  assert.equal(ov.workdays, 1);
+  assert.equal(ov.byUser.U_GIUSY.estimated_hours, 9);
+  assert.equal(ov.byUser.U_GIUSY.carico, 'sovraccarico'); // 9h/8h ≈ 113%
+  assert.equal(ov.byUser.U_GIUSY.missing_dailies, 0);
+});
+
 // ─── Consuntivo auto-derivato dal daily unico ─────────────────────────────────
 
 var { deriveTimeLogRows } = require('../src/services/workloadService');

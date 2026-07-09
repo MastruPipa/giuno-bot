@@ -34,7 +34,8 @@ function getUserTokens() {
 
 function isProtectedPath(pathname) {
   return pathname === '/dashboard' || pathname === '/metrics' || pathname === '/debug/search' ||
-    pathname === '/dashboard/workload' || pathname === '/export/timelogs.csv';
+    pathname === '/dashboard/workload' || pathname === '/export/timelogs.csv' ||
+    pathname === '/api/workload';
 }
 
 function isAuthorizedAdminRequest(req, parsed) {
@@ -97,6 +98,33 @@ var oauthServer = http.createServer(async function(req, res) {
       logger.error('Errore dashboard workload:', e.message);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Errore dashboard workload: ' + e.message);
+    }
+    return;
+  }
+
+  // Versione JSON della dashboard workload: stessi filtri della pagina HTML
+  // (?range=|from/to|week + user/project), per polling e automazioni.
+  if (parsed.pathname === '/api/workload') {
+    try {
+      var wd = require('./workloadDashboard');
+      var trackingDates = require('../utils/trackingDates');
+      var filters = wd.resolveRangeFilters(parsed.query, trackingDates.oggiRome());
+      var projectName = null;
+      if (filters.project) {
+        var proj = await require('../../supabase').getProject(filters.project);
+        projectName = proj && proj.name ? proj.name : null;
+      }
+      var workloadService = require('../services/workloadService');
+      var rangeOverview = await workloadService.getRangeOverview(filters.from, filters.to, {
+        userId: filters.user, projectId: filters.project, projectName: projectName,
+      });
+      rangeOverview.filters = { preset: filters.preset, user: filters.user, project: filters.project };
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(rangeOverview, null, 2));
+    } catch(e) {
+      logger.error('Errore api workload:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message }));
     }
     return;
   }

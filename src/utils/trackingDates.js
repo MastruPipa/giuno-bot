@@ -61,6 +61,25 @@ function previousWorkingDay(dateStr) {
   return d;
 }
 
+// Primo giorno del mese della data: '2026-07-15' → '2026-07-01'
+function monthStartOf(dateStr) {
+  return dateStr.slice(0, 8) + '01';
+}
+
+// Ultimo giorno del mese della data: primo del mese successivo − 1 giorno
+function monthEndOf(dateStr) {
+  var d = toUTCNoon(monthStartOf(dateStr));
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return addDays(fmt(d), -1);
+}
+
+// Primo giorno del trimestre solare della data: '2026-05-20' → '2026-04-01'
+function quarterStartOf(dateStr) {
+  var month = parseInt(dateStr.slice(5, 7), 10);
+  var qMonth = month - ((month - 1) % 3);
+  return dateStr.slice(0, 5) + (qMonth < 10 ? '0' : '') + qMonth + '-01';
+}
+
 module.exports = {
   oggiRome: oggiRome,
   oraRome: oraRome,
@@ -70,4 +89,7 @@ module.exports = {
   nextMonday: nextMonday,
   weekStartOf: weekStartOf,
   previousWorkingDay: previousWorkingDay,
+  monthStartOf: monthStartOf,
+  monthEndOf: monthEndOf,
+  quarterStartOf: quarterStartOf,
 };

@@ -201,14 +201,13 @@ async function getWeekLogs(weekStart) {
   } catch(e) { c.logErr('getWeekLogs', e); return []; }
 }
 
-// Pianificato vs effettivo della settimana, per utente e per progetto.
+// Fold puro (testabile senza DB) di righe time_logs in pianificato vs effettivo.
 // Ritorna { byUser: {uid: {planned, actual, projects: {pid: {name, planned, actual}}}},
 //           byProject: {pid: {name, planned, actual}} }
-async function getPlannedVsActual(weekStart) {
-  var logs = await getWeekLogs(weekStart);
+function foldPlannedVsActual(logs) {
   var byUser = {};
   var byProject = {};
-  logs.forEach(function(r) {
+  (logs || []).forEach(function(r) {
     var h = parseFloat(r.hours) || 0;
     var name = r.projects && r.projects.name ? r.projects.name : r.project_id;
     var field = r.log_type === 'weekly' ? 'planned' : 'actual';
@@ -223,6 +222,39 @@ async function getPlannedVsActual(weekStart) {
     byProject[r.project_id][field] += h;
   });
   return { byUser: byUser, byProject: byProject };
+}
+
+// Log di un intervallo arbitrario: daily nel range + weekly (log_date = lunedì
+// della settimana pianificata) di TUTTE le settimane che intersecano il range —
+// così un range mensile include anche i piani delle settimane a cavallo.
+var RANGE_LOGS_LIMIT = 10000;
+async function getRangeLogs(dateFrom, dateTo) {
+  if (!c.useSupabase) return [];
+  try {
+    var cols = 'slack_user_id, project_id, log_date, log_type, hours, notes, projects(name)';
+    var daily = await c.getClient().from('time_logs').select(cols)
+      .eq('log_type', 'daily')
+      .gte('log_date', dateFrom).lte('log_date', dateTo)
+      .limit(RANGE_LOGS_LIMIT);
+    if (daily.error) throw daily.error;
+    var weekly = await c.getClient().from('time_logs').select(cols)
+      .eq('log_type', 'weekly')
+      .gte('log_date', dates.weekStartOf(dateFrom)).lte('log_date', dates.weekStartOf(dateTo))
+      .limit(RANGE_LOGS_LIMIT);
+    if (weekly.error) throw weekly.error;
+    return (daily.data || []).concat(weekly.data || []);
+  } catch(e) { c.logErr('getRangeLogs', e); return []; }
+}
+
+// Pianificato vs effettivo su un intervallo arbitrario.
+async function getPlannedVsActualRange(dateFrom, dateTo) {
+  return foldPlannedVsActual(await getRangeLogs(dateFrom, dateTo));
+}
+
+// Pianificato vs effettivo della settimana (wrapper retrocompatibile: le righe
+// weekly hanno log_date = lunedì, quindi la finestra coincide).
+async function getPlannedVsActual(weekStart) {
+  return getPlannedVsActualRange(weekStart, dates.addDays(weekStart, 6));
 }
 
 // Righe raw per export CSV in un intervallo di date.
@@ -250,6 +282,10 @@ module.exports = {
   syncAllocationHoursLogged: syncAllocationHoursLogged,
   upsertWeeklyAllocation: upsertWeeklyAllocation,
   getWeekLogs: getWeekLogs,
+  foldPlannedVsActual: foldPlannedVsActual,
+  getRangeLogs: getRangeLogs,
+  getPlannedVsActualRange: getPlannedVsActualRange,
   getPlannedVsActual: getPlannedVsActual,
   getLogsInRange: getLogsInRange,
+  RANGE_LOGS_LIMIT: RANGE_LOGS_LIMIT,
 };

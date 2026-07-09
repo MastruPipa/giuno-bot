@@ -196,6 +196,10 @@ module.exports = {
   syncAllocationHoursLogged: timeLogs.syncAllocationHoursLogged,
   upsertWeeklyAllocation:    timeLogs.upsertWeeklyAllocation,
   getWeekLogs:               timeLogs.getWeekLogs,
+  foldPlannedVsActual:       timeLogs.foldPlannedVsActual,
+  getRangeLogs:              timeLogs.getRangeLogs,
+  getPlannedVsActualRange:   timeLogs.getPlannedVsActualRange,
   getPlannedVsActual:        timeLogs.getPlannedVsActual,
   getLogsInRange:            timeLogs.getLogsInRange,
+  RANGE_LOGS_LIMIT:          timeLogs.RANGE_LOGS_LIMIT,
 };
