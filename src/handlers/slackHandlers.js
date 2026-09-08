@@ -956,11 +956,55 @@ var MANSIONI_TEAM = {
   'peppe':      'Logistica e referente del progetto OffKatania.',
 };
 
+// Registra un membro nel roster autorevole (team_members) + gli assegna un
+// ruolo RBAC di default. Prima esisteva solo il DM di benvenuto: chi entrava
+// dopo il seed iniziale restava invisibile a Giuno (fuori dal roster usato per
+// disambiguare i nomi, fuori dal check-in ore, senza riga in user_roles).
+// Idempotente: se il membro c'è già non tocca nulla.
+async function registraNuovoMembro(user) {
+  if (!user || !user.id || user.is_bot) return false;
+  var fullName = (user.real_name || user.name || '').trim();
+  if (!fullName) return false;
+  var firstName = fullName.split(' ')[0];
+
+  var already = db.getTeamRoster ? (db.getTeamRoster() || []).some(function(m) {
+    return m && m.slack_user_id === user.id;
+  }) : false;
+  if (already) return false;
+
+  var aliases = (firstName && firstName.toLowerCase() !== fullName.toLowerCase()) ? [firstName] : [];
+  var saved = await db.upsertTeamMember({
+    slack_user_id: user.id,
+    canonical_name: fullName,
+    aliases: aliases,
+    role: MANSIONI_TEAM[firstName.toLowerCase()] || null,
+    primary_projects: [],
+    primary_clients: [],
+    active: true,
+  });
+  if (!saved) { logger.warn('[ONBOARDING] roster upsert fallito per', user.id, fullName); return false; }
+
+  // Ruolo RBAC minimo: senza riga in user_roles getUserRole ricade su 'member'
+  // via cache, ma l'utente non compare in `admin roles` e non è gestibile.
+  var existingRole = (await getAllRoles()).some(function(r) { return r.slack_user_id === user.id; });
+  if (!existingRole) await setUserRole(user.id, 'member', fullName, 'onboarding');
+
+  logger.info('[ONBOARDING] Registrato nel roster:', user.id, fullName);
+  return true;
+}
+
 app.event('team_join', async function(args) {
   var user = args.event.user;
   if (!user || user.is_bot) return;
   var name = (user.real_name || user.name || '').split(' ')[0] || 'nuovo membro';
   var mansione = MANSIONI_TEAM[name.toLowerCase()] || null;
+
+  // Registrazione PRIMA del DM: se il DM fallisce (utente non ancora
+  // raggiungibile, rate limit) il membro deve comunque esistere per Giuno.
+  try {
+    await registraNuovoMembro(user);
+  } catch(e) { logger.error('[ONBOARDING] registrazione roster:', e.message); }
+
   try {
     var oauthUrl = generaLinkOAuth(user.id);
     var link = '<' + oauthUrl + '|Collega il tuo Google>';
@@ -1415,6 +1459,30 @@ async function handleAdmin(command, respond) {
       return;
     }
 
+    // Sync: allinea il roster con Slack. `refresh` ricarica solo la cache dal
+    // DB, quindi chi entrava in agenzia dopo il seed iniziale non compariva mai
+    // (nessun path automatico lo inseriva prima del team_join handler).
+    if (teamSub === 'sync') {
+      try {
+        var utentiSlack = await getUtenti();
+        var aggiunti = [];
+        for (var iu = 0; iu < utentiSlack.length; iu++) {
+          var u = utentiSlack[iu];
+          var ok = await registraNuovoMembro({ id: u.id, real_name: u.name });
+          if (ok) aggiunti.push('<@' + u.id + '> ' + u.name);
+        }
+        await db.loadTeamRoster();
+        var totale = (db.getTeamRoster() || []).length;
+        await respond({
+          text: aggiunti.length === 0
+            ? 'Roster già allineato con Slack: ' + totale + ' membri.'
+            : 'Aggiunti al roster (' + aggiunti.length + '):\n• ' + aggiunti.join('\n• ') + '\n\nTotale: ' + totale + ' membri.',
+          response_type: 'ephemeral',
+        });
+      } catch(e) { await respond({ text: 'Errore sync: ' + e.message, response_type: 'ephemeral' }); }
+      return;
+    }
+
     if (teamSub === 'refresh') {
       try {
         await db.loadTeamRoster();
@@ -1474,7 +1542,7 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove]` — gestisci il roster del team (disambiguazione nomi)\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|sync|refresh|set|remove]` — gestisci il roster del team (`sync` aggiunge i nuovi arrivati da Slack)\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

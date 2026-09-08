@@ -7,7 +7,7 @@
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { getUserRole } = require('../../rbac');
-var { getUserTokens } = require('../services/googleAuthService');
+var { getUserTokens, generaLinkOAuth } = require('../services/googleAuthService');
 var { app } = require('../services/slackService');
 
 // ─── Block Kit helpers ────────────────────────────────────────────────────────
@@ -166,6 +166,28 @@ async function buildHomeBlocks(userId) {
     statusItems.push(standup.responded ? '✅ Daily fatto' : '⏳ Daily in attesa');
   }
   blocks.push(section(statusItems.join('  ·  ')));
+
+  // Chi non ha ancora collegato Google qui ci finisce sempre (la Home è la
+  // prima cosa che apre un nuovo arrivato), mentre il link OAuth prima usciva
+  // solo dal DM di team_join o da `admin push-google`. Senza questo bottone un
+  // nuovo membro non aveva nessun modo autonomo di collegarsi.
+  if (!googleConnected) {
+    var oauthUrl = null;
+    try { oauthUrl = generaLinkOAuth(userId); } catch(e) { logger.warn('[APP-HOME] link OAuth non generato:', e.message); }
+    if (oauthUrl) {
+      blocks.push(section('Collega il tuo account Google per farmi vedere calendario, email e file su Drive.'));
+      blocks.push({
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: '🔗 Collega il tuo Google', emoji: true },
+          style: 'primary',
+          url: oauthUrl,
+          action_id: 'connect_google_from_home',
+        }],
+      });
+    }
+  }
   blocks.push(divider());
 
   // ── CRM snapshot (admin/finance/manager) ────────────────────────────────
@@ -267,6 +289,12 @@ function register() {
     } catch(e) {
       logger.error('[APP-HOME] Errore gestione app_home_opened:', e.message);
     }
+  });
+
+  // Un bottone con `url` apre comunque il link da solo, ma Slack invia lo
+  // stesso un block_actions: senza ack l'utente vede un errore nella Home.
+  app.action('connect_google_from_home', async function(args) {
+    try { await args.ack(); } catch(e) { logger.debug('[APP-HOME] ack connect_google:', e.message); }
   });
 
   logger.info('[APP-HOME] Event handler registrato.');
