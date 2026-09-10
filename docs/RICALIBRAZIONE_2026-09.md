@@ -186,7 +186,37 @@ SDK `@anthropic-ai/sdk` aggiornato a 0.124.
   bottone → `estimate_confirmed`) sostituisce la stima e allora sì alimenta il
   consuntivo. Disattivabile con `DAILY_ESTIMATES_ENABLED=false`.
 
-## 7. Da fare
+## 7. Higgsfield da Slack (connettore MCP, account unico)
+
+Giuno genera immagini e video con Higgsfield senza API key: dichiara il
+server `https://mcp.higgsfield.ai/mcp` nella richiesta all'API Anthropic
+(connettore MCP, beta `mcp-client-2025-11-20`) e i tool del server compaiono
+accanto a quelli interni. L'API esegue i tool dentro la stessa chiamata.
+
+- **Un solo account**: il token OAuth vive in `mcp_connections` (Supabase,
+  fallback `mcp_connections.json`). Lo collega un admin con
+  `/giuno admin higgsfield` → link → login Higgsfield nel browser → callback
+  `/oauth/mcp/higgsfield/callback` (stesso host dell'OAuth Google). Il client
+  OAuth viene registrato dinamicamente la prima volta (PKCE S256, refresh
+  automatico 60 s prima della scadenza). Migrazione: tabella `mcp_connections`
+  in `supabase_migration.sql`.
+- **Quando si allega**: solo se il messaggio (o le ultime due battute) parla
+  di generare immagini/video (`mcpToolsets.isGenerationRequest`). Così il
+  prefisso cacheato del prompt non cambia e non si pagano ~90 tool a turno.
+  Lista `HIGGSFIELD_ALLOWED_TOOLS` (generazione, attesa job, upscale, sfondo,
+  reframe, presets, balance): fuori website builder, TikTok, 3D, clipper.
+- **Chi può generare**: `HIGGSFIELD_ALLOWED_USERS` (id Slack separati da
+  virgola) oppure, se vuoto, tutti tranne i ruoli `restricted`. I crediti sono
+  condivisi: `/giuno admin higgsfield` mostra stato, chi ha collegato, scadenza.
+- **Timeout**: sul path GENERAL le richieste di generazione hanno 5 minuti
+  (`GENERATION_TIMEOUT_MS`) invece di 55 s, perché `jobs_wait` di un video può
+  durare minuti. I tool MCP usati contano per il validator e i risultati
+  (URL) entrano nell'evidenza anti-allucinazione.
+- **Env**: `HIGGSFIELD_MCP_URL` (override), `HIGGSFIELD_ALLOWED_USERS`. Nessuna
+  chiave da mettere su Railway.
+- `/giuno admin higgsfield disconnect` scollega (butta i token, tiene il client).
+
+## 8. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

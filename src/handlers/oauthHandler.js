@@ -66,6 +66,49 @@ var oauthServer = http.createServer(async function(req, res) {
     return;
   }
 
+  // ── OAuth per server MCP (Higgsfield): un solo account dello studio ─────────
+  //   GET /oauth/mcp/<nome>/start?u=<slackUserId>  → 302 all'authorize del server
+  //   GET /oauth/mcp/<nome>/callback?code&state   → scambio token, DM di conferma
+  var mcpMatch = /^\/oauth\/mcp\/([a-z0-9_-]+)\/(start|callback)$/.exec(parsed.pathname || '');
+  if (mcpMatch) {
+    var mcpConnections = require('../services/mcpConnections');
+    var mcpName = mcpMatch[1];
+    var mcpSrv = mcpConnections.getServer(mcpName);
+    if (!mcpSrv) { res.writeHead(404); res.end('Server MCP sconosciuto'); return; }
+    try {
+      if (mcpMatch[2] === 'start') {
+        var starter = parsed.query.u;
+        if (!starter) { res.writeHead(400); res.end('Manca il parametro u'); return; }
+        var authUrl = await mcpConnections.startAuth(mcpName, { slackUserId: starter, googleRedirectUri: OAUTH_REDIRECT_URI });
+        res.writeHead(302, { Location: authUrl });
+        res.end();
+        return;
+      }
+      if (parsed.query.error) {
+        throw new Error(parsed.query.error + (parsed.query.error_description ? ': ' + parsed.query.error_description : ''));
+      }
+      if (!parsed.query.code || !parsed.query.state) { res.writeHead(400); res.end('Parametri mancanti.'); return; }
+      var conn = await mcpConnections.handleCallback(parsed.query.code, parsed.query.state);
+      logger.info('[MCP-OAUTH] ' + mcpSrv.label + ' collegato da ' + conn.connected_by);
+      if (conn.connected_by) {
+        try {
+          var { app: slackApp } = require('../services/slackService');
+          await slackApp.client.chat.postMessage({
+            channel: conn.connected_by,
+            text: '✅ ' + mcpSrv.label + ' collegato: da ora chi è abilitato può chiedermi di generare immagini e video direttamente da Slack (account unico dello studio).',
+          });
+        } catch(dmErr) { logger.warn('[MCP-OAUTH] DM di conferma fallita:', dmErr.message); }
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>' + mcpSrv.label + ' collegato a Giuno!</h2><p>Puoi chiudere questa finestra e tornare su Slack.</p></body></html>');
+    } catch(e) {
+      logger.error('[MCP-OAUTH] ' + mcpName + ':', e.message);
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>Collegamento ' + mcpSrv.label + ' fallito</h2><p>' + String(e.message).replace(/</g, '&lt;') + '</p><p>Riprova da Slack con <code>/giuno admin ' + mcpName + '</code>.</p></body></html>');
+    }
+    return;
+  }
+
   if (isProtectedPath(parsed.pathname) && !isAuthorizedAdminRequest(req, parsed)) {
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'unauthorized' }));

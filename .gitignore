@@ -7,3 +7,4 @@ user_tokens.json
 .metrics-cache.json
 eval/results/
 .DS_Store
+mcp_connections.json

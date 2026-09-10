@@ -128,3 +128,47 @@ test('askGiuno: tool_use loop esegue il tool e continua', async function() {
   assert.equal(second[second.length - 1].content[0].type, 'tool_result');
   assert.equal(second[second.length - 1].content[0].tool_use_id, 'tu_1');
 });
+
+test('askGiuno: richiesta di generazione con Higgsfield collegato → mcp_servers + mcp_toolset + beta, tool MCP contati', async function() {
+  var mcp = require('../src/services/mcpConnections');
+  var dbClient = require('../src/services/db/client');
+  dbClient.useSupabase = false;
+  dbClient.writeJSON = function() {};
+  mcp._resetForTests({ connections: { higgsfield: { name: 'higgsfield', client_id: 'c', access_token: 'TOK', refresh_token: 'R' } } });
+  delete process.env.HIGGSFIELD_ALLOWED_USERS;
+
+  captured = [];
+  var fake = async function(params) {
+    captured.push(params);
+    return {
+      stop_reason: 'end_turn',
+      content: [
+        { type: 'mcp_tool_use', id: 'm1', name: 'generate_image', server_name: 'higgsfield', input: { prompt: 'tramonto' } },
+        { type: 'mcp_tool_result', tool_use_id: 'm1', is_error: false, content: [{ type: 'text', text: 'https://cdn.higgsfield.ai/out/abc.png' }] },
+        { type: 'text', text: 'Ecco l\'immagine: https://cdn.higgsfield.ai/out/abc.png' },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    };
+  };
+  var betaCalls = 0;
+  svc.client.messages.create = fake;
+  svc.client.beta = { messages: { create: async function(p) { betaCalls++; return fake(p); } } };
+
+  var reply = await svc.askGiuno('U1', 'generami un\'immagine di un tramonto sull\'Etna', { isDM: true, channelId: 'D1' });
+  assert.match(reply, /abc\.png/);
+  var req = primaryRequests()[0];
+  assert.ok(req, 'richiesta primaria catturata');
+  assert.equal(req.mcp_servers.length, 1);
+  assert.equal(req.mcp_servers[0].authorization_token, 'TOK');
+  assert.ok(req.tools.some(function(t) { return t.type === 'mcp_toolset' && t.mcp_server_name === 'higgsfield'; }));
+  assert.equal(req.tools[req.tools.length - 1].type, 'mcp_toolset', 'il toolset MCP va in coda ai tool stabili');
+  assert.ok(req.betas.indexOf('mcp-client-2025-11-20') !== -1);
+  assert.ok(betaCalls >= 1, 'passa dall\'endpoint beta');
+  assert.match(req.system[1].text, /GENERAZIONE IMMAGINI\/VIDEO/);
+
+  // Senza generazione: nessun server MCP allegato (prefisso cacheato stabile).
+  installStub('Ciao.');
+  await svc.askGiuno('U1', 'che ne pensi del brief?', { isDM: true, channelId: 'D1' });
+  assert.equal(primaryRequests()[0].mcp_servers, undefined);
+  mcp._resetForTests({});
+});

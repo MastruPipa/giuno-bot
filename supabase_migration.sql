@@ -285,3 +285,19 @@ ALTER TABLE user_prefs ADD COLUMN IF NOT EXISTS tracking_enabled BOOLEAN DEFAULT
 ALTER TABLE standup_entries
   ADD COLUMN IF NOT EXISTS domani_tasks jsonb,
   ADD COLUMN IF NOT EXISTS total_hours_domani numeric;
+
+-- 2026-09-10: collegamenti OAuth ai server MCP (Higgsfield): un solo account
+-- dello studio, token condiviso da tutte le generazioni chieste via Slack.
+CREATE TABLE IF NOT EXISTS mcp_connections (
+  name TEXT PRIMARY KEY,
+  mcp_url TEXT,
+  client_id TEXT,
+  client_secret TEXT,
+  access_token TEXT,
+  refresh_token TEXT,
+  expires_at TIMESTAMPTZ,
+  scope TEXT,
+  connected_by TEXT,
+  connected_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);

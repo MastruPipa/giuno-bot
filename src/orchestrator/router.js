@@ -14,6 +14,8 @@ var { withTimeout } = require('../utils/timeout');
 var { matchSkill, executeSkill } = require('../skills/skillRegistry');
 
 var AGENT_TIMEOUT_MS = 55000; // 55s — below Railway/Slack 60s hard limit
+var GENERATION_TIMEOUT_MS = 300000; // 5 min: generazioni Higgsfield (video) via MCP
+var { isGenerationRequest } = require('../services/mcpToolsets');
 
 // Agents (lazy-loaded to avoid circular deps)
 function getDailyDigestAgent()      { return require('../agents/dailyDigestAgent'); }
@@ -187,7 +189,10 @@ async function route(userId, message, options) {
         break;
       case INTENTS.GENERAL:
       default:
-        reply = await withTimeout(getGeneralAssistantAgent().run(message, ctx), AGENT_TIMEOUT_MS, 'general');
+        // Generazione immagini/video via Higgsfield: il connettore MCP esegue
+        // i tool dentro la chiamata API e un video può volerci minuti.
+        var generalTimeout = isGenerationRequest(message, recentConv) ? GENERATION_TIMEOUT_MS : AGENT_TIMEOUT_MS;
+        reply = await withTimeout(getGeneralAssistantAgent().run(message, ctx), generalTimeout, 'general');
         break;
     }
 

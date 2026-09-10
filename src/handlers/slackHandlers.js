@@ -1306,6 +1306,37 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'higgsfield') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono collegare Higgsfield.', response_type: 'ephemeral' }); return; }
+    try {
+      var mcpConnections = require('../services/mcpConnections');
+      if (args[1] === 'disconnect') {
+        await mcpConnections.disconnect('higgsfield');
+        await respond({ text: 'Higgsfield scollegato: le generazioni sono disattivate finché qualcuno non lo ricollega.', response_type: 'ephemeral' });
+        return;
+      }
+      var hfStatus = mcpConnections.getStatus('higgsfield');
+      var { OAUTH_REDIRECT_URI: googleRedirect } = require('../services/googleAuthService');
+      var startUrl = mcpConnections.redirectUriFor('higgsfield', googleRedirect).replace(/\/callback$/, '/start') + '?u=' + encodeURIComponent(command.user_id);
+      var lines = [];
+      if (hfStatus.connected) {
+        lines.push('✅ *Higgsfield collegato* (account unico dello studio' + (hfStatus.connected_by ? ', collegato da <@' + hfStatus.connected_by + '>' : '') + ').');
+        if (hfStatus.expires_at) lines.push('Token valido fino a ' + hfStatus.expires_at + (hfStatus.has_refresh ? ' (si rinnova da solo).' : ' (senza refresh: andrà ricollegato).'));
+      } else if (hfStatus.needs_reconnect) {
+        lines.push('⚠️ *Higgsfield: collegamento scaduto*, va rifatto.');
+      } else {
+        lines.push('❌ *Higgsfield non collegato.*');
+      }
+      lines.push('Per ' + (hfStatus.connected ? 'ricollegarlo con un altro account' : 'collegarlo') + ': <' + startUrl + '|apri il login Higgsfield> e autorizza Giuno.');
+      var allowedEnv = process.env.HIGGSFIELD_ALLOWED_USERS;
+      lines.push(allowedEnv ? 'Abilitati a generare: ' + allowedEnv.split(',').map(function(u) { return '<@' + u.trim() + '>'; }).join(', ') + ' (HIGGSFIELD_ALLOWED_USERS).'
+        : 'Abilitati a generare: tutto il team tranne i ruoli restricted (imposta HIGGSFIELD_ALLOWED_USERS per limitare).');
+      lines.push('`/giuno admin higgsfield disconnect` per scollegare.');
+      await respond({ text: lines.join('\n'), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'kb-cleanup') {
     if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono pulire la KB.', response_type: 'ephemeral' }); return; }
     var applyCleanup = args[1] === 'apply';

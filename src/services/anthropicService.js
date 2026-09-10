@@ -28,6 +28,7 @@ var registry = require('../tools/registry');
 var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/retryPolicy');
 var modelsConfig = require('../config/models');
+var mcpToolsets = require('./mcpToolsets');
 var slackTranscript = require('./slackTranscript');
 
 var MODELS = modelsConfig.MODELS;
@@ -103,7 +104,8 @@ var SYSTEM_PROMPT =
   '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
   'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +
   'Non dire "ho fatto X" se non hai chiamato il tool. ' +
-  'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc.\n\n' +
+  'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc. ' +
+  'Immagini e video AI: solo se nel contesto del turno compaiono i tool Higgsfield (generate_image, generate_video, jobs_wait); altrimenti di\' che non è collegato, senza promettere.\n\n' +
 
   'PRIVACY E CANALI\n' +
   'Le chat 1:1 tra te e ogni membro del team sono private: quando riporti a una persona qualcosa emerso in DM con un\'altra, non citare testualmente, ' +
@@ -641,12 +643,18 @@ function _wantsRefusalFallback(model) {
     /^claude-(opus-5|fable|mythos)/.test(String(model || ''));
 }
 
+// Alcune richieste vanno per forza sull'endpoint beta: connettore MCP
+// (mcp_servers + beta mcp-client) o beta espliciti. Il fallback per refusal
+// si aggiunge sopra quando il modello lo supporta.
 async function _createMessage(params) {
+  var ownBetas = Array.isArray(params.betas) ? params.betas.slice() : [];
+  var needsBeta = ownBetas.length > 0 || Array.isArray(params.mcp_servers);
+  var plainParams = Object.assign({}, params);
+  delete plainParams.betas;
+
   if (_wantsRefusalFallback(params.model)) {
-    var betaParams = Object.assign({}, params, {
-      betas: [modelsConfig.REFUSAL_FALLBACK_BETA],
-      fallbacks: 'default',
-    });
+    var betas = ownBetas.concat(ownBetas.indexOf(modelsConfig.REFUSAL_FALLBACK_BETA) === -1 ? [modelsConfig.REFUSAL_FALLBACK_BETA] : []);
+    var betaParams = Object.assign({}, plainParams, { betas: betas, fallbacks: 'default' });
     try {
       return await client.beta.messages.create(betaParams);
     } catch(err) {
@@ -660,7 +668,10 @@ async function _createMessage(params) {
       }
     }
   }
-  return client.messages.create(params);
+  if (needsBeta) {
+    return client.beta.messages.create(Object.assign({}, plainParams, { betas: ownBetas }));
+  }
+  return client.messages.create(plainParams);
 }
 
 async function callAnthropicWithRetry(params) {
@@ -717,12 +728,26 @@ function buildPrimaryRequest(systemBlocks, messages, opts) {
   if (modelsConfig.supportsEffort(model)) {
     req.output_config = { effort: opts.effort || modelsConfig.PRIMARY_EFFORT };
   }
+  // Connettore MCP (es. Higgsfield): server + toolset + beta. I tool MCP vanno
+  // DOPO quelli stabili così il prefisso cacheato non cambia.
+  if (Array.isArray(opts.mcpServers) && opts.mcpServers.length > 0) {
+    req.mcp_servers = opts.mcpServers;
+    req.tools = req.tools.concat(opts.extraTools || []);
+    req.betas = (opts.betas || []).slice();
+  }
   return req;
 }
 
 // ─── askGiuno — main LLM agentic loop ─────────────────────────────────────────
 
 var MAX_TOOL_ROUNDS = 12;
+
+function _mcpResultText(block) {
+  var c = block && block.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map(function(x) { return x && x.type === 'text' ? x.text : JSON.stringify(x); }).join('\n');
+  return JSON.stringify(c || '');
+}
 var CONTEXT_CHAR_BUDGET = 14000;
 
 function _rosterName(userId) {
@@ -926,6 +951,18 @@ async function askGiuno(userId, userMessage, options) {
     }
   } catch(_) {}
 
+  // Generazione immagini/video (Higgsfield via connettore MCP): allegato solo
+  // quando la richiesta lo chiede, con l'account unico dello studio.
+  var mcpAttachment = null;
+  try {
+    mcpAttachment = await mcpToolsets.buildAttachment({
+      message: resolvedMessage, transcript: history, userId: userId, userRole: userRole, isAdmin: userRole === 'admin',
+    });
+  } catch(mcpErr) {
+    logger.warn('[ASK-GIUNO] attachment MCP fallito:', mcpErr.message);
+  }
+  if (mcpAttachment && mcpAttachment.section) sections.push(mcpAttachment.section);
+
   if (options.preflightInstruction) sections.push(String(options.preflightInstruction).trim());
 
   // Tetto al contesto: oltre il budget il segnale annega nel rumore.
@@ -971,7 +1008,12 @@ async function askGiuno(userId, userMessage, options) {
   while (true) {
     var response;
     try {
-      response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, { maxTokens: options.maxTokens }));
+      response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, {
+        maxTokens: options.maxTokens,
+        mcpServers: mcpAttachment && mcpAttachment.mcp_servers,
+        extraTools: mcpAttachment && mcpAttachment.tools,
+        betas: mcpAttachment && mcpAttachment.betas,
+      }));
     } catch(apiErr) {
       if (apiErr.message === 'API_UNAVAILABLE') {
         return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
@@ -985,6 +1027,13 @@ async function askGiuno(userId, userMessage, options) {
       finalReply = extractText(response).trim() || 'Su questo non posso aiutarti.';
       break;
     }
+
+    // Tool MCP eseguiti lato API dentro la stessa risposta: contano come tool
+    // chiamati (validator) e i risultati come evidenza (URL generati).
+    (response.content || []).forEach(function(b) {
+      if (b.type === 'mcp_tool_use') toolsCalled.push(b.name);
+      else if (b.type === 'mcp_tool_result') toolEvidence.push(_mcpResultText(b));
+    });
 
     if (response.stop_reason !== 'tool_use') {
       finalReply = extractText(response);
