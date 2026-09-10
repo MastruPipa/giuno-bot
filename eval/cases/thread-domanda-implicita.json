@@ -1,0 +1,21 @@
+{
+  "id": "thread-domanda-implicita",
+  "seed": true,
+  "description": "Nel thread nessuno tagga Giuno, ma la domanda è chiaramente rivolta a lui perché continua il suo turno precedente.",
+  "mode": "thread",
+  "userId": "U1",
+  "channelId": "C_EVAL",
+  "threadTs": "1700000000.000200",
+  "allowSilence": true,
+  "transcript": [
+    { "role": "user", "content": "<@U1> (Antonio): <@UBOT> mi fai il riassunto di cosa abbiamo deciso qui sopra?" },
+    { "role": "assistant", "content": "Deciso: si parte con la campagna social a ottobre, budget 8k, Giusy coordina i contenuti e Paolo le grafiche. Resta aperta la scelta del fotografo." }
+  ],
+  "message": "e sul fotografo chi doveva sentire chi?",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["[NO_REPLY]"],
+    "max_lines": 6,
+    "rubric": "Deve rispondere (è un seguito diretto del suo riassunto). Se il thread non dice chi doveva contattare il fotografo, deve dirlo chiaramente senza inventare un nome. Risposta breve, tono da collega."
+  }
+}

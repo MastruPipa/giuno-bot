@@ -1278,6 +1278,18 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'kb-cleanup') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono pulire la KB.', response_type: 'ephemeral' }); return; }
+    var applyCleanup = args[1] === 'apply';
+    await respond({ text: applyCleanup ? 'Pulizia KB in corso...' : 'Calcolo l\'anteprima della pulizia KB...', response_type: 'ephemeral' });
+    try {
+      var kbCleanup = require('../jobs/kbNoiseCleanupJob');
+      var cleanupRes = await kbCleanup.runNoiseCleanup({ apply: applyCleanup });
+      await respond({ text: kbCleanup.formatReport(cleanupRes), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'push-google') {
     if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono usare questo comando.', response_type: 'ephemeral' }); return; }
     await respond({ text: 'Sto inviando gli inviti...', response_type: 'ephemeral' });

@@ -273,6 +273,18 @@ function normalizeStatusCRM(s) {
 
 var definitions = [
   {
+    name: 'crm_compare',
+    description: 'Confronta il CRM interno (tabella leads) con Attio (fonte di verità): per ogni azienda dice se stato e valore coincidono, ' +
+      'quali lead esistono solo da una parte e quali vanno allineati. Usalo quando l\'utente chiede "confronta i CRM", "il CRM interno è aggiornato?", ' +
+      '"cosa non è allineato", o prima di una pulizia della pipeline. Non modifica nulla.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: 'Max lead locali da confrontare (default 100)' },
+      },
+    },
+  },
+  {
     name: 'query_leads_db',
     description: 'Interroga direttamente il database CRM (tabella leads su Supabase). Usa SEMPRE questo tool per domande su clienti, lead, pipeline, trattative, follow-up, status commerciale. NON usare search_kb per questi dati.',
     input_schema: {
@@ -366,6 +378,13 @@ var definitions = [
 ];
 
 async function execute(toolName, input, userId, userRole) {
+  if (toolName === 'crm_compare') {
+    try {
+      var crmCompare = require('../orchestrator/crmCompare');
+      return await crmCompare.compareAll(input.limit || 100);
+    } catch(e) { return { error: 'Confronto CRM fallito: ' + e.message }; }
+  }
+
   if (toolName === 'query_leads_db' || toolName === 'search_leads') {
     try {
       var leads = await db.searchLeads(input);

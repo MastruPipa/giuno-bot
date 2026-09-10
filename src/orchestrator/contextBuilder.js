@@ -25,9 +25,7 @@ var CLOSED_PROJECT_STATUSES = {
 // ─── Context needs per intent ────────────────────────────────────────────────
 
 var CONTEXT_NEEDS = {
-  THREAD_SUMMARY:   { memories: true,  kb: false, glossary: false, entities: false, drive: false, crm: false },
   DAILY_DIGEST:     { memories: true,  kb: true,  glossary: false, entities: false, drive: false, crm: false },
-  CLIENT_RETRIEVAL: { memories: true,  kb: true,  glossary: true,  entities: true,  drive: true,  crm: true  },
   QUOTE_SUPPORT:    { memories: false, kb: true,  glossary: false, entities: false, drive: false, crm: true  },
   CRM_UPDATE:       { memories: false, kb: false, glossary: false, entities: true,  drive: false, crm: true  },
   HISTORICAL_SCAN:  { memories: false, kb: false, glossary: false, entities: false, drive: false, crm: false },
@@ -303,6 +301,15 @@ async function buildContext(params) {
     if (!attioContext) attioUnavailable = true;
   }
 
+  // Due CRM che convivono devono confrontarsi: con i dati Attio in mano
+  // cerchiamo i lead locali omonimi e segnaliamo al modello le discrepanze.
+  var crmComparison = '';
+  if (attioContext) {
+    crmComparison = (await safeCall('CTX.crmCompare', function() {
+      return withTimeout(function() { return require('./crmCompare').compareForContext(attioContext); }, 2500, 'CTX.crmCompare');
+    }, '')) || '';
+  }
+
   return {
     // V1 backward-compatible fields
     userId:           userId,
@@ -332,6 +339,7 @@ async function buildContext(params) {
     teamContext:      teamContext,
     attioContext:     attioContext,
     attioUnavailable: attioUnavailable,
+    crmComparison:    crmComparison,
   };
 }
 
@@ -380,8 +388,10 @@ function formatContextForPrompt(ctx) {
   }
 
   var attioBlock = attioCtx.formatAttioForPrompt(ctx.attioContext);
-  if (attioBlock) parts.push(attioBlock);
-  else if (ctx.attioUnavailable) {
+  if (attioBlock) {
+    parts.push(attioBlock);
+    if (ctx.crmComparison) parts.push(ctx.crmComparison);
+  } else if (ctx.attioUnavailable) {
     parts.push('[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
       'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
       'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.');

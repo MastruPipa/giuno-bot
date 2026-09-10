@@ -16,9 +16,7 @@ var { matchSkill, executeSkill } = require('../skills/skillRegistry');
 var AGENT_TIMEOUT_MS = 55000; // 55s — below Railway/Slack 60s hard limit
 
 // Agents (lazy-loaded to avoid circular deps)
-function getThreadSummaryAgent()    { return require('../agents/threadSummaryAgent'); }
 function getDailyDigestAgent()      { return require('../agents/dailyDigestAgent'); }
-function getClientRetrievalAgent()  { return require('../agents/clientRetrievalAgent'); }
 function getGeneralAssistantAgent() { return require('../agents/generalAssistantAgent'); }
 function getQuoteSupportAgent()     { return require('../agents/quoteSupportAgent'); }
 function getCRMUpdateAgent()        { return require('../agents/crmUpdateAgent'); }
@@ -171,14 +169,8 @@ async function route(userId, message, options) {
     // 3. Select and call agent
     var reply;
     switch (intent) {
-      case INTENTS.THREAD_SUMMARY:
-        reply = await runAgent(getThreadSummaryAgent, message, ctx, 'threadSummary');
-        break;
       case INTENTS.DAILY_DIGEST:
         reply = await runAgent(getDailyDigestAgent, message, ctx, 'dailyDigest');
-        break;
-      case INTENTS.CLIENT_RETRIEVAL:
-        reply = await runAgent(getClientRetrievalAgent, message, ctx, 'clientRetrieval');
         break;
       case INTENTS.QUOTE_SUPPORT:
         reply = await runAgent(getQuoteSupportAgent, message, ctx, 'quoteSupport');

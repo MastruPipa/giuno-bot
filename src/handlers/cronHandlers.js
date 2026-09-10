@@ -1506,6 +1506,11 @@ function scheduleCrons() {
     catch(e) { logger.error('[KB-SWEEP]', e.message); }
     finally { await releaseCronLock('kb_quality_sweep'); }
   }, { timezone: 'Europe/Rome' });
+  // Pulizia rumore KB (regole deterministiche, reversibile): domenica 5:30.
+  cron.schedule('30 5 * * 0', lockedJob('kb_noise_cleanup', 30, async function() {
+    try { var { runNoiseCleanup } = require('../jobs/kbNoiseCleanupJob'); await runNoiseCleanup({ apply: true }); }
+    catch(e) { logger.error('[KB-CLEANUP]', e.message); }
+  }), { timezone: 'Europe/Rome' });
   logger.info('[CRON] Tutti i cron schedulati.');
 
   // ─── Boot tasks: embedding backfill + consolidation (run once 30s after start) ─

@@ -1,0 +1,18 @@
+{
+  "id": "mention-cc-in-coda",
+  "seed": true,
+  "description": "Giuno taggato in coda a un messaggio scritto per un collega (presa visione). Non deve intromettersi.",
+  "mode": "mention",
+  "userId": "U1",
+  "channelId": "C_EVAL",
+  "threadTs": "1700000000.000300",
+  "allowSilence": true,
+  "isCC": true,
+  "transcript": [],
+  "channelContext": "CANALE: #progetto-elfo\nTopic: coordinamento campagna Elfo",
+  "message": "<@U3> ricordati di mandare le bozze entro giovedì, poi le vediamo insieme",
+  "expect": {
+    "no_reply": true,
+    "rubric": "È un messaggio per U3 con Giuno in copia: nessuna domanda diretta, nessun errore da segnalare. Deve restare in silenzio."
+  }
+}

@@ -121,18 +121,29 @@ SDK `@anthropic-ai/sdk` aggiornato a 0.124.
   del timeout agente. Se si avvicina, `GIUNO_EFFORT=low`.
 - Costi: `get_api_costs` / tabella `api_usage` con i nuovi ID modello.
 
-## 4. Da fare (fuori da questo intervento)
-1. **Pulizia KB storica**: le entry `source_type = 'slack'` con `added_by =
-   'slack-watcher'` sono il rumore del vecchio watcher; valutare un purge o un
-   `kbQualitySweepJob` dedicato.
-2. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
+## 4. Fase 2 (stessa settimana)
+
+- **Pulizia KB** — `src/jobs/kbNoiseCleanupJob.js`: rigetta (non cancella) il
+  dump grezzo del vecchio watcher e le entry `auto_learn` mai usate da oltre
+  60 giorni. `/giuno admin kb-cleanup` mostra l'anteprima, `… apply` esegue;
+  cron ogni domenica 5:30. Reversibile con un UPDATE su `validation_status`.
+- **Eval** — cartella `eval/` con runner (`npm run eval`), importer di thread
+  reali (`npm run eval:import`) e sei casi seed. Vedi `eval/README.md`.
+- **Agenti** — rimossi `threadSummaryAgent` e `clientRetrievalAgent` (con il
+  thread Slack in mano l'assistente generale fa meglio e non perde contesto);
+  il classificatore intent è solo a parole chiave, senza fallback Haiku.
+  Restano: daily digest, quote support, CRM update, prospecting, scan.
+- **Due CRM che si confrontano** — `src/orchestrator/crmCompare.js`: quando il
+  contesto contiene dati Attio, cerca i lead locali omonimi e segnala al
+  modello le discrepanze di stato/valore (regola: fa fede Attio, proporre
+  l'allineamento). Tool `crm_compare` per il report completo on-demand
+  ("confronta i CRM"). L'agente CRM aggiorna Attio e allinea l'interno.
+
+## 5. Da fare
+1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
-3. **Agenti specializzati**: hanno ancora prompt lunghi in stile "MAI/SEMPRE" e
-   ricostruiscono data/contesto per conto proprio; con Opus 5 e il transcript
-   in mano vale la pena valutare se tenerne solo 2-3 (digest, quote, CRM) e
-   lasciare il resto all'assistente generale.
-4. **Intent classifier**: keyword + Haiku restano; con il transcript nel
-   contesto, il valore aggiunto è sceso. Da misurare prima di toglierlo.
-5. **Eval**: non esiste un set di conversazioni Slack reali con risposta attesa.
-   Con 20-30 thread anonimizzati si può misurare ogni ricalibrazione futura
-   invece di andare a sensazione.
+2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
+   20-30 thread veri importati con `npm run eval:import` e annotati.
+3. **Decidere il destino della tabella `leads`**: oggi è allineata "a mano"
+   dal confronto; se Attio resta l'unico CRM, `leads` può diventare una cache
+   di sola lettura sincronizzata da un job.
