@@ -83,8 +83,8 @@ test('send_google_link: solo ruoli alti, link personale del destinatario in DM',
 
 test('send_campaign: avvia la campagna e riferisce controllo e solleciti', async function() {
   posted = [];
-  var denied = await slackTools.execute('send_campaign', { message: 'ciao', target_user_names: ['Paolo'] }, 'U2', 'member');
-  assert.match(denied.error, /Solo admin/);
+  var denied = await slackTools.execute('send_campaign', { message: 'ciao', target_user_names: ['Paolo'] }, 'U2', 'manager');
+  assert.match(denied.error, /Solo gli admin/);
   var out = await slackTools.execute('send_campaign', { message: 'Rispondete LETTO', target_user_names: ['Paolo', 'Samuele'], expected_reply: 'LETTO', check_after_minutes: 60, max_pushes: 2 }, 'U1', 'admin');
   assert.equal(out.success, true);
   assert.deepEqual(out.sent_to, ['Paolo Spartano', 'Samuele Licciardello']);
@@ -135,6 +135,8 @@ test('check_dm_replies: legge i DM di Giuno e distingue chi ha confermato', asyn
     if (a.channel === 'D_U3') return { messages: [{ user: 'U3', text: 'una domanda: vale anche il venerdì?', ts: String(nowSec - 30) }] };
     return { messages: [] };
   };
+  var noManager = await slackTools.execute('check_dm_replies', { target_user_names: ['Paolo'] }, 'U1', 'manager');
+  assert.match(noManager.error, /Solo gli admin/);
   var out = await slackTools.execute('check_dm_replies', { target_user_names: ['Paolo', 'Samuele', 'Antonio'], expected_reply: 'LETTO', since_minutes: 120 }, 'U1', 'admin');
   assert.equal(out.checked, 3);
   assert.deepEqual(out.confirmed, ['Paolo Spartano']);
@@ -143,4 +145,21 @@ test('check_dm_replies: legge i DM di Giuno e distingue chi ha confermato', asyn
   assert.equal(sam.replied, true);
   assert.equal(sam.confirmed, false);
   delete slackService.app.client.conversations.history;
+});
+
+test('privacy: campaign_status solo admin, testo delle risposte solo al creatore; read_channel su DM solo admin', async function() {
+  var campaignsDb = require('../src/services/db/campaigns');
+  var orig = campaignsDb.getCampaign;
+  campaignsDb.getCampaign = async function() { return { id: 'cmp_x', status: 'active', created_by: 'U1', title: 't', max_pushes: 2, recipients: [{ user_id: 'U2', name: 'Paolo', status: 'replied', reply_text: 'LETTO ma ho un dubbio personale' }] }; };
+  try {
+    var denied = await slackTools.execute('campaign_status', { campaign_id: 'cmp_x' }, 'U2', 'manager');
+    assert.match(denied.error, /Solo gli admin/);
+    var creator = await slackTools.execute('campaign_status', { campaign_id: 'cmp_x' }, 'U1', 'admin');
+    assert.equal(creator.campaign.recipients[0].reply_text, 'LETTO ma ho un dubbio personale');
+    var otherAdmin = await slackTools.execute('campaign_status', { campaign_id: 'cmp_x' }, 'U9', 'admin');
+    assert.equal(otherAdmin.campaign.recipients[0].reply_text, undefined);
+    assert.equal(otherAdmin.campaign.recipients[0].status, 'replied');
+  } finally { campaignsDb.getCampaign = orig; }
+  var dm = await slackTools.execute('read_channel', { channel_id: 'D0ANFQUUFV3' }, 'U2', 'member');
+  assert.match(dm.error, /privati/);
 });

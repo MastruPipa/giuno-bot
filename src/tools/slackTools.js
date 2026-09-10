@@ -518,6 +518,9 @@ async function execute(toolName, input, userId, userRole) {
   }
 
   if (toolName === 'check_dm_replies') {
+    // I DM fra Giuno e le altre persone sono privati: solo gli admin possono
+    // vedere chi ha risposto e cosa, e solo per confermare messaggi mandati.
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono verificare le risposte nei DM di Giuno con altre persone.' };
     var cdUsers = [];
     try { cdUsers = await getUtenti(); } catch(e) { /* ok */ }
     var cdRecipients = _dmRecipients(input).map(function(r) {
@@ -613,7 +616,7 @@ async function execute(toolName, input, userId, userRole) {
   }
 
   if (toolName === 'send_campaign') {
-    if (['admin', 'finance', 'manager'].indexOf(userRole || 'member') === -1) return { error: 'Solo admin, finance o manager possono lanciare una campagna.' };
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono lanciare una campagna con conferma di lettura.' };
     var cmpRecipients = _dmRecipients(input);
     if (!cmpRecipients.length) return { error: 'Nessun destinatario: passa target_user_ids o target_user_names.' };
     var cmpUsers = [];
@@ -643,11 +646,16 @@ async function execute(toolName, input, userId, userRole) {
   }
 
   if (toolName === 'campaign_status') {
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono vedere lo stato delle campagne.' };
     var campaignsDb = require('../services/db/campaigns');
     var campaignsAgent = require('../agents/messageCampaigns');
     if (input.campaign_id) {
       var one = await campaignsDb.getCampaign(input.campaign_id);
-      return one ? { text: campaignsAgent.formatStatus(one), campaign: { id: one.id, status: one.status, recipients: one.recipients } } : { error: 'Campagna non trovata.' };
+      if (!one) return { error: 'Campagna non trovata.' };
+      // Il testo delle risposte lo vede solo chi ha lanciato la campagna.
+      var isCreator = one.created_by === userId;
+      var recips = (one.recipients || []).map(function(r) { return { user_id: r.user_id, name: r.name, status: r.status, pushes: r.pushes, replied_at: r.replied_at, reply_text: isCreator ? r.reply_text : undefined }; });
+      return { text: campaignsAgent.formatStatus(one), campaign: { id: one.id, status: one.status, created_by: one.created_by, recipients: recips } };
     }
     var mine = await campaignsDb.listCampaigns({ status: 'active', createdBy: userId });
     if (!mine.length) return { count: 0, message: 'Nessuna campagna attiva lanciata da te.' };
@@ -655,6 +663,7 @@ async function execute(toolName, input, userId, userRole) {
   }
 
   if (toolName === 'cancel_campaign') {
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono annullare una campagna.' };
     return await require('../agents/messageCampaigns').cancelCampaign(input.campaign_id, userId);
   }
 
@@ -1075,6 +1084,9 @@ async function execute(toolName, input, userId, userRole) {
 
   // ─── Read Channel ──────────────────────────────────────────────────────────
   if (toolName === 'read_channel') {
+    if (/^D[A-Z0-9]+$/.test(String(input.channel_id || '')) && userRole !== 'admin') {
+      return { error: 'I messaggi diretti sono privati: non posso leggerli per conto di chi non è admin.' };
+    }
     try {
       var targetChId = input.channel_id;
       if (!targetChId && input.channel_name) {
