@@ -1246,6 +1246,21 @@ function scheduleCrons() {
     var { scanMeetingRecaps } = require('../agents/meetingRecapScanner');
     scanMeetingRecaps().catch(function(e) { logger.error('[RECAP-SCAN-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome', name: 'meeting_recap_scan', lockTtl: 20 });
+  // Appunti Gemini da Drive (kick-off e recap) → KB + dossier di progetto
+  cron.schedule('45 9,11,13,15,17 * * 1-5', function() {
+    var { scanGeminiNotes } = require('../agents/geminiNotesScanner');
+    scanGeminiNotes({ days: 3 }).catch(function(e) { logger.error('[GEMINI-NOTES-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'gemini_notes_scan', lockTtl: 25 });
+  // Dossier di progetto: rebuild delle schede con fonti nuove o vecchie di 7 giorni
+  cron.schedule('30 5,18 * * 1-5', function() {
+    var { refreshDossiers } = require('../agents/projectDossier');
+    refreshDossiers().catch(function(e) { logger.error('[DOSSIER-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'project_dossier_refresh', lockTtl: 45 });
+  // Lunedì: stato progetti agli admin
+  cron.schedule('45 8 * * 1', function() {
+    var { weeklyProjectsBrief } = require('../agents/projectDossier');
+    weeklyProjectsBrief().catch(function(e) { logger.error('[DOSSIER-WEEKLY-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'project_dossier_weekly', lockTtl: 20 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');

@@ -8,3 +8,5 @@ user_tokens.json
 eval/results/
 .DS_Store
 mcp_connections.json
+project_dossiers.json
+project_documents.json

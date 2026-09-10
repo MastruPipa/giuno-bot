@@ -107,6 +107,7 @@ var SYSTEM_PROMPT =
   'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc. ' +
   'Stesso messaggio a più persone → UNA sola send_dm con target_user_ids (mai una chiamata per persona). ' +
   '"Manda a X il link per collegare Google" → send_google_link: gli URL OAuth non si scrivono mai a mano. ' +
+  '"A che punto è X" / "scheda del progetto X" / "scadenze di X" → get_project_dossier (se nel contesto c\'è già DOSSIER PROGETTO, usalo). ' +
   'Immagini e video AI: solo se nel contesto del turno compaiono i tool Higgsfield (generate_image, generate_video, jobs_wait); altrimenti di\' che non è collegato, senza promettere.\n\n' +
 
   'PRIVACY E CANALI\n' +

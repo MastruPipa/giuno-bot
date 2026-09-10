@@ -22,6 +22,7 @@ var feedback     = require('./feedback');
 var entities     = require('./entities');
 var unifiedSearch = require('./unifiedSearch');
 var projects     = require('./projects');
+var dossiers     = require('./dossiers');
 var userFacts    = require('./userFacts');
 var team         = require('./team');
 var timeLogs     = require('./timeLogs');
@@ -169,6 +170,13 @@ module.exports = {
   upsertTeamMember:      team.upsertTeamMember,
   deactivateTeamMember:  team.deactivateTeamMember,
   formatTeamRosterForPrompt: team.formatRosterForPrompt,
+
+  // Dossier di progetto
+  getDossier:           dossiers.getDossier,
+  listDossiers:         dossiers.listDossiers,
+  saveDossier:          dossiers.saveDossier,
+  getProjectDocuments:  dossiers.getProjectDocuments,
+  addProjectDocument:   dossiers.addProjectDocument,
 
   // Projects
   createProject:        projects.createProject,

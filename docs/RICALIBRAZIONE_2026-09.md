@@ -257,7 +257,51 @@ tool, ha "inventato" il link per Samuele. Correzioni:
 la porta del dominio pubblico. Poi Samuele (e Gloria) possono collegare Google
 con "collega Google" in DM o tramite `send_google_link`.
 
-## 9. Da fare
+## 9. Dossier di progetto (fase 4)
+
+Prima non esisteva una "scheda" di progetto: `projects` ha solo i campi CRM,
+i recap Gemini finivano in KB taggati per cliente a stringa, i kick-off non
+erano riconosciuti e lo scanner recap leggeva solo Gmail e allegati
+calendario (2 recap in 30 giorni, mentre Drive ne aveva decine). Ora:
+
+- **`geminiNotesScanner`** (cron `gemini_notes_scan`, 5 volte al giorno):
+  cerca su Drive i Google Doc "… - Appunti di Gemini", "Note della
+  riunione", "Kick-off" modificati negli ultimi 3 giorni, li legge, estrae
+  in JSON (sintesi, decisioni, azioni con responsabile e data, scadenze,
+  rischi; per i kick-off anche obiettivi, deliverable, referenti, budget),
+  li salva in KB (`tipo:meeting_recap|kickoff`, `drive_file_id:`,
+  `progetto:`), li collega al progetto in `project_documents` e marca il
+  dossier da aggiornare. Le informazioni personali non di lavoro vengono
+  scartate dal prompt di estrazione. Backfill manuale: `/giuno admin
+  gemini-scan 60`.
+- **`projectDossier`** (cron `project_dossier_refresh` alle 5:30 e 18:30):
+  per ogni progetto attivo con fonti nuove o scheda vecchia di 7 giorni
+  ricostruisce la scheda da kick-off + recap + canale Slack (digest e
+  messaggi degli ultimi 14 giorni) + ore consuntivate + allocazioni +
+  segnali PM. Il modello (`GIUNO_MODEL_DOSSIER`, default sonnet-5) produce
+  JSON con stato, fase, obiettivi, deliverable, scadenze, team, referenti,
+  decisioni, rischi, prossimi passi, domande aperte e **cambiamenti** rispetto
+  alla versione precedente. Tabella `project_dossiers` (versione, changelog,
+  fonti). Max 10 schede per run (`DOSSIER_MAX_PER_RUN`).
+- **Proattività**: i cambiamenti con importanza alta (scadenza vicina,
+  blocco, rischio, cambio budget/scope, decisione del cliente) arrivano in DM
+  al responsabile del progetto (o agli admin) una sola volta per
+  cambiamento (`followup_log`, `DOSSIER_NOTIFY_ENABLED=false` per spegnere).
+  Lunedì 8:45 brief "stato progetti" agli admin (`project_dossier_weekly`).
+- **Uso**: `/giuno progetto <nome>` (o senza nome per l'elenco), tool
+  `get_project_dossier` / `refresh_project_dossier` / `list_project_dossiers`,
+  e la scheda compatta entra da sola nel contesto quando il canale è
+  collegato a un progetto o il messaggio lo nomina. Admin: `/giuno admin
+  dossier refresh [nome|all]`, `dossier weekly`, `gemini-scan [giorni]`.
+
+**Limiti noti.** La tabella `projects` ha 75 righe "attive" con duplicati
+(Hammersud ×3, Tarocco ×2) perché nasce da tre sincronizzazioni (Attio,
+canali, categorie): la scheda si costruisce per la riga che il catalogo
+abbina per nome; una deduplica dei progetti è il passo successivo. Le
+"sviluppi" del progetto oggi sono canale Slack + recap: i documenti di
+lavoro modificati su Drive entrano solo se il `drive_watcher` li porta in KB.
+
+## 10. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
