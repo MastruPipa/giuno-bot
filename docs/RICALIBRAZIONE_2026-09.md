@@ -435,7 +435,21 @@ valore. Throttle per deal: 7 giorni, massimo 3 volte. Tool `pipeline_review`
 ("come va la pipeline"), `/giuno admin pipeline [giorni|notify]`.
 `PIPELINE_STALE_DAYS` per la soglia.
 
-## 16. Da fare
+## 16. Retrospettiva serale (auto-sviluppo, livello 1)
+
+Alle 21:00 nei giorni feriali `src/agents/selfReview.js` raccoglie i segnali
+della giornata: risposte in fallback (vuote, "mi sono incartato", validator,
+"a cosa ti riferisci?"), tool falliti (ring buffer in anthropicService),
+cron con errori (registro scheduler), pattern di errore, feedback negativi,
+ultima eval, costi API, conversazioni e azioni. Se c'è qualcosa da dire, il
+modello (`MODELS.UTILITY`) produce sintesi, cosa ha funzionato, al massimo
+tre proposte (evidenza, causa probabile, proposta, dove: prompt/tool/codice/
+dati/processo, impatto, sforzo) e cosa non toccare. Va in DM agli admin e in
+`self_reviews` (storico per il livello 2). `/giuno admin retrospettiva
+[ieri|YYYY-MM-DD]` la forza. Il livello 2 (Giuno scrive la modifica e apre
+la PR) richiede un token GitHub su Railway: da fare quando lo decidi.
+
+## 17. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

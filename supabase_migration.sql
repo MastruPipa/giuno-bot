@@ -372,3 +372,11 @@ CREATE TABLE IF NOT EXISTS conversation_actions (
   at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS conversation_actions_key ON conversation_actions(conv_key, at);
+
+-- 2026-09-10: retrospettiva serale di Giuno (auto-sviluppo livello 1)
+CREATE TABLE IF NOT EXISTS self_reviews (
+  date DATE PRIMARY KEY,
+  signals JSONB,
+  review JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);

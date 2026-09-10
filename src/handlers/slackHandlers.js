@@ -1430,6 +1430,17 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'retrospettiva' || sub === 'retro') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo gli admin.', response_type: 'ephemeral' }); return; }
+    var retroDate = args[1] === 'ieri' ? new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) : (/^\d{4}-\d{2}-\d{2}$/.test(args[1] || '') ? args[1] : undefined);
+    await respond({ text: 'Preparo la retrospettiva' + (retroDate ? ' del ' + retroDate : ' di oggi') + '...', response_type: 'ephemeral' });
+    try {
+      var retro = await require('../agents/selfReview').runSelfReview({ date: retroDate, force: true, notify: false });
+      await respond({ text: retro.text || 'Niente da segnalare.', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'pipeline') {
     if (callerRole !== 'admin' && callerRole !== 'manager' && callerRole !== 'finance') { await respond({ text: 'Solo admin, manager e finance.', response_type: 'ephemeral' }); return; }
     try {

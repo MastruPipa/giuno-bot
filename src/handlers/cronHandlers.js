@@ -1288,6 +1288,11 @@ function scheduleCrons() {
     var { runPipelineReview } = require('../agents/pipelineFollowups');
     runPipelineReview({ notify: true }).catch(function(e) { logger.error('[PIPELINE-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome', name: 'pipeline_review', lockTtl: 10 });
+  // Retrospettiva serale di Giuno → admin (auto-sviluppo, livello 1)
+  cron.schedule('0 21 * * 1-5', function() {
+    var { runSelfReview } = require('../agents/selfReview');
+    runSelfReview({ notify: true }).catch(function(e) { logger.error('[SELF-REVIEW-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'self_review', lockTtl: 15 });
   // Roster team allineato agli utenti Slack
   cron.schedule('20 7 * * 1-5', function() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');

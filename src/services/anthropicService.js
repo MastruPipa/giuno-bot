@@ -32,6 +32,15 @@ var mcpToolsets = require('./mcpToolsets');
 var toolPacks = require('../tools/toolPacks');
 var actionLog = require('./db/actionLog');
 
+// Tool falliti (eccezione o risultato {error}): ultimi 300, per la
+// retrospettiva serale. In memoria: si perde al riavvio, va bene.
+var _toolFailures = [];
+function recordToolFailure(tool, input, error, userId) {
+  _toolFailures.push({ at: new Date().toISOString(), tool: tool, error: String(error || '').substring(0, 200), input: JSON.stringify(input || {}).substring(0, 160), user_id: userId || null });
+  if (_toolFailures.length > 300) _toolFailures.splice(0, _toolFailures.length - 300);
+}
+function getToolFailures(sinceIso) { return _toolFailures.filter(function(f) { return !sinceIso || f.at >= sinceIso; }); }
+
 // Tool con effetto nel mondo: quelli che vale la pena ricordare al modello.
 var SIDE_EFFECT_TOOLS = new Set(['send_dm', 'send_campaign', 'cancel_campaign', 'send_email', 'reply_email', 'forward_email', 'send_draft', 'create_event', 'update_event', 'delete_event', 'add_attendees',
   'share_file', 'edit_doc', 'create_doc', 'edit_slides', 'create_sheet', 'write_sheet', 'create_folder', 'move_file', 'rename_file', 'upload_file', 'pin_message', 'unpin_message', 'set_channel_topic', 'invite_to_channel', 'create_poll',
@@ -1151,6 +1160,7 @@ async function askGiuno(userId, userMessage, options) {
       var resultStr = JSON.stringify(result);
       logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
       toolEvidence.push(resultStr);
+      if (result && typeof result === 'object' && result.error) recordToolFailure(tu.name, tu.input, result.error, userId);
       if (SIDE_EFFECT_TOOLS.has(tu.name) && result && typeof result === 'object' && !result.error && !result.requires_confirmation) {
         actionLog.logAction(convKey, userId, tu.name, _actionSummary(tu.name, tu.input, result)).catch(function() {});
       }
@@ -1275,6 +1285,8 @@ async function askGiuno(userId, userMessage, options) {
 
 module.exports = {
   EMPTY_REPLY_FALLBACK: EMPTY_REPLY_FALLBACK,
+  getToolFailures: getToolFailures,
+  recordToolFailure: recordToolFailure,
   SIDE_EFFECT_TOOLS: SIDE_EFFECT_TOOLS,
   formatActionsSection: formatActionsSection,
   _actionSummary: _actionSummary,
