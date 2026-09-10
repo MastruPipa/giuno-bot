@@ -72,6 +72,14 @@ function isAuthorizedAdminRequest(req, parsed) {
 async function handleRequest(req, res) {
   var parsed = url.parse(req.url, true);
 
+  if (parsed.pathname === '/giunos' || parsed.pathname.startsWith('/giunos/')) {
+    var giunos = require('../giunos/handler').createHandler({
+      getClient: function() { return require('../services/db/client').getClient(); },
+      authorize: isAuthorizedAdminRequest
+    });
+    if (await giunos(req, res, parsed)) return;
+  }
+
   // Liveness probe per l'healthcheck di Railway: NON protetto, risposta
   // immediata. Se l'event loop è bloccato (es. un job notturno che stalla)
   // questa smette di rispondere e Railway riavvia il container — cosa che il

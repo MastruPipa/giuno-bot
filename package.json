@@ -14,7 +14,8 @@
     "check:conflicts": "bash scripts/check-conflicts.sh",
     "check:deploy": "bash scripts/post-deploy-check.sh",
     "check:ecosystem": "bash scripts/check-ecosystem.sh",
-    "resolve:slack-conflict": "bash scripts/resolve-slackservice-conflict.sh"
+    "resolve:slack-conflict": "bash scripts/resolve-slackservice-conflict.sh",
+    "dev:giunos": "node scripts/giunos-dev.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
