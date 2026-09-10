@@ -415,7 +415,27 @@ degli altri stanno nei DM fra Giuno e loro, che il modello non leggeva.
   separato su Railway (stesse chiavi) e risponde con superati/totale, punteggio
   del giudice e i casi falliti con motivo. Prima serviva un `.env` locale.
 
-## 15. Da fare
+## 15. Daily precompilato e follow-up di pipeline (fase 9)
+
+**Daily "al contrario"** (`dailyStandupV2`). Alle 16:00 non arriva più il
+modulo vuoto: Giuno costruisce la stima della giornata (calendario, Slack,
+mail, piano di ieri, pianificazione settimanale) e la manda con "Confermo
+così" / "Correggo io". Il modale si apre già compilato con task e durate
+della stima (`prefillFromEstimate`, `initial_value`/`initial_option`). Alle
+17:30 chi non ha confermato riceve solo un promemoria con gli stessi bottoni;
+alle 18:00 la stima entra come daily stimato, come prima.
+`DAILY_PREFILL_ENABLED=false` per tornare al modulo vuoto.
+
+**Pipeline Attio** (`src/agents/pipelineFollowups.js`). Lunedì e giovedì
+alle 9:05 gli admin ricevono i deal aperti fermi da 14+ giorni (ultimo
+movimento = `active_from` più recente fra i valori del record, esposto da
+`attioService.queryRecords` come `last_activity_at`), con suggerimento
+(follow-up, chiudere come Lost, aggiornare lo stage) e le proposte senza
+valore. Throttle per deal: 7 giorni, massimo 3 volte. Tool `pipeline_review`
+("come va la pipeline"), `/giuno admin pipeline [giorni|notify]`.
+`PIPELINE_STALE_DAYS` per la soglia.
+
+## 16. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

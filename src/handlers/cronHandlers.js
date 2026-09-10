@@ -1283,6 +1283,11 @@ function scheduleCrons() {
     var { runChecks } = require('../agents/messageCampaigns');
     runChecks().catch(function(e) { logger.error('[CAMPAIGN-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome', name: 'campaign_check', lockTtl: 5 });
+  // Pipeline Attio: deal fermi e proposte senza valore → admin, lunedì e giovedì
+  cron.schedule('5 9 * * 1,4', function() {
+    var { runPipelineReview } = require('../agents/pipelineFollowups');
+    runPipelineReview({ notify: true }).catch(function(e) { logger.error('[PIPELINE-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'pipeline_review', lockTtl: 10 });
   // Roster team allineato agli utenti Slack
   cron.schedule('20 7 * * 1-5', function() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');

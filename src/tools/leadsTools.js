@@ -273,6 +273,11 @@ function normalizeStatusCRM(s) {
 
 var definitions = [
   {
+    name: 'pipeline_review',
+    description: 'Rivede la pipeline commerciale su Attio: deal aperti fermi da 14+ giorni (con ultimo movimento e suggerimento) e proposte senza valore. Usa per "come va la pipeline", "deal fermi", "follow-up da fare". Solo admin, finance, manager.',
+    input_schema: { type: 'object', properties: { stale_days: { type: 'integer', description: 'Soglia in giorni (default 14)' } } },
+  },
+  {
     name: 'crm_compare',
     description: 'Confronta il CRM interno (tabella leads) con Attio (fonte di verità): per ogni azienda dice se stato e valore coincidono, ' +
       'quali lead esistono solo da una parte e quali vanno allineati. Usalo quando l\'utente chiede "confronta i CRM", "il CRM interno è aggiornato?", ' +
@@ -378,6 +383,13 @@ var definitions = [
 ];
 
 async function execute(toolName, input, userId, userRole) {
+  if (toolName === 'pipeline_review') {
+    if (['admin', 'finance', 'manager'].indexOf(userRole || 'member') === -1) return { error: 'Solo admin, finance o manager possono rivedere la pipeline.' };
+    var pf = require('../agents/pipelineFollowups');
+    var rev = await pf.runPipelineReview({ notify: false, staleDays: input && input.stale_days });
+    return { open_deals: rev.open, stale: rev.issues.stale, no_value: rev.issues.no_value, text: pf.formatReport(rev.issues, { staleDays: input && input.stale_days }) };
+  }
+
   if (toolName === 'crm_compare') {
     try {
       var crmCompare = require('../orchestrator/crmCompare');

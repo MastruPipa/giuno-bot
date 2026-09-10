@@ -108,17 +108,33 @@ async function sendDailyRequests() {
     var inviati = 0;
     var standupInAttesa = getStandupInAttesa();
 
+    var precompilati = 0;
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
       if (isExcludedFromDaily(utente)) continue;
       try {
-        await sendDailyRequestTo(utente);
+        // Daily "al contrario": Giuno lo compila da calendario, Slack e mail,
+        // la persona conferma con un tap o lo corregge. Il modulo vuoto resta
+        // solo quando non c'è abbastanza da ricostruire.
+        var proposed = null;
+        if (ESTIMATES_ENABLED && PREFILL_ENABLED) {
+          try { proposed = await buildEstimateFor(utente, todayStr); }
+          catch(e) { logger.warn('[DAILY-V2] daily precompilato fallito per', utente.id + ':', e.message); }
+        }
+        if (proposed) {
+          standupInAttesa.add(utente.id);
+          await sendEstimateProposal(utente, proposed, { mode: 'daily' });
+          precompilati++;
+        } else {
+          await sendDailyRequestTo(utente);
+        }
         inviati++;
       } catch(e) {
         logger.error('[DAILY-V2] Errore invio a', utente.id + ':', e.message);
       }
     }
+    logger.info('[DAILY-V2] Daily precompilati:', precompilati, 'su', inviati);
     sd.inattesa = Array.from(standupInAttesa);
     await db.saveStandup(sd);
     logger.info('[DAILY-V2] Richieste inviate a', inviati, 'utenti.');
@@ -135,6 +151,8 @@ async function sendDailyRequests() {
 // riceve semplicemente il daily stimato alle 18:00 come tutti gli altri.
 var _pendingEstimates = {}; // userId -> { date, structured }
 var ESTIMATES_ENABLED = String(process.env.DAILY_ESTIMATES_ENABLED || 'true') !== 'false';
+// Alle 16:00 il daily arriva già compilato (stima) invece del modulo vuoto.
+var PREFILL_ENABLED = String(process.env.DAILY_PREFILL_ENABLED || 'true') !== 'false';
 
 function getPendingEstimate(userId, dateStr) {
   var p = _pendingEstimates[userId];
@@ -151,23 +169,43 @@ async function buildEstimateFor(utente, dateStr) {
 }
 
 // DM con la proposta: la persona conferma con un bottone o compila da sé.
-async function sendEstimateProposal(utente, structured) {
+async function sendEstimateProposal(utente, structured, opts) {
+  opts = opts || {};
   var estimator = require('../agents/dailyEstimator');
   var nome = (utente.name || '').split(' ')[0] || 'ciao';
   var body = estimator.formatEstimateBody(structured);
+  var intro = opts.mode === 'daily'
+    ? 'Ciao *' + nome + '*, è il momento del daily. Te l\'ho già compilato da calendario, Slack e mail: confermi così o lo correggi?'
+    : opts.mode === 'reminder'
+      ? 'Ehi *' + nome + '*, manca solo la conferma del daily di oggi. Se torna, un tap e siamo a posto:'
+      : 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:';
   await app.client.chat.postMessage({
     channel: utente.id,
-    text: 'Manca il tuo daily: ho provato a ricostruirlo io.\n' + body,
+    text: (opts.mode === 'daily' ? 'È il momento del daily: te l\'ho compilato io, confermi?' : 'Manca il tuo daily: ho provato a ricostruirlo io.') + '\n' + body,
     blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:' } },
+      { type: 'section', text: { type: 'mrkdwn', text: intro } },
       { type: 'section', text: { type: 'mrkdwn', text: formatPerSlack(body) } },
       { type: 'context', elements: [{ type: 'mrkdwn', text: estimator.formatSourcesLine(structured) + '\nSe alle 18:00 non ho tue notizie lo pubblico come *stima* in #daily e le ore entrano nel consuntivo come stimate; puoi correggerlo anche dopo, compilando il daily.' }] },
       { type: 'actions', elements: [
         { type: 'button', text: { type: 'plain_text', text: '✅ Confermo così', emoji: true }, style: 'primary', action_id: 'daily_estimate_confirm', value: structured.estimate ? structured.estimate.generated_at : 'x' },
-        { type: 'button', text: { type: 'plain_text', text: '✏️ Lo compilo io', emoji: true }, action_id: 'open_daily_modal' },
+        { type: 'button', text: { type: 'plain_text', text: '✏️ Correggo io', emoji: true }, action_id: 'open_daily_modal' },
       ] },
     ],
   });
+}
+
+// Righe per il modale dalla stima: {oggi:[{task,hours}], domani:[...], blocchi}
+// dove hours è decimale (1.5) da abbinare alle opzioni di durata.
+function prefillFromEstimate(structured) {
+  if (!structured) return null;
+  function rows(list) {
+    return (list || []).slice(0, 10).map(function(t) {
+      var h = (Number(t.hours) || 0) + (Number(t.minutes) || 0) / 60;
+      return { task: String(t.task || '').substring(0, 150) + (t.project ? ' [' + t.project + ']' : ''), hours: Math.round(h * 4) / 4 };
+    }).filter(function(r) { return r.task; });
+  }
+  var out = { oggi: rows(structured.oggi), domani: rows(structured.domani), blocchi: structured.blocchi || null };
+  return (out.oggi.length || out.domani.length) ? out : null;
 }
 
 // Conferma dal bottone: la stima diventa il daily della persona a tutti gli
@@ -239,12 +277,16 @@ async function pushMissingResponders(pushNumber) {
       try {
         standupInAttesa.add(utente.id);
         var proposed = null;
-        if (ESTIMATES_ENABLED && pushNumber === 1) {
+        var alreadyProposed = getPendingEstimate(utente.id, todayStr);
+        if (alreadyProposed) {
+          // Proposta già mandata alle 16:00: solo un promemoria con i bottoni.
+          proposed = alreadyProposed;
+        } else if (ESTIMATES_ENABLED && pushNumber === 1) {
           try { proposed = await buildEstimateFor(utente, todayStr); }
           catch(e) { logger.warn('[DAILY-V2] stima daily fallita per', utente.id + ':', e.message); }
         }
         if (proposed) {
-          await sendEstimateProposal(utente, proposed);
+          await sendEstimateProposal(utente, proposed, { mode: alreadyProposed ? 'reminder' : 'push' });
         } else {
           var pushMsg = 'Ehi ' + utente.name.split(' ')[0] + ', manca il tuo daily! Il recap esce alle 18:00 — ci vogliono 2 minuti.';
           await app.client.chat.postMessage({ channel: utente.id, text: pushMsg });
@@ -673,5 +715,6 @@ module.exports = {
   publishDailySummary: publishDailySummary,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
+  prefillFromEstimate: prefillFromEstimate,
   oggi: oggi,
 };
