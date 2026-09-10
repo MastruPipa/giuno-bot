@@ -111,3 +111,36 @@ test('team_member_joined / team_member_left passano dal roster', async function(
     assert.match(no.error, /Solo admin/);
   } finally { db.upsertTeamMember = origUp; db.deactivateTeamMember = origDe; db.findTeamMemberByName = origFind; }
 });
+
+test('send_dm: stesso testo alla stessa persona entro 30 minuti non viene rimandato (force=true sì)', async function() {
+  slackTools._resetDmDedupForTests();
+  posted = [];
+  var a = await slackTools.execute('send_dm', { target_user_ids: ['U2', 'U3'], message: 'Ciao team, rispondete LETTO' }, 'U1', 'admin');
+  assert.equal(a.sent.length, 2);
+  var b = await slackTools.execute('send_dm', { target_user_ids: ['U2', 'U3'], message: 'Ciao team,  rispondete LETTO' }, 'U1', 'admin');
+  assert.equal(b.success, true);
+  assert.equal(b.already_sent.length, 2);
+  assert.match(b.message, /NON rimandato/);
+  assert.equal(posted.length, 2, 'nessun nuovo DM');
+  var c = await slackTools.execute('send_dm', { target_user_ids: ['U2'], message: 'Ciao team, rispondete LETTO', force: true }, 'U1', 'admin');
+  assert.equal(c.sent.length, 1);
+  assert.equal(posted.length, 3);
+  slackTools._resetDmDedupForTests();
+});
+
+test('check_dm_replies: legge i DM di Giuno e distingue chi ha confermato', async function() {
+  var nowSec = Math.floor(Date.now() / 1000);
+  slackService.app.client.conversations.history = async function(a) {
+    if (a.channel === 'D_U2') return { messages: [{ user: 'U2', text: 'LETTO, grazie', ts: String(nowSec - 60) }, { user: 'UBOT', bot_id: 'B1', text: 'msg', ts: String(nowSec - 120) }] };
+    if (a.channel === 'D_U3') return { messages: [{ user: 'U3', text: 'una domanda: vale anche il venerdì?', ts: String(nowSec - 30) }] };
+    return { messages: [] };
+  };
+  var out = await slackTools.execute('check_dm_replies', { target_user_names: ['Paolo', 'Samuele', 'Antonio'], expected_reply: 'LETTO', since_minutes: 120 }, 'U1', 'admin');
+  assert.equal(out.checked, 3);
+  assert.deepEqual(out.confirmed, ['Paolo Spartano']);
+  assert.deepEqual(out.missing, ['Samuele Licciardello', 'Antonio Paratore']);
+  var sam = out.details.find(function(d) { return d.user_id === 'U3'; });
+  assert.equal(sam.replied, true);
+  assert.equal(sam.confirmed, false);
+  delete slackService.app.client.conversations.history;
+});

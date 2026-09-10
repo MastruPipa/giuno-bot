@@ -114,6 +114,23 @@ async function registerReaction(userId, ts, deps) {
   return null;
 }
 
+async function scanRepliesFromHistory(c, app) {
+  if (!app || !app.client || !app.client.conversations || !app.client.conversations.history) return 0;
+  var found = 0;
+  var p = pending(c);
+  for (var i = 0; i < p.length; i++) {
+    var r = p[i];
+    if (!r.channel || !r.ts) continue;
+    try {
+      var hist = await app.client.conversations.history({ channel: r.channel, oldest: r.ts, limit: 30 });
+      var theirs = (hist.messages || []).filter(function(m) { return m.user === r.user_id && !m.bot_id && m.text && m.ts !== r.ts; });
+      var hit = theirs.find(function(m) { return matchReply(m.text, c.expected_reply).matched; });
+      if (hit) { r.status = 'replied'; r.replied_at = new Date(Number(hit.ts) * 1000).toISOString(); r.reply_text = String(hit.text).substring(0, 200); found++; }
+    } catch(e) { /* canale non leggibile: pazienza */ }
+  }
+  return found;
+}
+
 async function report(c, text, deps) {
   var app = deps.app || _app();
   if (!app || !app.client || !c.created_by) return;
@@ -143,6 +160,9 @@ async function runChecks(deps) {
     var c = active[i];
     if (!c.next_check_at || new Date(c.next_check_at).getTime() > now) continue;
     handled++;
+    // Rete di sicurezza: risposte arrivate mentre il bot era giù (deploy) non
+    // passano dall'handler DM, ma stanno nella history del DM.
+    await scanRepliesFromHistory(c, app);
     var p = pending(c);
     if (!p.length) { await maybeComplete(c, deps); continue; }
     var pushed = [], exhausted = [];
@@ -186,5 +206,6 @@ module.exports = {
   registerReaction: registerReaction,
   runChecks: runChecks,
   cancelCampaign: cancelCampaign,
+  scanRepliesFromHistory: scanRepliesFromHistory,
   pending: pending,
 };

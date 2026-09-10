@@ -130,8 +130,23 @@ var definitions = [
         target_user_names: { type: 'array', items: { type: 'string' }, description: 'Più destinatari per nome' },
         message:           { type: 'string', description: 'Testo del messaggio da inviare' },
         confirmed:         { type: 'boolean', description: 'true solo dopo che l\'utente ha confermato un invio segnalato come sensibile' },
+        force:             { type: 'boolean', description: 'true per rimandare lo stesso testo alla stessa persona entro 30 minuti (di default viene bloccato come doppione)' },
       },
       required: ['message'],
+    },
+  },
+  {
+    name: 'check_dm_replies',
+    description: 'Legge i DM fra Giuno e le persone indicate e dice chi ha risposto (e cosa) dopo un certo momento. Usalo per "chi ha risposto?", "check", "hanno letto?" dopo un invio in DM: le risposte le vedi SOLO così. ' +
+      'Con expected_reply (es. "LETTO") distingue chi ha confermato da chi ha scritto altro.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target_user_ids:   { type: 'array', items: { type: 'string' } },
+        target_user_names: { type: 'array', items: { type: 'string' } },
+        since_minutes:     { type: 'integer', description: 'Finestra all\'indietro in minuti (default 240)' },
+        expected_reply:    { type: 'string', description: 'Parola attesa come conferma (opzionale)' },
+      },
     },
   },
   {
@@ -455,6 +470,12 @@ var definitions = [
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
 
+// Anti-doppione: stesso testo alla stessa persona entro 30 minuti.
+var DM_DEDUP_MS = 30 * 60000;
+var _recentDms = new Map();
+function _dmHash(text) { return require('crypto').createHash('sha1').update(String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()).digest('hex').slice(0, 16); }
+function _resetDmDedupForTests() { _recentDms.clear(); }
+
 // Destinatari di send_dm: singolo o multipli, per id o per nome.
 function _dmRecipients(input) {
   var out = [];
@@ -496,6 +517,33 @@ async function execute(toolName, input, userId, userRole) {
     } catch(e) { return { error: e.message }; }
   }
 
+  if (toolName === 'check_dm_replies') {
+    var cdUsers = [];
+    try { cdUsers = await getUtenti(); } catch(e) { /* ok */ }
+    var cdRecipients = _dmRecipients(input).map(function(r) {
+      if (!r.id) { var m = _findUserByName(cdUsers, r.name); if (m) { r.id = m.id; r.name = m.name; } }
+      else if (!r.name) { var b = cdUsers.find(function(u) { return u.id === r.id; }); if (b) r.name = b.name; }
+      return r;
+    }).filter(function(r) { return r.id; });
+    if (!cdRecipients.length) return { error: 'Nessun destinatario riconosciuto.' };
+    var sinceTs = String(Math.floor((Date.now() - (Number(input.since_minutes) || 240) * 60000) / 1000));
+    var expected = input.expected_reply ? String(input.expected_reply).toLowerCase() : null;
+    var out = [];
+    for (var ci = 0; ci < cdRecipients.length; ci++) {
+      var rr = cdRecipients[ci];
+      try {
+        var cdOpen = await app.client.conversations.open({ users: rr.id });
+        var hist = await app.client.conversations.history({ channel: cdOpen.channel.id, oldest: sinceTs, limit: 50 });
+        var theirs = (hist.messages || []).filter(function(m) { return m.user === rr.id && !m.bot_id && m.text; }).reverse();
+        var confirmed = expected ? theirs.some(function(m) { return String(m.text).toLowerCase().indexOf(expected) !== -1; }) : theirs.length > 0;
+        out.push({ user_id: rr.id, name: rr.name, replied: theirs.length > 0, confirmed: confirmed, replies: theirs.slice(-3).map(function(m) { return { ts: m.ts, text: String(m.text).substring(0, 200) }; }) });
+      } catch(e) { out.push({ user_id: rr.id, name: rr.name, error: e.message }); }
+    }
+    var yes = out.filter(function(o) { return o.confirmed; }).map(function(o) { return o.name || o.user_id; });
+    var no = out.filter(function(o) { return !o.confirmed && !o.error; }).map(function(o) { return o.name || o.user_id; });
+    return { checked: out.length, confirmed: yes, missing: no, details: out, message: (expected ? 'Hanno confermato "' + input.expected_reply + '": ' : 'Hanno risposto: ') + (yes.join(', ') || 'nessuno') + '. Mancano: ' + (no.join(', ') || 'nessuno') + '.' };
+  }
+
   if (toolName === 'send_dm') {
     var recipients = _dmRecipients(input);
     if (recipients.length === 0) return { error: 'Nessun destinatario: passa target_user_id, target_user_ids o il nome.' };
@@ -515,7 +563,7 @@ async function execute(toolName, input, userId, userRole) {
     if (recipients.some(function(r) { return !r.id || !r.name; })) {
       try { allUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
     }
-    var sent = [], failed = [];
+    var sent = [], failed = [], skippedDup = [];
     for (var ri = 0; ri < recipients.length; ri++) {
       var r = recipients[ri];
       if (!r.id) {
@@ -526,15 +574,28 @@ async function execute(toolName, input, userId, userRole) {
         if (byId) r.name = byId.name;
       }
       if (!r.id) { failed.push({ name: r.name, error: 'destinatario non trovato' }); continue; }
+      // Stesso testo alla stessa persona entro 30 minuti = doppione (il modello
+      // non vede i tool dei turni precedenti e tende a rimandare). force=true
+      // per rimandare davvero.
+      var dupKey = r.id + '|' + _dmHash(input.message);
+      var dupAt = _recentDms.get(dupKey);
+      if (!input.force && dupAt && (Date.now() - dupAt) < DM_DEDUP_MS) {
+        skippedDup.push({ target: r.id, name: r.name || null, already_sent_at: new Date(dupAt).toISOString() });
+        continue;
+      }
       try {
         var convOpen = await app.client.conversations.open({ users: r.id });
         var dmResult = await app.client.chat.postMessage({ channel: convOpen.channel.id, text: input.message });
         logger.info('[DM] Messaggio inviato a', r.id, 'da', userId);
+        _recentDms.set(dupKey, Date.now());
         sent.push({ target: r.id, name: r.name || null, ts: dmResult.ts });
       } catch(e) {
         logger.error('[DM] Errore invio a', r.id, ':', e.message);
         failed.push({ target: r.id, name: r.name || null, error: e.message });
       }
+    }
+    if (sent.length === 0 && skippedDup.length > 0 && failed.length === 0) {
+      return { success: true, already_sent: skippedDup, message: 'Messaggio identico già inviato a ' + skippedDup.map(function(d) { return (d.name || d.target) + ' alle ' + d.already_sent_at.substring(11, 16) + ' UTC'; }).join(', ') + ': NON rimandato. Se va rimandato davvero, richiama con force=true.' };
     }
     if (sent.length === 0) {
       return { error: 'Nessun DM inviato: ' + failed.map(function(f) { return (f.name || f.target) + ' (' + f.error + ')'; }).join(', ') };
@@ -546,6 +607,7 @@ async function execute(toolName, input, userId, userRole) {
       sent: sent,
     };
     if (failed.length) out.failed = failed;
+    if (skippedDup.length) { out.already_sent = skippedDup; out.message += ' Già inviato poco fa (non ripetuto) a: ' + skippedDup.map(function(d) { return d.name || d.target; }).join(', ') + '.'; }
     if (sent.length === 1) { out.target = sent[0].target; out.ts = sent[0].ts; }
     return out;
   }
@@ -1215,4 +1277,4 @@ async function execute(toolName, input, userId, userRole) {
   return { error: 'Tool sconosciuto nel modulo slackTools: ' + toolName };
 }
 
-module.exports = { definitions: definitions, execute: execute };
+module.exports = { definitions: definitions, execute: execute, _resetDmDedupForTests: _resetDmDedupForTests };

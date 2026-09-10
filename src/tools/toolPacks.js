@@ -11,7 +11,7 @@
 
 var CORE = [
   // Slack
-  'get_slack_users', 'send_dm', 'send_campaign', 'campaign_status', 'search_slack_messages', 'summarize_thread', 'summarize_channel', 'read_channel', 'list_channels', 'set_reminder',
+  'get_slack_users', 'send_dm', 'check_dm_replies', 'send_campaign', 'campaign_status', 'search_slack_messages', 'summarize_thread', 'summarize_channel', 'read_channel', 'list_channels', 'set_reminder',
   // Mail e calendario in lettura
   'find_emails', 'read_email', 'read_thread', 'list_events', 'find_event',
   // Drive in lettura

@@ -88,3 +88,19 @@ test('reaction sul messaggio = letto; chiusura quando tutti hanno risposto', asy
   var cancel = await mc.cancelCampaign('cmp_1', 'U_ANT', w.deps);
   assert.match(cancel.error, /già completed/);
 });
+
+test('runChecks: le risposte nella history del DM (bot giù durante l\'evento) contano come lette', async function() {
+  var T0 = Date.parse('2026-09-10T08:00:00Z');
+  var w = fakeWorld(T0);
+  await mc.startCampaign(Object.assign({ createdBy: 'U_ANT', message: 'Rispondete LETTO', recipients: [{ id: 'U1', name: 'Paolo' }, { id: 'U2', name: 'Giusy' }], expectedReply: 'LETTO', checkAfterMinutes: 60, maxPushes: 1 }, w.deps));
+  var sentTs = w.store.cmp_1.recipients[0].ts;
+  w.app.client.conversations.history = async function(a) {
+    if (a.channel === 'D_U1') return { messages: [{ user: 'U1', text: 'letto!', ts: String(Number(sentTs.replace('t', '')) + 5) }] };
+    return { messages: [] };
+  };
+  w.clock.now = T0 + 61 * 60000; w.posted.length = 0;
+  await mc.runChecks(w.deps);
+  assert.equal(w.store.cmp_1.recipients[0].status, 'replied');
+  assert.equal(w.store.cmp_1.recipients[1].pushes, 1);
+  assert.ok(w.posted.some(function(p) { return p.channel === 'U_ANT' && /1\/2 hanno risposto/.test(p.text); }));
+});

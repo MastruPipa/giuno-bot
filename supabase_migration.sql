@@ -361,3 +361,14 @@ CREATE TABLE IF NOT EXISTS message_campaigns (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS message_campaigns_status ON message_campaigns(status, next_check_at);
+
+-- 2026-09-10: registro azioni eseguite per conversazione (memoria dei tool)
+CREATE TABLE IF NOT EXISTS conversation_actions (
+  id BIGSERIAL PRIMARY KEY,
+  conv_key TEXT NOT NULL,
+  user_id TEXT,
+  tool TEXT NOT NULL,
+  summary TEXT,
+  at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS conversation_actions_key ON conversation_actions(conv_key, at);
