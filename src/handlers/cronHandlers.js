@@ -1211,7 +1211,7 @@ function lockedJob(lockName, ttlMinutes, fn) {
     var locked = await acquireCronLock(lockName, ttlMinutes);
     if (!locked) return;
     try { await fn(); }
-    catch(e) { logger.error('[CRON:' + lockName + '] Errore:', e.message); }
+    catch(e) { logger.error('[CRON:' + lockName + '] Errore:', e.message); throw e; }
     finally { await releaseCronLock(lockName); }
   };
   wrapped._lockName = lockName; // letto dallo scheduler per il registro
@@ -1230,7 +1230,7 @@ function scheduleCrons() {
   // Weekly report V2 — venerdì 17:00
   cron.schedule('0 17 * * 5', function() {
     var { sendWeeklyReports } = require('../agents/weeklyReport');
-    sendWeeklyReports().catch(function(e) { logger.error('[WEEKLY-CRON] Errore:', e.message); });
+    return sendWeeklyReports();
   }, { timezone: 'Europe/Rome', name: 'weekly_report', lockTtl: 30 });
   // Follow-up agent (13:00/17:00) — DISATTIVATO di default: i reminder generati
   // da intenti/azioni estratti via LLM risultavano spesso casuali. Riattivabile
@@ -1238,7 +1238,7 @@ function scheduleCrons() {
   if (process.env.PROACTIVE_FOLLOWUPS_ENABLED === 'true') {
     cron.schedule('0 13,17 * * 1-5', function() {
       var { runFollowups } = require('../agents/followUpAgent');
-      runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
+      return runFollowups();
     }, { timezone: 'Europe/Rome', name: 'followup_agent', lockTtl: 20 });
   } else {
     logger.info('[FOLLOWUP-CRON] Follow-up agent disattivato (PROACTIVE_FOLLOWUPS_ENABLED != true)');
@@ -1246,47 +1246,47 @@ function scheduleCrons() {
   // Email learner — ogni 2h, legge email importanti e salva in KB
   cron.schedule('15 10,12,14,16 * * 1-5', function() {
     var { scanEmails } = require('../agents/emailLearner');
-    scanEmails().catch(function(e) { logger.error('[EMAIL-LEARN-CRON] Errore:', e.message); });
+    return scanEmails();
   }, { timezone: 'Europe/Rome', name: 'email_learner', lockTtl: 20 });
   // Meeting recap scanner — ogni 2h, legge recap Gemini da Gmail e salva in KB
   cron.schedule('30 10,12,14,16 * * 1-5', function() {
     var { scanMeetingRecaps } = require('../agents/meetingRecapScanner');
-    scanMeetingRecaps().catch(function(e) { logger.error('[RECAP-SCAN-CRON] Errore:', e.message); });
+    return scanMeetingRecaps();
   }, { timezone: 'Europe/Rome', name: 'meeting_recap_scan', lockTtl: 20 });
   // Appunti Gemini da Drive (kick-off e recap) → KB + dossier di progetto
   cron.schedule('45 9,11,13,15,17 * * 1-5', function() {
     var { scanGeminiNotes } = require('../agents/geminiNotesScanner');
-    scanGeminiNotes({ days: 3 }).catch(function(e) { logger.error('[GEMINI-NOTES-CRON] Errore:', e.message); });
+    return scanGeminiNotes({ days: 3 });
   }, { timezone: 'Europe/Rome', name: 'gemini_notes_scan', lockTtl: 25 });
   // Dossier di progetto: rebuild delle schede con fonti nuove o vecchie di 7 giorni
   cron.schedule('30 5,18 * * 1-5', function() {
     var { refreshDossiers } = require('../agents/projectDossier');
-    refreshDossiers().catch(function(e) { logger.error('[DOSSIER-CRON] Errore:', e.message); });
+    return refreshDossiers();
   }, { timezone: 'Europe/Rome', name: 'project_dossier_refresh', lockTtl: 45 });
   // Lunedì: stato progetti agli admin
   cron.schedule('45 8 * * 1', function() {
     var { weeklyProjectsBrief } = require('../agents/projectDossier');
-    weeklyProjectsBrief().catch(function(e) { logger.error('[DOSSIER-WEEKLY-CRON] Errore:', e.message); });
+    return weeklyProjectsBrief();
   }, { timezone: 'Europe/Rome', name: 'project_dossier_weekly', lockTtl: 20 });
   // Follow-up dalle call (azioni a carico) e promemoria scadenze
   cron.schedule('10 9 * * 1-5', function() {
     var { runDailyFollowups } = require('../agents/projectFollowups');
-    runDailyFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
+    return runDailyFollowups();
   }, { timezone: 'Europe/Rome', name: 'project_followups', lockTtl: 15 });
   // Controllo duplicati progetti: proposte agli admin, una volta a settimana
   cron.schedule('15 6 * * 1', function() {
     var { checkAndNotify } = require('../jobs/projectDedupJob');
-    checkAndNotify().catch(function(e) { logger.error('[DEDUP-CRON] Errore:', e.message); });
+    return checkAndNotify();
   }, { timezone: 'Europe/Rome', name: 'project_dedup_check', lockTtl: 15 });
   // Campagne con conferma di lettura: solleciti e report
   cron.schedule('*/10 * * * *', function() {
     var { runChecks } = require('../agents/messageCampaigns');
-    runChecks().catch(function(e) { logger.error('[CAMPAIGN-CRON] Errore:', e.message); });
+    return runChecks();
   }, { timezone: 'Europe/Rome', name: 'campaign_check', lockTtl: 5 });
   // Pipeline Attio: deal fermi e proposte senza valore → admin, lunedì e giovedì
   cron.schedule('5 9 * * 1,4', function() {
     var { runPipelineReview } = require('../agents/pipelineFollowups');
-    runPipelineReview({ notify: true }).catch(function(e) { logger.error('[PIPELINE-CRON] Errore:', e.message); });
+    return runPipelineReview({ notify: true });
   }, { timezone: 'Europe/Rome', name: 'pipeline_review', lockTtl: 10 });
   // Retrospettiva serale di Giuno → admin (auto-sviluppo, livello 1)
   cron.schedule('0 21 * * 1-5', function() {
@@ -1296,12 +1296,12 @@ function scheduleCrons() {
   // Roster team allineato agli utenti Slack
   cron.schedule('20 7 * * 1-5', function() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');
-    syncRosterFromSlack({ apply: true, notify: true }).catch(function(e) { logger.error('[ROSTER-SYNC-CRON] Errore:', e.message); });
+    return syncRosterFromSlack({ apply: true, notify: true });
   }, { timezone: 'Europe/Rome', name: 'team_roster_sync', lockTtl: 10 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
-    checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
+    return checkUpcomingCalls();
   }, { timezone: 'Europe/Rome', name: 'precall_briefing', lockTtl: 10 });
   // Daily priorities DM — 9:15 lun-ven (il daily unico è alle 16:00)
   cron.schedule('15 9 * * 1-5', lockedJob('daily_priorities', 30, async function() {
@@ -1356,7 +1356,7 @@ function scheduleCrons() {
   if (process.env.PROACTIVE_ALERTS_ENABLED === 'true') {
     cron.schedule('0 10,16 * * 1-5', function() {
       var { runProactiveScan } = require('../agents/proactiveMonitor');
-      runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
+      return runProactiveScan();
     }, { timezone: 'Europe/Rome', name: 'proactive_monitor', lockTtl: 20 });
   } else {
     logger.info('[PROACTIVE-CRON] Proactive monitor disattivato (PROACTIVE_ALERTS_ENABLED != true)');
@@ -1413,7 +1413,7 @@ function scheduleCrons() {
   // Behavior tracker flush — ogni 5 minuti
   cron.schedule('*/5 * * * *', function() {
     var behaviorTracker = require('../services/behaviorTracker');
-    behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
+    return behaviorTracker.flushToDb();
   }, { name: 'behavior_flush' });
   cron.schedule('0 3 * * 0,3', lockedJob('consolida_memorie', 60, consolidaMemorie), { timezone: 'Europe/Rome', name: 'consolida_memorie' }); // domenica e mercoledì alle 3:00
   // 03:30 (non 04:00): alle 4 gira già il decay giornaliero della confidence
@@ -1431,13 +1431,13 @@ function scheduleCrons() {
   // member sees what Giuno remembers about them before writing the new entry.
   cron.schedule('30 8 * * 1-5', function() {
     var { sendPersonalDigests } = require('../agents/personalDigestAgent');
-    sendPersonalDigests().catch(function(e) { logger.error('[PERSONAL-DIGEST] cron error:', e.message); });
+    return sendPersonalDigests();
   }, { timezone: 'Europe/Rome', name: 'personal_digest', lockTtl: 30 });
   // Memory backup — Sunday 02:30 Rome, uploads a JSON snapshot to the admin's
   // Drive and keeps the last 4 weekly backups. Requires MEMORY_BACKUP_ADMIN_USER_ID.
   cron.schedule('30 2 * * 0', function() {
     var { runWeeklyBackup } = require('../jobs/memoryBackupJob');
-    runWeeklyBackup().catch(function(e) { logger.error('[MEM-BACKUP] cron error:', e.message); });
+    return runWeeklyBackup();
   }, { timezone: 'Europe/Rome', name: 'memory_backup', lockTtl: 30 });
   cron.schedule('30 3 * * 0', async function() {
     try {
@@ -1448,7 +1448,7 @@ function scheduleCrons() {
   }, { timezone: 'Europe/Rome', name: 'kb_expired_cleanup', lockTtl: 30 }); // domenica alle 3:30
   cron.schedule('0 2 * * *', function() {
     var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
-    runKnowledgeEngine('system').catch(function(e) { logger.error('[KB-ENGINE] Errore cron:', e.message); });
+    return runKnowledgeEngine('system');
   }, { timezone: 'Europe/Rome', name: 'knowledge_engine', lockTtl: 90 }); // ogni notte alle 2:00
   // Historical scanner — gira ogni notte alle 1:00, processa 5 canali per run
   // Continua automaticamente ogni notte finché tutti i canali non sono 'done'

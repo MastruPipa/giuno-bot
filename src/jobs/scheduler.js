@@ -52,19 +52,19 @@ function schedule(expr, fn, opts) {
       logger.warn('[CRON:' + job.name + '] corsa precedente ancora in esecuzione, salto');
       return;
     }
-    var cronLocks = null;
-    if (job.lockTtl) {
-      try {
-        cronLocks = require('../services/db/cron');
-        var got = await cronLocks.acquireCronLock(job.name, job.lockTtl);
-        if (!got) { job.skippedLock = (job.skippedLock || 0) + 1; return; }
-      } catch(e) { cronLocks = null; /* senza DB si procede senza lock */ }
-    }
+    // Reserve locally before waiting for the distributed lock.
     job.running = true;
-    job.runs++;
-    job.lastStartedAt = new Date().toISOString();
+    var cronLocks = null;
     var t0 = Date.now();
     try {
+      if (job.lockTtl) {
+        var locks = require('../services/db/cron');
+        var got = await locks.acquireCronLock(job.name, job.lockTtl);
+        if (!got) { job.skippedLock = (job.skippedLock || 0) + 1; return; }
+        cronLocks = locks;
+      }
+      job.runs++;
+      job.lastStartedAt = new Date().toISOString();
       await fn();
       job.lastError = null;
     } catch(e) {

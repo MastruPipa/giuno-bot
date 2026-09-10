@@ -135,7 +135,7 @@ async function channelActivity(channelId, days, limit) {
     return { active: msgs.length > 0, count: msgs.length };
   } catch (e) {
     logger.debug('[SLACK-SVC] channelActivity ignorato per ' + channelId + ':', e.message);
-    return { active: false, count: 0 };
+    return { active: false, count: 0, error: e.message || 'Slack non disponibile' };
   }
 }
 

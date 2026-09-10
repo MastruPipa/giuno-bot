@@ -8,58 +8,54 @@
 var c = require('./client');
 var dates = require('../../utils/trackingDates');
 
-// Batch upsert: la correzione mattutina di un log già inviato è un upsert
-// sulla stessa chiave (slack_user_id, project_id, log_date, log_type).
-async function saveTimeLogs(rows) {
+// All writes use one transactional RPC. No fallback to delete/upsert: a
+// missing migration must report failure rather than silently lose data.
+async function writeScope(slackUserId, logDate, logType, rows, replace, estimate) {
   if (!c.useSupabase) return null;
-  if (!rows || rows.length === 0) return [];
   try {
-    var payload = rows.map(function(r) {
-      return {
-        slack_user_id: r.slack_user_id,
-        project_id: r.project_id,
-        log_date: r.log_date,
-        log_type: r.log_type,
-        hours: r.hours,
-        notes: r.notes || null,
-        validation: r.validation || null,
-        updated_at: new Date().toISOString(),
-      };
+    if (!Array.isArray(rows)) throw new Error('Expected a complete rows array');
+    if (rows.some(function(r) {
+      return r.slack_user_id !== slackUserId || r.log_date !== logDate || r.log_type !== logType;
+    })) throw new Error('Time log row outside requested scope');
+    var res = await c.getClient().rpc('write_time_logs', {
+      p_user: slackUserId, p_date: logDate, p_type: logType,
+      p_rows: rows, p_replace: replace, p_estimate: !!estimate,
     });
-    var res = await c.getClient().from('time_logs')
-      .upsert(payload, { onConflict: 'slack_user_id,project_id,log_date,log_type' })
-      .select();
     if (res.error) throw res.error;
-    return res.data || [];
-  } catch(e) { c.logErr('saveTimeLogs', e); return null; }
+    if (!res.data || !Array.isArray(res.data.saved)) throw new Error('Invalid write_time_logs response');
+    return res.data;
+  } catch(e) { c.logErr('writeTimeLogs', e); return null; }
 }
 
-// Sostituisce l'intero set di log di (utente, data, tipo): upsert delle righe
-// inviate + DELETE dei progetti presenti nella submission precedente ma omessi
-// in questa (es. correzione mattutina che toglie un progetto loggato per
-// errore — senza il delete resterebbe nei consuntivi).
-// Ritorna { saved, removedProjectIds } o null su errore di scrittura.
-async function replaceTimeLogs(slackUserId, logDate, logType, rows) {
+async function saveTimeLogs(rows) {
   if (!c.useSupabase) return null;
-  try {
-    var existing = await getLogsForUserDate(slackUserId, logDate, logType);
-    var newIds = {};
-    (rows || []).forEach(function(r) { newIds[r.project_id] = true; });
-    var removedProjectIds = existing
-      .map(function(r) { return r.project_id; })
-      .filter(function(pid) { return !newIds[pid]; });
-    if (removedProjectIds.length > 0) {
-      var del = await c.getClient().from('time_logs').delete()
-        .eq('slack_user_id', slackUserId)
-        .eq('log_date', logDate)
-        .eq('log_type', logType)
-        .in('project_id', removedProjectIds);
-      if (del.error) throw del.error;
-    }
-    var saved = await saveTimeLogs(rows);
-    if (saved === null) return null;
-    return { saved: saved, removedProjectIds: removedProjectIds };
-  } catch(e) { c.logErr('replaceTimeLogs', e); return null; }
+  if (!Array.isArray(rows)) return null;
+  var groups = new Map();
+  rows.forEach(function(r) {
+    var estimate = !!(r.validation && r.validation.status === 'estimate');
+    var key = JSON.stringify([r.slack_user_id, r.log_date, r.log_type, estimate]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  var saved = [];
+  for (var group of groups.values()) {
+    var first = group[0];
+    var result = await writeScope(first.slack_user_id, first.log_date, first.log_type, group, false,
+      first.validation && first.validation.status === 'estimate');
+    if (!result) return null;
+    saved = saved.concat(result.saved.filter(function(r) {
+      return group.some(function(g) { return g.project_id === r.project_id; });
+    }));
+  }
+  return saved;
+}
+
+async function replaceTimeLogs(slackUserId, logDate, logType, rows, opts) {
+  var estimate = opts && opts.estimate;
+  if (estimate === undefined) estimate = !!(rows && rows.length && rows.every(function(r) {
+    return r.validation && r.validation.status === 'estimate';
+  }));
+  return writeScope(slackUserId, logDate, logType, rows, true, estimate);
 }
 
 async function getLogsForUserDate(slackUserId, logDate, logType) {
@@ -100,12 +96,13 @@ async function sumWeekByProject(slackUserId, weekStart, logType) {
       .eq('log_type', logType)
       .gte('log_date', weekStart)
       .lte('log_date', weekEnd);
+    if (res.error) throw res.error;
     var byProject = {};
     (res.data || []).forEach(function(r) {
       byProject[r.project_id] = (byProject[r.project_id] || 0) + (parseFloat(r.hours) || 0);
     });
     return byProject;
-  } catch(e) { c.logErr('sumWeekByProject', e); return {}; }
+  } catch(e) { c.logErr('sumWeekByProject', e); throw e; }
 }
 
 function getWeekActuals(slackUserId, weekStart) {

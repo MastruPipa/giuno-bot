@@ -145,13 +145,13 @@ var definitions = [
   // ─── Time Tracking ─────────────────────────────────────────────────────
   {
     name: 'log_time',
-    description: 'Registra ore lavorate nel dettaglio giornaliero. "Ho lavorato 3h sul logo Aitho" → salva qui. Diverso da log_hours (che è a livello progetto).',
+    description: 'Imposta il totale giornaliero svolto sul progetto, condiviso con log_hours e dashboard. Sostituisce, non somma. Per ore aggiuntive consulta prima get_time_report e riconcilia il totale.',
     input_schema: {
       type: 'object',
       properties: {
         project_id:       { type: 'string', description: 'ID progetto' },
         project_name:     { type: 'string', description: 'Nome progetto (alternativa a ID)' },
-        hours:            { type: 'number', description: 'Ore lavorate' },
+        hours:            { type: 'number', description: 'Totale giornaliero sul progetto, non incremento' },
         task_description: { type: 'string', description: 'Cosa hai fatto' },
         date:             { type: 'string', description: 'Data YYYY-MM-DD (default: oggi)' },
         billable:         { type: 'boolean', description: 'Ore fatturabili? (default: true)' },
@@ -356,16 +356,14 @@ async function execute(toolName, input, userId, userRole) {
   if (toolName === 'log_time') {
     var projectId = input.project_id;
     if (!projectId && input.project_name) {
-      var projects = await db.searchProjects({ name: input.project_name, limit: 1 });
-      if (projects && projects.length > 0) projectId = projects[0].id;
+      var projects = await db.searchProjects({ name: input.project_name, limit: 10 });
+      if (projects && projects.length === 1) projectId = projects[0].id;
     }
-    var { data } = await supabase.from('time_entries').insert({
-      slack_user_id: userId, project_id: projectId || null,
-      date: input.date || dates.todayISO(),
-      hours: input.hours, task_description: input.task_description || null,
-      billable: input.billable !== false,
-    }).select().single();
-    return { success: true, entry: data };
+    if (!projectId) return { error: 'Progetto non identificato: serve un progetto univoco per registrare le ore.' };
+    return require('../services/timeRecording').recordDailyTotal({
+      userId: userId, projectId: projectId, date: input.date, hours: input.hours,
+      notes: input.task_description, billable: input.billable,
+    });
   }
 
   if (toolName === 'get_time_report') {
@@ -376,19 +374,23 @@ async function execute(toolName, input, userId, userRole) {
     var fromDate = input.from_date || monday.toISOString().slice(0, 10);
     var toDate = input.to_date || now.toISOString().slice(0, 10);
 
-    var q = supabase.from('time_entries').select('*, projects(name, client_name)')
-      .gte('date', fromDate).lte('date', toDate);
+    var q = supabase.from('time_logs').select('*, projects(name, client_name)').eq('log_type', 'daily')
+      .gte('log_date', fromDate).lte('log_date', toDate);
     if (input.user_id) q = q.eq('slack_user_id', input.user_id);
     if (input.project_id) q = q.eq('project_id', input.project_id);
-    var { data } = await q.order('date', { ascending: false }).limit(100);
+    var { data, error } = await q.order('log_date', { ascending: false }).limit(1000);
+    if (error) return { error: 'Registro ore non disponibile: ' + error.message };
 
     if (!data || data.length === 0) return { entries: [], total_hours: 0, period: fromDate + ' → ' + toDate };
 
-    var totalHours = 0; var billableHours = 0;
+    var totalHours = 0; var billableHours = 0; var unknownBillableHours = 0; var estimatedHours = 0;
     var byProject = {}; var byUser = {};
     data.forEach(function(e) {
       totalHours += parseFloat(e.hours) || 0;
-      if (e.billable) billableHours += parseFloat(e.hours) || 0;
+      var validation = e.validation || {};
+      if (validation.status === 'estimate') estimatedHours += parseFloat(e.hours) || 0;
+      if (validation.billable === true) billableHours += parseFloat(e.hours) || 0;
+      if (validation.billable == null) unknownBillableHours += parseFloat(e.hours) || 0;
       var projName = e.projects ? e.projects.name : 'non assegnato';
       if (!byProject[projName]) byProject[projName] = 0;
       byProject[projName] += parseFloat(e.hours) || 0;
@@ -398,6 +400,9 @@ async function execute(toolName, input, userId, userRole) {
 
     return {
       period: fromDate + ' → ' + toDate, total_hours: totalHours, billable_hours: billableHours,
+      estimated_hours: estimatedHours, unknown_billable_hours: unknownBillableHours,
+      coverage: 'Solo ore registrate o stimate: assenza di righe non equivale a zero lavoro.',
+      truncated: data.length === 1000,
       by_project: byProject, by_user: byUser, entries: data.slice(0, 20),
     };
   }

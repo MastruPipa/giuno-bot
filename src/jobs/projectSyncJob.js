@@ -68,7 +68,8 @@ async function isWonBackedByActiveChannel(name, channelPairs, activityCache) {
     var cid = channelPairs[i][1];
     if (!(cid in activityCache)) {
       var act = await slackService.channelActivity(cid, filters.ACTIVITY_WINDOW_DAYS, 1);
-      activityCache[cid] = !!(act && act.active);
+      if (!act || act.error) throw new Error('Attività Slack non disponibile: ' + cid);
+      activityCache[cid] = !!act.active;
     }
     if (activityCache[cid]) return true;
   }
@@ -92,9 +93,10 @@ async function fetchActiveDeals() {
       batch = await attio.queryRecords('deals', null, pageSize, null, page * pageSize);
     } catch(e) {
       logger.warn('[PROJECT-SYNC] query deals fallita a pagina', page, '-', e && e.message);
-      break;
+      throw e;
     }
-    if (!batch || batch.length === 0) break;
+    if (!Array.isArray(batch)) throw new Error('Risposta Attio non valida');
+    if (batch.length === 0) return active;
     for (var i = 0; i < batch.length; i++) {
       var d = batch[i];
       var v = d.values || {};
@@ -104,9 +106,9 @@ async function fetchActiveDeals() {
       if (filters.isJunkProjectName(name)) continue;
       active.push({ record_id: d.record_id, name: name, values: v, isWon: isWonStage(v.stage) });
     }
-    if (batch.length < pageSize) break;
+    if (batch.length < pageSize) return active;
   }
-  return active;
+  throw new Error('Scansione Attio incompleta: limite pagine raggiunto');
 }
 
 function dealToProjectRow(deal) {
@@ -154,7 +156,8 @@ async function syncActiveProjectsFromAttio() {
     var row = dealToProjectRow(deal);
     activeIds.push(row.id);
     var res = await db.upsertSyncedProject(row);
-    if (res) synced++;
+    if (!res) throw new Error('Sincronizzazione progetto fallita: ' + row.id);
+    synced++;
   }
   var archived = await db.archiveStaleSyncedProjects('attio_%', activeIds);
   logger.info('[PROJECT-SYNC] Sincronizzati', synced, 'progetti attivi da Attio,',
