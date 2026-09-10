@@ -291,3 +291,15 @@ test('askGiuno: le azioni eseguite vengono registrate e rientrano nel contesto d
     assert.match(primaryRequests()[0].system[1].text, /AZIONI GIÀ ESEGUITE[\s\S]*DM inviato a 2 \(Paolo, Giusy\)/);
   } finally { registry.executeToolCall = origExec; actionLog.logAction = origLog; actionLog.recentActions = origRecent; }
 });
+
+test('askGiuno: "ho scritto/mandato" riferito a un\'azione registrata prima non viene soppresso dal validator', async function() {
+  var actionLog = require('../src/services/db/actionLog');
+  var origRecent = actionLog.recentActions;
+  actionLog.recentActions = async function() { return [{ tool: 'send_dm', summary: 'DM inviato a 6 (Gianna, Giusy…): "Piccolo promemoria…"', at: new Date().toISOString() }]; };
+  try {
+    installStub('Ho scritto questo messaggio ai 6: "Piccolo promemoria: mi serve una conferma di lettura…".');
+    var reply = await svc.askGiuno('U1', 'cosa hai scritto?', { isDM: true, channelId: 'D1' });
+    assert.match(reply, /Piccolo promemoria/);
+    assert.doesNotMatch(reply, /Non sono riuscito a completare/);
+  } finally { actionLog.recentActions = origRecent; }
+});

@@ -1184,7 +1184,11 @@ async function askGiuno(userId, userMessage, options) {
   // Output validation — detect hallucinated actions
   var validator = require('../orchestrator/validator');
   if (!refused) {
-    var validation = validator.validate(finalReply, toolsCalled);
+    // Le azioni registrate nei turni precedenti contano come "tool chiamati":
+    // "ho scritto/mandato X" riferito a un invio già fatto non è un'allucinazione
+    // (prima finiva in "Non sono riuscito a completare l'azione").
+    var priorTools = (typeof recentActs !== 'undefined' && Array.isArray(recentActs)) ? recentActs.map(function(a) { return a.tool; }) : [];
+    var validation = validator.validate(finalReply, toolsCalled.concat(priorTools));
     if (!validation.valid) finalReply = validator.fallbackResponse(finalReply, validation.issue);
 
     // Nomi non ancorati: con la storia Slack completa come evidenza i falsi
