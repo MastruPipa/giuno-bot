@@ -227,3 +227,35 @@ test('askGiuno: risposta senza testo → un retry, poi fallback leggibile (mai s
   var retry = primaryRequests()[1];
   assert.match(retry.messages[retry.messages.length - 1].content, /senza testo/);
 });
+
+test('askGiuno: manda il nucleo di tool (non tutti) e more_tools carica un pacchetto nel round successivo', async function() {
+  var registry = require('../src/tools/registry');
+  var all = registry.getAllTools().length;
+  var origExec = registry.executeToolCall;
+  registry.executeToolCall = async function(name) { return { success: true, name: name }; };
+  captured = [];
+  var calls = 0;
+  var fake = async function(params) {
+    captured.push(params);
+    calls++;
+    if (calls === 1) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'more_tools', input: { pack: 'drive_write' } }], usage: {} };
+    if (calls === 2) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't2', name: 'create_doc', input: { title: 'x' } }], usage: {} };
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Documento creato.' }], usage: {} };
+  };
+  svc.client.messages.create = fake;
+  svc.client.beta = { messages: { create: fake } };
+  try {
+    var reply = await svc.askGiuno('U1', 'che ne pensi del brief?', { isDM: true, channelId: 'D1' });
+    assert.equal(reply, 'Documento creato.');
+    var reqs = primaryRequests();
+    assert.ok(reqs[0].tools.length < all * 0.5, 'nucleo: ' + reqs[0].tools.length + ' su ' + all);
+    assert.ok(!reqs[0].tools.some(function(t) { return t.name === 'create_doc'; }));
+    assert.ok(reqs.slice(1).some(function(r) { return r.tools.some(function(t) { return t.name === 'create_doc'; }); }), 'dopo more_tools il pacchetto è disponibile');
+    // messages è lo stesso array (mutato) in tutte le richieste: cerco il
+    // tool_result di more_tools ovunque nella storia dell'ultima richiesta.
+    var last = reqs[reqs.length - 1];
+    assert.ok(last.messages.some(function(m) {
+      return Array.isArray(m.content) && m.content.some(function(b) { return b.type === 'tool_result' && /Strumenti caricati/.test(String(b.content)); });
+    }), 'il risultato di more_tools torna al modello');
+  } finally { registry.executeToolCall = origExec; }
+});

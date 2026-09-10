@@ -356,7 +356,26 @@ riepilogo agli admin. Tool `team_member_joined` / `team_member_left` per
 dirlo a Giuno in chat; il prompt vieta "segnato" senza tool. Il `team_join`
 inserisce subito il nuovo collega nel roster. `/giuno admin team sync [dry]`.
 
-## 12. Da fare
+## 12. Pacchetti di tool (fase 7)
+
+Ogni turno mandava tutti i 143 tool: ~21.000 token di sole definizioni,
+prima di contesto e storia (media reale il 10/9: 41.000 token in ingresso per
+chiamata). Ora `src/tools/toolPacks.js`:
+- **Nucleo** di ~45 tool sempre presenti (lettura Slack/mail/calendario/Drive,
+  memoria, KB, progetti e dossier, standup e ore, CRM in lettura, DM e
+  campagne, ricerca). L'ultimo tool del nucleo porta il `cache_control`, così
+  il prefisso resta cacheato qualunque pacchetto segua.
+- **Pacchetti** caricati dal testo del turno e dalle ultime due battute:
+  `email_write`, `calendar_write`, `drive_write`, `crm_write`,
+  `projects_write`, `agency`, `team_admin`, `slack_admin`, `memory_admin`.
+- **`more_tools`**: se al modello manca uno strumento, chiede il pacchetto e
+  dal round successivo lo ha. Nessuna funzione persa.
+- Peso: nucleo ~7.500 token contro ~21.000 (−65%); con un pacchetto ~8.500;
+  con tre pacchetti ~12.000. `GIUNO_TOOL_PACKS=off` ripristina tutti i tool.
+- Il test `tool-packs.test.js` verifica che ogni tool del registro sia nel
+  nucleo o in un pacchetto: un tool nuovo senza collocazione fa fallire la suite.
+
+## 13. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

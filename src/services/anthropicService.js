@@ -29,6 +29,7 @@ var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/retryPolicy');
 var modelsConfig = require('../config/models');
 var mcpToolsets = require('./mcpToolsets');
+var toolPacks = require('../tools/toolPacks');
 var slackTranscript = require('./slackTranscript');
 
 var MODELS = modelsConfig.MODELS;
@@ -1024,6 +1025,10 @@ async function askGiuno(userId, userMessage, options) {
   logger.info('[ASK-GIUNO] user:', userId, '| key:', convKey, '| storia:', history.length, 'turni (' + historySource + ')',
     '| contesto:', dynamicBody.length, 'char | modello:', MODELS.PRIMARY);
 
+  // Strumenti del turno: nucleo + pacchetti pertinenti (vedi tools/toolPacks).
+  var toolSelection = toolPacks.selectForTurn(getStableTools(), resolvedMessage, history);
+  logger.info('[ASK-GIUNO] tool:', toolSelection.tools.length, '(nucleo ' + toolSelection.core + (toolSelection.packs.length ? ', pacchetti ' + toolSelection.packs.join('+') : '') + ')');
+
   var finalReply = '';
   var toolsCalled = [];
   var toolEvidence = [];
@@ -1036,6 +1041,7 @@ async function askGiuno(userId, userMessage, options) {
     try {
       response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, {
         maxTokens: options.maxTokens,
+        tools: toolSelection.tools,
         mcpServers: mcpAttachment && mcpAttachment.mcp_servers,
         extraTools: mcpAttachment && mcpAttachment.tools,
         betas: mcpAttachment && mcpAttachment.betas,
@@ -1092,7 +1098,14 @@ async function askGiuno(userId, userMessage, options) {
       toolsCalled.push(tu.name);
       var result;
       try {
-        result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
+        if (tu.name === 'more_tools') {
+          // Il modello chiede un pacchetto: dal prossimo round è nella lista.
+          var added = toolPacks.addPack(getStableTools(), toolSelection, (tu.input && tu.input.pack) || '');
+          toolSelection = added.selection;
+          result = added.error ? { error: added.error } : { success: true, loaded: added.loaded, message: added.note || ('Strumenti caricati: ' + added.loaded.join(', ') + '. Ora usali.') };
+        } else {
+          result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
+        }
       } catch(toolErr) {
         result = { error: 'Tool ' + tu.name + ' fallito: ' + (toolErr && toolErr.message) };
       }
