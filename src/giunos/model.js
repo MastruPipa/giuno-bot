@@ -29,9 +29,22 @@ function normalizeLogs(rows) {
   return [...unique.values()].map(r=>({person:r.slack_user_id,project:r.project_id,date:r.log_date,hours:Number(r.hours),estimated:r.validation?.status==='estimate'}));
 }
 function budgetFor(rows,pid,person,start,end) {
-  const candidates=rows.filter(b=>b.scope!=='project' && b.project_id===pid && (b.slack_user_id||null)===(person||null) && b.verified===true && b.period_start===start && b.period_end===end && b.source_url && b.hours!==null && Number.isFinite(Number(b.hours)) && Number(b.hours)>=0);
-  // Conflicting baselines must never be silently resolved by recency.
-  return candidates.length===1 ? {hours:Number(candidates[0].hours),source:candidates[0].source_url} : null;
+  // Sum complete, contiguous contract cycles only. Never prorate a monthly
+  // allowance into a week or multiply a project-wide budget across periods.
+  const candidates=rows.filter(b=>b.scope!=='project' && b.project_id===pid &&
+    (b.slack_user_id||null)===(person||null) && b.verified===true && b.source_url &&
+    validDate(b.period_start) && validDate(b.period_end) && b.period_end>=start && b.period_start<=end);
+  if(!candidates.length)return null;
+  candidates.sort((a,b)=>a.period_start.localeCompare(b.period_start));
+  let cursor=start,total=0;
+  for(const b of candidates) {
+    if(b.period_start!==cursor || b.period_end>end ||
+      b.period_end<b.period_start || b.hours===null || b.hours==='' || !Number.isFinite(Number(b.hours)) || Number(b.hours)<0)return null;
+    total+=Number(b.hours);
+    cursor=iso(new Date(Date.parse(b.period_end)+day));
+  }
+  if(cursor!==iso(new Date(Date.parse(end)+day)))return null;
+  return {hours:round(total),source:candidates[0].source_url,sources:[...new Set(candidates.map(b=>b.source_url))]};
 }
 // Conservative text labels, never used to infer hours or completion.
 function category(text) {
@@ -62,7 +75,14 @@ function buildSnapshot(raw,period,now=new Date()) {
   const aliases=new Map((raw.projects||[]).filter(p=>p.merged_into).map(p=>[p.id,p.merged_into]));
   const allLogs=normalizeLogs(raw.time_logs||[]).filter(r=>r.date<=today).map(r=>({...r,project:aliases.get(r.project)||r.project}));
   const logs=allLogs.filter(r=>r.date>=period.start && r.date<=cutoff);
-  const budgets=raw.giunos_budgets||[];
+  const contractInputs=(raw.project_contract_sources||[]).map(r=>{
+    const input={...r.input,project_id:r.project_id};
+    const age=now.getTime()-Date.parse(r.updated_at);
+    if(!Number.isFinite(age)||age>36*60*60*1000||age<0)input.read_error='Verifica fonti scaduta';
+    return input;
+  });
+  const contracts=require('../services/reconciliation/contracts').projectBudgets(contractInputs);
+  const budgets=[...(raw.giunos_budgets||[]),...contracts.rows];
   const actions=raw.project_actions||[];
   const active=(raw.projects||[]).filter(p=>!p.merged_into);
   const projects=active.map(p=>{
@@ -78,6 +98,7 @@ function buildSnapshot(raw,period,now=new Date()) {
     const deliveries=Array.isArray(evidence.deliverable)?evidence.deliverable:[];
     const details=deliveries.map(d=>({name:String(d.nome||'Consegna'),status:String(d.stato||'non rilevato')}));
     return {id:p.id,name:p.name,client:p.client_name,status:p.status,owner:p.owner_slack_id,
+      contractEvidence:contracts.assessments.filter(a=>a.project_id===p.id).map(a=>({status:a.status,issues:a.issues,source:a.source,roleBudgets:a.role_budgets,assignments:a.assignments})),
       wholeBudget:wholeBudget?{hours:Number(wholeBudget.hours),source:wholeBudget.source_url,start:wholeBudget.period_start,end:wholeBudget.period_end,used:wholeUsed}:null,
       hours:used,budget:b,overrun:b&&used.total!==null?round(used.total-b.hours):null,
       lifetime:hours(allLogs.filter(l=>l.project===p.id)),deliveries:details,
