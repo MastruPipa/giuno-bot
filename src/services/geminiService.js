@@ -16,14 +16,20 @@ try { GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI; 
   logger.warn('Modulo @google/generative-ai non installato. Esegui: npm install @google/generative-ai');
 }
 
+// gemini-2.0-flash è stato SPENTO da Google (settembre 2026): ogni chiamata
+// falliva in silenzio dentro il circuit breaker (ask_gemini, ricerca web,
+// news, prospecting). Il modello è configurabile da env; 2.5-flash è la
+// scelta stabile che supporta anche il grounding con Google Search.
+var GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
 var gemini = null;
 var geminiModel = null;
 var geminiBreaker = createCircuitBreaker('gemini', { failureThreshold: 3, cooldownMs: 20000 });
 
 if (GoogleGenerativeAI && process.env.GEMINI_API_KEY) {
   gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  geminiModel = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  logger.info('Gemini configurato (gemini-2.0-flash)');
+  geminiModel = gemini.getGenerativeModel({ model: GEMINI_MODEL });
+  logger.info('Gemini configurato (' + GEMINI_MODEL + ')');
 } else if (!process.env.GEMINI_API_KEY) {
   logger.warn('GEMINI_API_KEY non presente. Funzioni Gemini disabilitate.');
 }
@@ -34,7 +40,7 @@ async function askGemini(prompt, systemInstruction) {
   if (!geminiModel) return { error: 'Gemini non configurato. Aggiungi GEMINI_API_KEY al .env.' };
   try {
     var model = systemInstruction
-      ? gemini.getGenerativeModel({ model: 'gemini-2.0-flash', systemInstruction: systemInstruction })
+      ? gemini.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: systemInstruction })
       : geminiModel;
     var result = await geminiBreaker.exec(function() { return model.generateContent(prompt); });
     return { response: result.response.text() };
@@ -55,7 +61,7 @@ async function fetchNewsMarketing() {
   try {
     if (!gemini) return null;
     var newsModel = gemini.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: GEMINI_MODEL,
       tools: [{ googleSearch: {} }],
     });
     var result = await geminiBreaker.exec(function() { return newsModel.generateContent(
@@ -83,7 +89,7 @@ async function callGeminiWithSearch(prompt, options) {
   options = options || {};
   try {
     var searchModel = gemini.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: GEMINI_MODEL,
       tools: [{ googleSearch: {} }],
     });
     var result = await geminiBreaker.exec(function() { return searchModel.generateContent({
@@ -111,6 +117,7 @@ async function callGeminiWithSearch(prompt, options) {
 }
 
 module.exports = {
+  GEMINI_MODEL: GEMINI_MODEL,
   gemini: gemini,
   geminiModel: geminiModel,
   askGemini: askGemini,

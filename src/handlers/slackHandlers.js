@@ -1278,6 +1278,15 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'cron') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono vedere i cron.', response_type: 'ephemeral' }); return; }
+    try {
+      var scheduler = require('../jobs/scheduler');
+      await respond({ text: scheduler.formatReport(), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'kb-cleanup') {
     if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono pulire la KB.', response_type: 'ephemeral' }); return; }
     var applyCleanup = args[1] === 'apply';

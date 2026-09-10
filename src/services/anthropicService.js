@@ -522,8 +522,13 @@ async function autoLearn(userId, userMessage, botReply, context) {
       }
     }
 
-    // CRM auto-updates
-    if (analysis.crm_updates && analysis.crm_updates.length > 0) {
+    // CRM auto-updates — scritture automatiche disattivabili con
+    // GIUNO_AUTOLEARN_CRM_WRITES=0 (le memorie/KB continuano a essere salvate).
+    var crmWritesEnabled = process.env.GIUNO_AUTOLEARN_CRM_WRITES !== '0';
+    if (!crmWritesEnabled && ((analysis.crm_updates && analysis.crm_updates.length) || (analysis.contacts && analysis.contacts.length))) {
+      logger.info('[AUTO-LEARN] scritture CRM/contatti saltate (GIUNO_AUTOLEARN_CRM_WRITES=0)');
+    }
+    if (crmWritesEnabled && analysis.crm_updates && analysis.crm_updates.length > 0) {
       try {
         var leadsTools = require('../tools/leadsTools');
         for (var ci = 0; ci < analysis.crm_updates.length; ci++) {
@@ -574,7 +579,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
     }
 
     // External contacts
-    if (analysis.contacts && analysis.contacts.length > 0) {
+    if (crmWritesEnabled && analysis.contacts && analysis.contacts.length > 0) {
       try {
         var supabaseContacts = require('./db/client').getClient();
         if (supabaseContacts) {

@@ -48,3 +48,15 @@ test('oauth admin guard: validates x-admin-token or query token', function() {
     false
   );
 });
+
+test('oauth admin guard: in produzione senza token nega l\'accesso', function() {
+  var prevRailway = process.env.RAILWAY_ENVIRONMENT;
+  process.env.RAILWAY_ENVIRONMENT = 'production';
+  try {
+    var oauthHandler = loadOauthHandlerWithToken(null);
+    assert.equal(oauthHandler.isAuthorizedAdminRequest({ headers: {} }, { query: {} }), false);
+  } finally {
+    if (prevRailway == null) delete process.env.RAILWAY_ENVIRONMENT;
+    else process.env.RAILWAY_ENVIRONMENT = prevRailway;
+  }
+});

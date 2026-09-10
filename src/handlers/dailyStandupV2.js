@@ -509,17 +509,17 @@ function scheduleDailyJobs(cron) {
   // 16:00 Mon-Fri — Send daily requests
   cron.schedule('0 16 * * 1-5', function() {
     sendDailyRequests().catch(function(e) { logger.error('[DAILY-V2] Errore invio:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'daily_send', lockTtl: 15 });
 
   // 17:30 Mon-Fri — Push to missing responders
   cron.schedule('30 17 * * 1-5', function() {
     pushMissingResponders(1).catch(function(e) { logger.error('[DAILY-V2] Errore push:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 15 });
 
   // 18:00 Mon-Fri — Publish unified summary
   cron.schedule('0 18 * * 1-5', function() {
     publishDailySummary().catch(function(e) { logger.error('[DAILY-V2] Errore recap:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'daily_recap', lockTtl: 15 });
 
   logger.info('[DAILY-V2] Cron jobs schedulati: 16:00 send, 17:30 push, 18:00 recap');
 }

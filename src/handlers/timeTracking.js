@@ -444,17 +444,17 @@ function scheduleCheckinJobs(cron) {
   // 17:30 lun-ven — richiesta check-in
   cron.schedule('30 17 * * 1-5', function() {
     sendCheckinRequests().catch(function(e) { logger.error('[CHECKIN] Errore invio:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'checkin_send', lockTtl: 15 });
 
   // 09:05 lun-ven — reminder correzione ai soli mancanti
   cron.schedule('5 9 * * 1-5', function() {
     sendMorningCorrection().catch(function(e) { logger.error('[CHECKIN] Errore reminder:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'checkin_reminder', lockTtl: 15 });
 
   // 09:30 lun-ven — chiusura finestra + escalation 2 giorni
   cron.schedule('30 9 * * 1-5', function() {
     closeCorrectionWindow().catch(function(e) { logger.error('[CHECKIN] Errore chiusura:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'checkin_close', lockTtl: 15 });
 
   logger.info('[CHECKIN] Cron jobs schedulati: 17:30 send, 09:05 reminder, 09:30 close');
 }

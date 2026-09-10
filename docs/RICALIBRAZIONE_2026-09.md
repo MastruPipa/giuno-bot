@@ -139,7 +139,35 @@ SDK `@anthropic-ai/sdk` aggiornato a 0.124.
   l'allineamento). Tool `crm_compare` per il report completo on-demand
   ("confronta i CRM"). L'agente CRM aggiorna Attio e allinea l'interno.
 
-## 5. Da fare
+## 5. Fase 3 — urgenze e manutenzione
+
+- **Gemini era spento.** `gemini-2.0-flash` risulta dismesso da Google: ogni
+  chiamata (ask_gemini, ricerca web, news, prospecting) falliva in silenzio nel
+  circuit breaker. Ora il modello è `GEMINI_MODEL` (default `gemini-2.5-flash`).
+  Nota: il pacchetto `@google/generative-ai` è deprecato a favore di
+  `@google/genai`; da migrare quando si tocca di nuovo Gemini.
+- **Registro dei cron** — `src/jobs/scheduler.js` è un proxy di node-cron: ogni
+  job (45, in quattro file) ha nome, espressione, lock, ultimo esito, durata ed
+  errori, e non riparte se la corsa precedente è ancora in esecuzione.
+  I job che inviano messaggi e non avevano un lock distribuito (routine,
+  recap, daily, planner, digest, briefing pre-call…) ora lo prendono tramite
+  lo scheduler (`lockTtl`): niente più invii doppi durante un redeploy.
+  `/giuno admin cron` mostra la tabella con gli errori in evidenza.
+- **Dashboard e metriche chiuse in produzione.** Senza `OAUTH_ADMIN_TOKEN`,
+  `/dashboard` e `/metrics` rispondono 401 su Railway (prima erano aperti a
+  chiunque avesse l'URL). In locale restano aperti. `/healthz` sempre aperto.
+- **Scritture automatiche CRM disattivabili**: `GIUNO_AUTOLEARN_CRM_WRITES=0`
+  ferma lead e contatti creati da autoLearn (memorie e KB continuano).
+- **Dipendenze**: `@slack/bolt` 3.22 → 5.1 (richiede Node ≥ 20; il codice usa
+  solo l'API JS stabile: App, event/message/command/action/view, client),
+  `@slack/web-api` 7 → 8 di conseguenza, `@supabase/supabase-js` 2.116,
+  `node-cron` 4.6, `googleapis` 178; `engines.node >= 20`, CI su Node 22;
+  `npm audit` a zero. `dotenv` lasciato a 16: la 17 stampa una riga di log per
+  ogni `config()` e qui viene chiamato in 14 file.
+- **Repo**: rimossi `.DS_Store` e `user_tokens.json` (era un esempio; il
+  fallback JSON crea il file da solo se serve).
+
+## 6. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
