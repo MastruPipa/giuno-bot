@@ -317,3 +317,27 @@ CREATE TABLE IF NOT EXISTS project_dossiers (
 );
 CREATE INDEX IF NOT EXISTS project_documents_file ON project_documents(file_id);
 CREATE INDEX IF NOT EXISTS project_documents_project ON project_documents(project_id);
+
+-- 2026-09-10: deduplica progetti (alias + merged_into) e azioni dalle call
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS merged_into TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS project_actions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  source_file_id TEXT,
+  source_title TEXT,
+  source_link TEXT,
+  meeting_date DATE,
+  assignee_name TEXT,
+  assignee_slack_id TEXT,
+  description TEXT NOT NULL,
+  description_key TEXT,
+  due_date DATE,
+  status TEXT DEFAULT 'open',
+  notified_at TIMESTAMPTZ,
+  done_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS project_actions_assignee ON project_actions(assignee_slack_id, status);
+CREATE INDEX IF NOT EXISTS project_actions_source ON project_actions(source_file_id, description_key);

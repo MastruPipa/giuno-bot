@@ -301,7 +301,41 @@ abbina per nome; una deduplica dei progetti è il passo successivo. Le
 "sviluppi" del progetto oggi sono canale Slack + recap: i documenti di
 lavoro modificati su Drive entrano solo se il `drive_watcher` li porta in KB.
 
-## 10. Da fare
+## 10. Pulizia progetti e proattività (fase 5)
+
+**Deduplica progetti** (`src/jobs/projectDedupJob.js`). La tabella `projects`
+nasce da tre sync (deal Attio, canali Slack, categorie) più i manuali: lo
+stesso progetto compariva due o tre volte e i canali di servizio (generale,
+daily, casuale, ped…) erano "progetti". Ora:
+- `/giuno admin progetti dedup` propone i gruppi (stesso nome compattato, nome
+  contenuto con almeno un token forte, stesso cliente) e le righe rumore;
+  `dedup apply` unisce; `merge <duplicato> -> <canonico>` per i casi ambigui
+  (più deal Attio dello stesso cliente non si uniscono da soli).
+- Canonico: manuale > deal Attio (porta budget e CRM) > canale con più dati.
+  Il merge sposta ore, allocazioni, documenti e azioni sul canonico, aggiunge
+  il nome del duplicato agli `aliases` (il matcher li usa), riempie
+  `client_name`, marca il duplicato `status='merged'` + `merged_into`; le sync
+  non lo resuscitano e il planner "Altro" rimanda al canonico.
+- Lunedì 6:15 un controllo propone agli admin le unioni nuove (una volta).
+
+**Proattività ancorata ai progetti** (`src/agents/projectFollowups.js`,
+tabella `project_actions`):
+- Le azioni con responsabile estratte dagli appunti Gemini ("Corrado →
+  inviare documenti entro il 10/09") diventano righe `project_actions`,
+  assegnate via roster. Alle 9:10 chi ha azioni dalla call del giorno prima
+  riceve un DM con bottoni *Fatto / Ok, lo tengo / Non è mio*.
+- Promemoria a ridosso: azioni in scadenza entro 2 giorni (max 2 volte) e
+  scadenze di progetto dal dossier entro 3 giorni (al responsabile o agli
+  admin, una volta). Tutto passa da `followup_log` e dalle preferenze
+  notifiche.
+- Briefing del mattino: sezione "Scadenze progetti (7 giorni)" (tutte per
+  admin/manager/finance, solo le proprie per gli altri) + azioni personali.
+- Pre-call briefing: la scheda progetto entra nel prompt prima del JSON
+  (stato, prossima scadenza, rischio aperto).
+- Brief del lunedì: sezione "Fermi da 14+ giorni" (scheda con cose aperte,
+  canale muto, zero ore).
+
+## 11. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

@@ -410,8 +410,29 @@ async function weeklyProjectsBrief(deps) {
     .map(function(r) { return { row: r, project: byId[r.project_id] }; })
     .sort(function(a, b) { return String(a.project.name).localeCompare(String(b.project.name)); })
     .slice(0, 25);
+  // Progetti fermi: scheda con scadenze/passi aperti ma nessun messaggio nel
+  // canale da 14 giorni e zero ore.
+  var stalled = [];
+  try {
+    var channelMap = db.getChannelMapCache ? db.getChannelMapCache() : {};
+    var activityFn = deps.channelActivity || require('../services/slackService').channelActivity;
+    for (var si = 0; si < entries.length; si++) {
+      var e = entries[si];
+      var d = e.row.dossier || {};
+      var open = (d.scadenze || []).some(function(s) { return s.stato !== 'fatta'; }) || (d.prossimi_passi || []).length > 0;
+      if (!open || (e.row.sources && e.row.sources.hours30 > 0)) continue;
+      var chans = channelsForProject(e.project, channelMap);
+      if (!chans.length) continue;
+      var anyActive = false;
+      for (var ci = 0; ci < chans.length && !anyActive; ci++) {
+        try { var act = await activityFn(chans[ci].channel_id, 14, 1); anyActive = !!(act && act.active); } catch(_) { anyActive = true; }
+      }
+      if (!anyActive) stalled.push(e.project.name);
+    }
+  } catch(e) { logger.debug('[DOSSIER] progetti fermi non calcolati:', e.message); }
   var text = formatWeeklyBrief(entries);
   if (!text) return 0;
+  if (stalled.length) text += '\n\n⏸️ *Fermi da 14+ giorni* (scheda con cose aperte, canale muto, zero ore): ' + stalled.join(', ');
   var app = deps.app !== undefined ? deps.app : require('../services/slackService').app;
   var roles = deps.roles || await require('../../rbac').getAllRoles();
   var admins = roles.filter(function(r) { return r.role === 'admin'; });

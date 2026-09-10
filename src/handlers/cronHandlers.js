@@ -209,6 +209,13 @@ async function buildBriefingUtente(slackUserId, canaliBriefing, newsMarketing) {
     logger.warn('[CRON] operazione fallita:', e.message);
   }
 
+  // 4b. Scadenze di progetto (dai dossier) e azioni personali dalle call
+  try {
+    var role = await getUserRole(slackUserId);
+    var deadlinesSection = await require('../agents/projectFollowups').morningDeadlinesSection(slackUserId, { role: role });
+    if (deadlinesSection) parti.push(deadlinesSection);
+  } catch(e) { logger.warn('[CRON] scadenze progetti:', e.message); }
+
   // 5. News
   if (newsMarketing) {
     parti.push('*News di oggi — Marketing & Comunicazione:*\n' + newsMarketing);
@@ -1261,6 +1268,16 @@ function scheduleCrons() {
     var { weeklyProjectsBrief } = require('../agents/projectDossier');
     weeklyProjectsBrief().catch(function(e) { logger.error('[DOSSIER-WEEKLY-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome', name: 'project_dossier_weekly', lockTtl: 20 });
+  // Follow-up dalle call (azioni a carico) e promemoria scadenze
+  cron.schedule('10 9 * * 1-5', function() {
+    var { runDailyFollowups } = require('../agents/projectFollowups');
+    runDailyFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'project_followups', lockTtl: 15 });
+  // Controllo duplicati progetti: proposte agli admin, una volta a settimana
+  cron.schedule('15 6 * * 1', function() {
+    var { checkAndNotify } = require('../jobs/projectDedupJob');
+    checkAndNotify().catch(function(e) { logger.error('[DEDUP-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'project_dedup_check', lockTtl: 15 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');

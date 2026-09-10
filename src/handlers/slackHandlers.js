@@ -1039,6 +1039,20 @@ app.action('open_dm_from_home', async function(args) {
   } catch(e) { logger.debug('[APP-HOME] DM error:', e.message); }
 });
 
+// Bottoni sulle azioni emerse dalle call (project_actions).
+['project_actions_done', 'project_actions_ack', 'project_actions_dismiss'].forEach(function(actionId) {
+  app.action(actionId, async function(args) {
+    await args.ack();
+    var userId = args.body.user.id;
+    var channel = (args.body.channel && args.body.channel.id) || userId;
+    var value = (args.action && args.action.value) || (args.body.actions && args.body.actions[0] && args.body.actions[0].value) || '';
+    try {
+      var reply = await require('../agents/projectFollowups').handleActionButton(actionId, value, userId);
+      await app.client.chat.postMessage({ channel: channel, text: reply, thread_ts: args.body.message && args.body.message.ts });
+    } catch(e) { logger.error('[PROJECT-ACTIONS] bottone fallito:', e.message); }
+  });
+});
+
 // "Confermo così" sulla proposta di daily ricostruita da Giuno.
 app.action('daily_estimate_confirm', async function(args) {
   await args.ack();
@@ -1363,6 +1377,37 @@ async function handleAdmin(command, respond) {
         : 'Abilitati a generare: tutto il team tranne i ruoli restricted (imposta HIGGSFIELD_ALLOWED_USERS per limitare).');
       lines.push('`/giuno admin higgsfield disconnect` per scollegare.');
       await respond({ text: lines.join('\n'), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'progetti') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager possono gestire i progetti.', response_type: 'ephemeral' }); return; }
+    var dedup = require('../jobs/projectDedupJob');
+    try {
+      if (args[1] === 'dedup') {
+        var applyDedup = args[2] === 'apply';
+        if (applyDedup) await respond({ text: 'Applico le unioni proposte...', response_type: 'ephemeral' });
+        var dedupRep = await dedup.runDedup({ apply: applyDedup });
+        await respond({ text: dedup.formatReport(dedupRep, applyDedup), response_type: 'ephemeral' });
+        return;
+      }
+      if (args[1] === 'merge') {
+        var spec = args.slice(2).join(' ');
+        var parts = spec.split(/\s*(?:->|=>|→)\s*/);
+        if (parts.length !== 2 || !parts[0] || !parts[1]) { await respond({ text: 'Uso: `/giuno admin progetti merge <duplicato> -> <canonico>`', response_type: 'ephemeral' }); return; }
+        var allActive = await db.searchProjects({ status: 'active', limit: 300 });
+        function pick(name) { var n = dedup.compact(name); return allActive.find(function(p) { return dedup.compact(p.name) === n; }) || allActive.find(function(p) { return dedup.compact(p.name).indexOf(n) !== -1; }) || null; }
+        var dupP = pick(parts[0]), canP = pick(parts[1]);
+        if (!dupP || !canP || dupP.id === canP.id) { await respond({ text: 'Non trovo i due progetti (o sono lo stesso): "' + parts[0] + '" → "' + parts[1] + '".', response_type: 'ephemeral' }); return; }
+        var mres = await dedup.applyMerge(dupP, canP);
+        await respond({ text: 'Unito *' + dupP.name + '* in *' + canP.name + '*: ' + JSON.stringify(mres.moved) + '. Il dossier di ' + canP.name + ' verrà ricostruito.', response_type: 'ephemeral' });
+        return;
+      }
+      var activeList = (await db.searchProjects({ status: 'active', limit: 300 })).filter(function(p) { return !/^cat_/.test(p.id); });
+      var listLines = activeList.sort(function(a, b) { return String(a.name).localeCompare(String(b.name)); })
+        .map(function(p) { return '• ' + p.name + ' _(' + dedup.source(p) + (p.client_name && dedup.compact(p.client_name) !== dedup.compact(p.name) ? ', ' + p.client_name : '') + (p.aliases && p.aliases.length ? ', alias: ' + p.aliases.join('/') : '') + ')_'; });
+      await respond({ text: '*Progetti attivi (' + activeList.length + '):*\n' + listLines.join('\n') + '\n\n`/giuno admin progetti dedup [apply]` · `/giuno admin progetti merge <duplicato> -> <canonico>`', response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }

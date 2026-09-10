@@ -29,7 +29,11 @@ async function getCatalog() {
     var projects = await db.searchProjects({ status: 'active', limit: 100 });
     var list = (projects || [])
       .filter(function(p) { return p && p.id && p.name; })
-      .map(function(p) { return { id: String(p.id), name: String(p.name), norm: norm(p.name) }; });
+      .map(function(p) {
+        // Gli alias (nomi dei duplicati uniti) contano come il nome.
+        var norms = [norm(p.name)].concat((Array.isArray(p.aliases) ? p.aliases : []).map(norm)).filter(function(n) { return n && n.length >= 4; });
+        return { id: String(p.id), name: String(p.name), norm: norm(p.name), norms: norms };
+      });
     if (list.length > 0) {
       _catalog = list;
       _catalogAt = now;
@@ -49,14 +53,21 @@ function matchTaskAgainstCatalog(taskText, catalog) {
   var text = norm(taskText);
   if (!text) return null;
   var best = null;
+  var bestLen = 0;
   for (var i = 0; i < catalog.length; i++) {
     var p = catalog[i];
-    if (!p.norm || p.norm.length < 4) continue;
-    if (text.indexOf(p.norm) === -1) continue;
-    if (!best || p.norm.length > best.norm.length) best = p;
+    var norms = p.norms || [p.norm];
+    for (var k = 0; k < norms.length; k++) {
+      var n = norms[k];
+      if (!n || n.length < 4) continue;
+      if (text.indexOf(n) === -1) continue;
+      if (!best || n.length > bestLen) { best = p; bestLen = n.length; }
+    }
   }
   return best;
 }
+
+function invalidateCatalog() { _catalog = null; _catalogAt = 0; }
 
 // ─── Fallback LLM (batch, una chiamata per daily) ────────────────────────────
 
@@ -153,4 +164,5 @@ module.exports = {
   enrichStructured: enrichStructured,
   matchTaskAgainstCatalog: matchTaskAgainstCatalog,
   getCatalog: getCatalog,
+  invalidateCatalog: invalidateCatalog,
 };

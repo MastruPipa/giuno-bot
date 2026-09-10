@@ -172,6 +172,21 @@ async function buildBriefing(userId, event) {
     }
   } catch(e) { /* ignore */ }
 
+  // Scheda progetto (dossier): stato, scadenze, rischi — è la parte più utile
+  // prima di una call, quindi va nel messaggio prima del JSON troncato.
+  var dossierText = null;
+  try {
+    var prjForDossier = rawData.projectInfo;
+    if (!prjForDossier) {
+      var dossierAgent = require('./projectDossier');
+      for (var di = 0; di < Math.min(searchTerms.length, 3) && !prjForDossier; di++) prjForDossier = await dossierAgent.findProject(searchTerms[di]);
+    }
+    if (prjForDossier) {
+      var dRow = await require('../services/db/dossiers').getDossier(prjForDossier.id);
+      if (dRow && dRow.summary) dossierText = String(dRow.summary).substring(0, 1200);
+    }
+  } catch(e) { /* ignore */ }
+
   // Meet link
   var meetLink = null;
   if (event.hangoutLink) meetLink = event.hangoutLink;
@@ -185,8 +200,8 @@ async function buildBriefing(userId, event) {
     var llmClient = new Anthropic();
     var res = await llmClient.messages.create({
       model: MODELS.UTILITY,
-      max_tokens: 200,
-      system: 'Briefing pre-call per agenzia marketing. Max 6 righe, tono naturale.\n' +
+      max_tokens: 300,
+      system: 'Briefing pre-call per agenzia marketing. Max 8 righe, tono naturale.\n' +
         'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +
         'Non usare CAPS. Non dire "BRIEFING CALL". Non mostrare status CRM tecnici ("lost", "won").\n' +
         'Non inventare valori in € se non sono nei dati.\n' +
@@ -203,9 +218,11 @@ async function buildBriefing(userId, event) {
         '(che è l\'owner del calendario) cosa stava facendo con questo cliente/progetto: cita 1 fatto pertinente ' +
         'o 1 open item se aiuta. NON riferire tutto il contenuto di ownerMemory, solo quello rilevante al meeting.\n' +
         'Quando citi un collega usa il tag <@U...> dal ROSTER TEAM. Non confondere membri del team con clienti che hanno nomi simili.\n' +
+        'Se c\'è una SCHEDA PROGETTO, usala per 1-2 righe su stato, prossima scadenza o rischio aperto: è la cosa più utile prima della call.\n' +
         'Formato: frasi normali, *grassetto* solo per nomi. Conciso.',
       messages: [{ role: 'user',
-        content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + JSON.stringify(rawData).substring(0, 2000) }],
+        content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') +
+          (dossierText ? 'SCHEDA PROGETTO:\n' + dossierText + '\n\n' : '') + JSON.stringify(rawData).substring(0, 2000) }],
     });
     var briefingText = res.content[0].text.trim();
 

@@ -122,6 +122,33 @@ function matchProject(matcher, catalog, ex, title) {
   return null;
 }
 
+function resolveAssignee(db, chi) {
+  var name = String(chi || '').trim();
+  if (!name || /^(il gruppo|tutti|team|gruppo)$/i.test(name)) return null;
+  try {
+    var m = (db.findTeamMemberByName && db.findTeamMemberByName(name)) ||
+      (db.findTeamMemberByName && db.findTeamMemberByName(name.split(/[\s(,]/)[0])) || null;
+    if (!m && db.findTeamMembersInText) { var found = db.findTeamMembersInText(name); m = found && found[0]; }
+    return m ? m.slack_user_id : null;
+  } catch(_) { return null; }
+}
+
+async function saveActions(dossiers, db, ex, meta) {
+  if (!dossiers.addProjectAction) return 0;
+  var n = 0;
+  var list = (ex.azioni || []).filter(function(a) { return a && a.cosa; }).slice(0, 15);
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i];
+    var row = await dossiers.addProjectAction({
+      project_id: meta.project ? meta.project.id : null, source_file_id: meta.fileId, source_title: meta.title, source_link: meta.link,
+      meeting_date: meta.date || null, assignee_name: a.chi || null, assignee_slack_id: resolveAssignee(db, a.chi),
+      description: String(a.cosa).substring(0, 400), due_date: a.entro && /^\d{4}-\d{2}-\d{2}$/.test(a.entro) ? a.entro : null,
+    });
+    if (row) n++;
+  }
+  return n;
+}
+
 function pickScanUsers(tokens, roles) {
   var ids = Object.keys(tokens || {});
   var admins = (roles || []).filter(function(r) { return r.role === 'admin'; }).map(function(r) { return r.slack_user_id; });
@@ -202,6 +229,10 @@ async function scanGeminiNotes(opts) {
           });
           await dossiers.markNeedsRefresh(project.id, f.modifiedTime);
         }
+        // Azioni a carico di persone del team → project_actions (follow-up il
+        // giorno dopo e promemoria a ridosso della scadenza).
+        var savedActions = await saveActions(dossiers, db, ex, { project: project, fileId: f.id, title: meta.cleanTitle, date: ex.data || meta.date, link: meta.link });
+        if (savedActions) report.actions = (report.actions || 0) + savedActions;
         report.ingested++;
         report.files.push({ id: f.id, title: meta.cleanTitle, kind: kind, project: project ? project.name : null });
         logger.info('[GEMINI-NOTES] ' + kind + ' "' + meta.cleanTitle + '" → ' + (project ? project.name : 'nessun progetto'));
@@ -216,7 +247,7 @@ async function scanGeminiNotes(opts) {
 }
 
 function formatReport(r) {
-  var lines = ['*Appunti Gemini (Drive):* ' + r.scanned + ' file trovati, ' + r.ingested + ' nuovi, ' + r.skipped + ' già noti/saltati' + (r.errors ? ', ' + r.errors + ' errori' : '')];
+  var lines = ['*Appunti Gemini (Drive):* ' + r.scanned + ' file trovati, ' + r.ingested + ' nuovi, ' + r.skipped + ' già noti/saltati' + (r.errors ? ', ' + r.errors + ' errori' : '') + (r.actions ? ', ' + r.actions + ' azioni registrate' : '')];
   (r.files || []).slice(0, 15).forEach(function(f) { lines.push('• ' + (f.kind === 'kickoff' ? '🚀 ' : '📝 ') + f.title + ' → ' + (f.project || '_senza progetto_')); });
   return lines.join('\n');
 }
@@ -232,6 +263,8 @@ module.exports = {
   formatKbEntry: formatKbEntry,
   matchProject: matchProject,
   pickScanUsers: pickScanUsers,
+  resolveAssignee: resolveAssignee,
+  saveActions: saveActions,
   scanGeminiNotes: scanGeminiNotes,
   formatReport: formatReport,
 };

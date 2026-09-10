@@ -67,6 +67,9 @@ async function searchProjects(params) {
 async function upsertSyncedProject(row) {
   if (!c.useSupabase) return null;
   try {
+    // Un duplicato unito a un altro progetto non va resuscitato dalla sync.
+    var existing = await c.getClient().from('projects').select('id, status').eq('id', row.id).maybeSingle();
+    if (existing && existing.data && existing.data.status === 'merged') return existing.data;
     row.updated_at = new Date().toISOString();
     var res = await c.getClient().from('projects').upsert(row, { onConflict: 'id' }).select().single();
     if (res.error) throw res.error;

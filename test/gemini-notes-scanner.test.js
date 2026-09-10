@@ -40,14 +40,17 @@ test('parseExtraction normalizza le liste; matchProject usa i candidati poi il t
 
 test('scanGeminiNotes: legge Drive, estrae, salva KB, collega al progetto e marca il dossier', async function() {
   var kbSaved = [], docsAdded = [], marked = [];
+  var actions = [];
   var fakeDb = {
     getKBCache: function() { return [{ tags: ['tipo:meeting_recap', 'drive_file_id:OLD'] }]; },
     addKBEntry: async function(content, tags, by) { kbSaved.push({ content: content, tags: tags, by: by }); return { id: 'kb1' }; },
+    findTeamMemberByName: function(n) { return /^corrado/i.test(n) ? { slack_user_id: 'U_CORRADO' } : null; },
   };
   var fakeDossiers = {
     findProjectDocumentByFile: async function() { return null; },
     addProjectDocument: async function(row) { docsAdded.push(row); return row; },
     markNeedsRefresh: async function(id, at) { marked.push({ id: id, at: at }); },
+    addProjectAction: async function(row) { actions.push(row); return row; },
   };
   var matcher = require('../src/services/projectMatcher');
   var fakeMatcher = { getCatalog: async function() { return [{ id: 'chan_1', name: 'mandorle', norm: 'mandorle' }]; }, matchTaskAgainstCatalog: matcher.matchTaskAgainstCatalog };
@@ -78,5 +81,10 @@ test('scanGeminiNotes: legge Drive, estrae, salva KB, collega al progetto e marc
   assert.equal(docsAdded[0].project_id, 'chan_1');
   assert.equal(docsAdded[0].doc_role, 'recap');
   assert.deepEqual(marked, [{ id: 'chan_1', at: '2026-09-08T08:33:00Z' }]);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].assignee_slack_id, 'U_CORRADO');
+  assert.equal(actions[0].due_date, '2026-09-10');
+  assert.equal(actions[0].project_id, 'chan_1');
+  assert.equal(rep.actions, 1);
   assert.match(scanner.formatReport(rep), /1 nuovi[\s\S]*Weekly - Meeting Mandorle → mandorle/);
 });
