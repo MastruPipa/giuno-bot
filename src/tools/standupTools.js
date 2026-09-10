@@ -150,16 +150,16 @@ async function queryStandup(input) {
     };
   }
 
-  // I daily STIMATI da Giuno (non confermati) non sono ore dichiarate: si
-  // escludono dai totali e si segnalano a parte, così il modello lo dice.
+  // I daily STIMATI da Giuno contano nei totali come gli altri (scelta
+  // esplicita) ma vanno dichiarati: il modello deve dire quali giorni sono
+  // ricostruiti e non compilati dalla persona.
   var estimated = rows.filter(function(r) { return r.source === 'estimate'; });
-  var real = rows.filter(function(r) { return r.source !== 'estimate'; });
-  var out = aggregateStandupRows(real, input, dateFrom, dateTo);
+  var out = aggregateStandupRows(rows, input, dateFrom, dateTo);
   if (estimated.length > 0 && out && typeof out === 'object') {
-    out.daily_stimati_non_confermati = estimated.map(function(r) {
+    out.daily_stimati = estimated.map(function(r) {
       return { slack_user_id: r.slack_user_id, date: r.date, ore_stimate: r.total_hours_oggi || 0 };
     });
-    out.nota_stime = estimated.length + ' daily nel periodo sono STIME di Giuno non confermate (la persona non ha compilato): non contano come ore dichiarate.';
+    out.nota_stime = estimated.length + ' daily nel periodo sono STIME ricostruite da Giuno (la persona non ha compilato): sono incluse nei totali, dillo quando riporti le ore.';
   }
   return out;
 }

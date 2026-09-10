@@ -178,9 +178,10 @@ SDK `@anthropic-ai/sdk` aggiornato a 0.124.
   **Lo compilo io**. Senza tracce, il push resta quello di prima.
 - **18:00** (`daily_recap`): chi non ha risposto né confermato riceve una
   entry `source = 'estimate'`, pubblicata in #daily marcata "stima di Giuno,
-  non confermata". Le ore stimate **non** entrano in `time_logs`, nel carico
-  (`workloadService`), nel prefill del planner né nei totali di
-  `query_standup` (che le elenca a parte).
+  non confermata". Le ore stimate **entrano nel consuntivo** (`time_logs` con
+  `notes = 'stima Giuno…'` e `validation.status = 'estimate'`), nel carico,
+  nel prefill del planner e nei totali di `query_standup`, che però elenca a
+  parte i giorni stimati così Giuno lo dichiara quando riporta le ore.
 - **Sovrascrittura**: qualsiasi daily vero (modale, DM, canale, conferma del
   bottone → `estimate_confirmed`) sostituisce la stima e allora sì alimenta il
   consuntivo. Disattivabile con `DAILY_ESTIMATES_ENABLED=false`.

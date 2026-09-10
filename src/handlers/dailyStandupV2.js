@@ -161,7 +161,7 @@ async function sendEstimateProposal(utente, structured) {
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:' } },
       { type: 'section', text: { type: 'mrkdwn', text: formatPerSlack(body) } },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: estimator.formatSourcesLine(structured) + '\nSe alle 18:00 non ho tue notizie lo pubblico come *stima* in #daily; puoi correggerlo anche dopo, compilando il daily.' }] },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: estimator.formatSourcesLine(structured) + '\nSe alle 18:00 non ho tue notizie lo pubblico come *stima* in #daily e le ore entrano nel consuntivo come stimate; puoi correggerlo anche dopo, compilando il daily.' }] },
       { type: 'actions', elements: [
         { type: 'button', text: { type: 'plain_text', text: '✅ Confermo così', emoji: true }, style: 'primary', action_id: 'daily_estimate_confirm', value: structured.estimate ? structured.estimate.generated_at : 'x' },
         { type: 'button', text: { type: 'plain_text', text: '✏️ Lo compilo io', emoji: true }, action_id: 'open_daily_modal' },
@@ -184,7 +184,9 @@ async function confirmEstimate(userId) {
 }
 
 // 18:00: chi non ha risposto e ha una stima in sospeso riceve una entry
-// source='estimate' — visibile a tutti, marcata, SENZA consuntivo time_logs.
+// source='estimate' — visibile a tutti, marcata — e le ore stimate entrano
+// nel consuntivo time_logs (marcate come stima), finché un daily vero non le
+// rimpiazza.
 async function saveEstimateAsEntry(utente, dateStr, structured) {
   var estimator = require('../agents/dailyEstimator');
   var text = estimator.formatEstimateBody(structured);
@@ -201,6 +203,11 @@ async function saveEstimateAsEntry(utente, dateStr, structured) {
   if (existing && existing.source && existing.source !== 'estimate') return false;
   var res = await supabase.from('standup_entries').upsert(entry, { onConflict: 'slack_user_id,date' });
   if (res && res.error) { logger.warn('[DAILY-V2] upsert stima fallito:', res.error.message); return false; }
+  await syncTimeLogsFromDaily(utente.id, dateStr, structured, {
+    estimate: true,
+    confidence: structured.estimate && structured.estimate.confidence,
+    sources: structured.estimate && structured.estimate.sources,
+  });
   try {
     await app.client.chat.postMessage({
       channel: DAILY_CHANNEL_ID, unfurl_links: false,
@@ -296,12 +303,22 @@ function hasStructuredTasks(entry) {
 // a un progetto dal matcher diventano time_logs (log_type='daily') — il
 // vecchio check-in serale separato è stato ritirato. Replace semantics: un
 // daily ricompilato sovrascrive il consuntivo del giorno.
-async function syncTimeLogsFromDaily(userId, dateStr, structured) {
+async function syncTimeLogsFromDaily(userId, dateStr, structured, opts) {
+  opts = opts || {};
   try {
     if (!structured || !structured.oggi || structured.oggi.length === 0) return;
     var workloadService = require('../services/workloadService');
     var rows = workloadService.deriveTimeLogRows(structured.oggi, userId, dateStr);
     if (rows.length === 0) return;
+    if (opts.estimate) {
+      // Ore STIMATE da Giuno: entrano nel consuntivo (scelta esplicita di
+      // Antonio, 10/9/2026) ma restano riconoscibili: la compilazione vera
+      // della persona le rimpiazza (replace semantics di replaceTimeLogs).
+      rows.forEach(function(r) {
+        r.notes = 'stima Giuno (daily non compilato)';
+        r.validation = { status: 'estimate', confidence: opts.confidence || 'bassa', sources: opts.sources || [] };
+      });
+    }
     var res = await db.replaceTimeLogs(userId, dateStr, 'daily', rows);
     if (res === null) {
       logger.warn('[DAILY-V2] Consuntivo time_logs non scritto per', userId, dateStr);

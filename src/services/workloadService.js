@@ -94,10 +94,9 @@ async function getWeekOverview(weekStart) {
       var res = await supabase.from('standup_entries')
         .select('slack_user_id, date, ieri_tasks, oggi_tasks, total_hours_ieri, total_hours_oggi, source')
         .gte('date', weekStart).lte('date', weekEnd);
-      // I daily STIMATI da Giuno (non confermati) non sono ore dichiarate:
-      // fuori dal carico finché la persona non conferma o ricompila.
-      var realRows = (res.data || []).filter(function(r) { return r.source !== 'estimate'; });
-      if (!res.error) standupAgg = aggregateStandupRows(realRows, {}, weekStart, weekEnd);
+      // I daily STIMATI da Giuno contano nel carico come gli altri (scelta
+      // esplicita): un daily vero della persona li rimpiazza per quel giorno.
+      if (!res.error) standupAgg = aggregateStandupRows(res.data || [], {}, weekStart, weekEnd);
     }
   } catch(e) { logger.warn('[WORKLOAD-SVC] standup_entries non disponibili:', e.message); }
 

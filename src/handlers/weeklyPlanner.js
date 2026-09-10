@@ -40,8 +40,8 @@ async function buildPrefillFromWeekDailies(userId) {
       .gte('date', weekStart)
       .lte('date', dates.oggiRome());
     var tasks = [];
-    // Le stime non confermate di Giuno non sono ore dichiarate: fuori dal prefill.
-    (res.data || []).forEach(function(r) { if (r.source !== 'estimate') tasks = tasks.concat(r.oggi_tasks || []); });
+    // Anche i daily stimati da Giuno contribuiscono al prefill (contano nel consuntivo).
+    (res.data || []).forEach(function(r) { tasks = tasks.concat(r.oggi_tasks || []); });
     var prefill = modals.prefillRowsFromTasks(tasks, modals.MAX_ROWS_PLANNER, 60);
     if (prefill.length > 0) return prefill;
 
