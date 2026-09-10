@@ -116,18 +116,36 @@ var definitions = [
   },
   {
     name: 'send_dm',
-    description: 'Invia un messaggio diretto (DM) a un collega su Slack. ' +
+    description: 'Invia un messaggio diretto (DM) a uno o più colleghi su Slack. ' +
       'Usa SEMPRE questo tool quando l\'utente dice "mandalo", "invialo", "scrivi a [persona]", "di\' a [persona]". ' +
       'Se nella conversazione precedente hai già preparato un messaggio, usa quello — non inventarne uno nuovo. ' +
-      'NON usare per postare in canali pubblici. Puoi passare slack_user_id o il nome della persona.',
+      'Stesso testo a più persone → UNA sola chiamata con target_user_ids (o target_user_names): mai una chiamata per persona. ' +
+      'NON usare per postare in canali pubblici.',
     input_schema: {
       type: 'object',
       properties: {
-        target_user_id:   { type: 'string', description: 'Slack user ID del destinatario (se noto)' },
-        target_user_name: { type: 'string', description: 'Nome del destinatario (usato per cercare l\'ID se target_user_id non fornito)' },
-        message:          { type: 'string', description: 'Testo del messaggio da inviare' },
+        target_user_id:    { type: 'string', description: 'Slack user ID del destinatario (se noto)' },
+        target_user_name:  { type: 'string', description: 'Nome del destinatario (usato per cercare l\'ID se target_user_id non fornito)' },
+        target_user_ids:   { type: 'array', items: { type: 'string' }, description: 'Più destinatari (Slack user ID): stesso messaggio a tutti' },
+        target_user_names: { type: 'array', items: { type: 'string' }, description: 'Più destinatari per nome' },
+        message:           { type: 'string', description: 'Testo del messaggio da inviare' },
+        confirmed:         { type: 'boolean', description: 'true solo dopo che l\'utente ha confermato un invio segnalato come sensibile' },
       },
       required: ['message'],
+    },
+  },
+  {
+    name: 'send_google_link',
+    description: 'Manda in DM a un collega il SUO link personale per collegare Google a Giuno (calendario, mail, Drive). ' +
+      'Il link è generato dal sistema per quel collega: non scrivere MAI URL OAuth a mano e non inoltrare il link di un altro. ' +
+      'Usalo quando un admin/manager dice "mandagli il link per collegare Google". Per sé stessi basta scrivere "collega Google".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target_user_id:   { type: 'string', description: 'Slack user ID del collega' },
+        target_user_name: { type: 'string', description: 'Nome del collega (se non hai l\'ID)' },
+        note:             { type: 'string', description: 'Frase opzionale da premettere al messaggio (es. chi lo ha chiesto e perché)' },
+      },
     },
   },
   {
@@ -398,7 +416,33 @@ var definitions = [
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
 
-async function execute(toolName, input, userId) {
+// Destinatari di send_dm: singolo o multipli, per id o per nome.
+function _dmRecipients(input) {
+  var out = [];
+  var seen = {};
+  function add(id, name) {
+    var key = (id || '') + '|' + (name || '').toLowerCase();
+    if (!id && !name) return;
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push({ id: id || null, name: name || null });
+  }
+  if (input.target_user_id) add(String(input.target_user_id).trim(), null);
+  else if (input.target_user_name) add(null, String(input.target_user_name).trim());
+  (Array.isArray(input.target_user_ids) ? input.target_user_ids : []).forEach(function(id) { if (id) add(String(id).trim(), null); });
+  (Array.isArray(input.target_user_names) ? input.target_user_names : []).forEach(function(n) { if (n) add(null, String(n).trim()); });
+  return out;
+}
+
+function _findUserByName(users, name) {
+  var nameL = String(name || '').toLowerCase();
+  if (!nameL) return null;
+  return users.find(function(u) { return u.name.toLowerCase() === nameL; }) ||
+    users.find(function(u) { return u.name.toLowerCase().split(/\s+/)[0] === nameL; }) ||
+    users.find(function(u) { return u.name.toLowerCase().includes(nameL); }) || null;
+}
+
+async function execute(toolName, input, userId, userRole) {
   var app = getApp();
 
   if (toolName === 'get_slack_users') {
@@ -414,38 +458,82 @@ async function execute(toolName, input, userId) {
   }
 
   if (toolName === 'send_dm') {
-    // Check: messaggio lungo con dati sensibili → richiede conferma
+    var recipients = _dmRecipients(input);
+    if (recipients.length === 0) return { error: 'Nessun destinatario: passa target_user_id, target_user_ids o il nome.' };
+    // Messaggio lungo con dati sensibili → serve la conferma dell'utente. Il
+    // vecchio action_id fittizio non era gestibile da confirm_action: ora si
+    // richiama send_dm con confirmed=true dopo l'ok dell'utente.
     var sensitivePattern = /€[\d\.]+|pipeline|contratto firmato|preventivo|\d+\.000|CRM completo/i;
-    if (sensitivePattern.test(input.message || '') && (input.message || '').length > 200) {
+    if (!input.confirmed && sensitivePattern.test(input.message || '') && (input.message || '').length > 200) {
       return {
         requires_confirmation: true,
-        action_id: Date.now().toString(36),
-        preview: 'INVIO DM A ' + (input.target_user_name || input.target_user_id || '?') +
+        preview: 'INVIO DM A ' + recipients.map(function(r) { return r.name || r.id; }).join(', ') +
           ':\n\n' + (input.message || '').substring(0, 300) + '...',
-        message: 'Il messaggio contiene dati sensibili. Confermi l\'invio?',
+        message: 'Il messaggio contiene dati sensibili. Chiedi conferma all\'utente e poi richiama send_dm con confirmed=true.',
       };
     }
-    if (!input.target_user_id) {
-      if (input.target_user_name) {
-        try {
-          var allUsers = await getUtenti();
-          var nameL = input.target_user_name.toLowerCase();
-          var match = allUsers.find(function(u) { return u.name.toLowerCase().includes(nameL); });
-          if (match) input.target_user_id = match.id;
-        } catch(e) {
-          logger.warn('[SLACK-TOOLS] operazione fallita:', e.message);
-        }
-      }
-      if (!input.target_user_id) return { error: 'Destinatario non trovato. Specifica il nome esatto o lo Slack ID.' };
+    var allUsers = [];
+    if (recipients.some(function(r) { return !r.id || !r.name; })) {
+      try { allUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
     }
+    var sent = [], failed = [];
+    for (var ri = 0; ri < recipients.length; ri++) {
+      var r = recipients[ri];
+      if (!r.id) {
+        var match = _findUserByName(allUsers, r.name);
+        if (match) { r.id = match.id; r.name = match.name; }
+      } else if (!r.name) {
+        var byId = allUsers.find(function(u) { return u.id === r.id; });
+        if (byId) r.name = byId.name;
+      }
+      if (!r.id) { failed.push({ name: r.name, error: 'destinatario non trovato' }); continue; }
+      try {
+        var convOpen = await app.client.conversations.open({ users: r.id });
+        var dmResult = await app.client.chat.postMessage({ channel: convOpen.channel.id, text: input.message });
+        logger.info('[DM] Messaggio inviato a', r.id, 'da', userId);
+        sent.push({ target: r.id, name: r.name || null, ts: dmResult.ts });
+      } catch(e) {
+        logger.error('[DM] Errore invio a', r.id, ':', e.message);
+        failed.push({ target: r.id, name: r.name || null, error: e.message });
+      }
+    }
+    if (sent.length === 0) {
+      return { error: 'Nessun DM inviato: ' + failed.map(function(f) { return (f.name || f.target) + ' (' + f.error + ')'; }).join(', ') };
+    }
+    var out = {
+      success: true,
+      message: 'Messaggio inviato in DM a ' + sent.length + (sent.length === 1 ? ' persona' : ' persone') +
+        (failed.length ? ', NON inviato a ' + failed.map(function(f) { return f.name || f.target; }).join(', ') : '') + '.',
+      sent: sent,
+    };
+    if (failed.length) out.failed = failed;
+    if (sent.length === 1) { out.target = sent[0].target; out.ts = sent[0].ts; }
+    return out;
+  }
+
+  if (toolName === 'send_google_link') {
+    if (['admin', 'finance', 'manager'].indexOf(userRole || 'member') === -1) {
+      return { error: 'Solo admin, finance o manager possono mandare il link Google a un collega.' };
+    }
+    var gauth = require('../services/googleAuthService');
+    var glUsers = [];
+    try { glUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
+    var glTarget = input.target_user_id ? glUsers.find(function(u) { return u.id === input.target_user_id; }) || { id: input.target_user_id, name: null }
+      : _findUserByName(glUsers, input.target_user_name);
+    if (!glTarget || !glTarget.id) return { error: 'Collega non trovato: indica il nome esatto o lo Slack ID.' };
+    var tokens = gauth.getUserTokens() || {};
+    if (tokens[glTarget.id]) return { already_connected: true, message: (glTarget.name || glTarget.id) + ' ha già collegato Google: non serve il link.' };
+    var glLink = gauth.generaLinkOAuth(glTarget.id);
+    var first = glTarget.name ? glTarget.name.split(' ')[0] : '';
+    var glText = 'Ciao' + (first ? ' ' + first : '') + '! ' + (input.note ? String(input.note).trim() + '\n\n' : '') +
+      'Per farmi leggere calendario, mail e Drive collega il tuo Google a Giuno: <' + glLink + '|Collega il tuo Google>\n' +
+      '_Il link è personale e vale solo per il tuo account. Se non si apre o dà errore, dillo ad Antonio._';
     try {
-      var convOpen = await app.client.conversations.open({ users: input.target_user_id });
-      var dmChannelId = convOpen.channel.id;
-      var dmResult = await app.client.chat.postMessage({ channel: dmChannelId, text: input.message });
-      logger.info('[DM] Messaggio inviato a', input.target_user_id, 'da', userId);
-      return { success: true, message: 'Messaggio inviato in DM.', target: input.target_user_id, ts: dmResult.ts };
+      var glOpen = await app.client.conversations.open({ users: glTarget.id });
+      var glPost = await app.client.chat.postMessage({ channel: glOpen.channel.id, text: glText });
+      logger.info('[DM] Link Google inviato a', glTarget.id, 'su richiesta di', userId);
+      return { success: true, target: glTarget.id, name: glTarget.name || null, ts: glPost.ts, message: 'Link per collegare Google inviato in DM a ' + (glTarget.name || glTarget.id) + '.' };
     } catch(e) {
-      logger.error('[DM] Errore invio:', e.message);
       return { error: 'Errore invio DM: ' + e.message };
     }
   }

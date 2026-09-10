@@ -25,7 +25,7 @@ var { NO_REPLY } = require('../src/utils/noReply');
 test('buildPrimaryRequest: modello primario da config, effort, tool stabili', function() {
   var req = svc.buildPrimaryRequest([{ type: 'text', text: 'sys' }], [{ role: 'user', content: 'ciao' }], { tools: [{ name: 't' }] });
   assert.equal(req.model, MODELS.PRIMARY);
-  assert.equal(req.max_tokens, 4096);
+  assert.equal(req.max_tokens, svc.DEFAULT_MAX_TOKENS);
   assert.deepEqual(req.output_config, { effort: PRIMARY_EFFORT });
   assert.equal(req.tools.length, 1);
   assert.equal(req.thinking, undefined, 'thinking adattivo = parametro omesso');

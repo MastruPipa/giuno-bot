@@ -373,6 +373,9 @@ app.message(async function(args) {
 
   // ── DM ─────────────────────────────────────────────────────────────────────
 
+  // Slack rimanda l'evento se l'ack tarda: senza dedup rispondevamo due volte.
+  if (!dedup(message.ts)) return;
+
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
@@ -608,7 +611,7 @@ app.message(async function(args) {
     try { await app.client.reactions.remove({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
 
     var formatted = formatPerSlack(reply);
-    if (!formatted) return;
+    if (!formatted) { logger.warn('[DM] risposta vuota per', message.user, '(non postato nulla)'); return; }
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
   } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(err) }); }
@@ -1302,6 +1305,37 @@ async function handleAdmin(command, respond) {
     try {
       var scheduler = require('../jobs/scheduler');
       await respond({ text: scheduler.formatReport(), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'higgsfield') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono collegare Higgsfield.', response_type: 'ephemeral' }); return; }
+    try {
+      var mcpConnections = require('../services/mcpConnections');
+      if (args[1] === 'disconnect') {
+        await mcpConnections.disconnect('higgsfield');
+        await respond({ text: 'Higgsfield scollegato: le generazioni sono disattivate finché qualcuno non lo ricollega.', response_type: 'ephemeral' });
+        return;
+      }
+      var hfStatus = mcpConnections.getStatus('higgsfield');
+      var { OAUTH_REDIRECT_URI: googleRedirect } = require('../services/googleAuthService');
+      var startUrl = mcpConnections.redirectUriFor('higgsfield', googleRedirect).replace(/\/callback$/, '/start') + '?u=' + encodeURIComponent(command.user_id);
+      var lines = [];
+      if (hfStatus.connected) {
+        lines.push('✅ *Higgsfield collegato* (account unico dello studio' + (hfStatus.connected_by ? ', collegato da <@' + hfStatus.connected_by + '>' : '') + ').');
+        if (hfStatus.expires_at) lines.push('Token valido fino a ' + hfStatus.expires_at + (hfStatus.has_refresh ? ' (si rinnova da solo).' : ' (senza refresh: andrà ricollegato).'));
+      } else if (hfStatus.needs_reconnect) {
+        lines.push('⚠️ *Higgsfield: collegamento scaduto*, va rifatto.');
+      } else {
+        lines.push('❌ *Higgsfield non collegato.*');
+      }
+      lines.push('Per ' + (hfStatus.connected ? 'ricollegarlo con un altro account' : 'collegarlo') + ': <' + startUrl + '|apri il login Higgsfield> e autorizza Giuno.');
+      var allowedEnv = process.env.HIGGSFIELD_ALLOWED_USERS;
+      lines.push(allowedEnv ? 'Abilitati a generare: ' + allowedEnv.split(',').map(function(u) { return '<@' + u.trim() + '>'; }).join(', ') + ' (HIGGSFIELD_ALLOWED_USERS).'
+        : 'Abilitati a generare: tutto il team tranne i ruoli restricted (imposta HIGGSFIELD_ALLOWED_USERS per limitare).');
+      lines.push('`/giuno admin higgsfield disconnect` per scollegare.');
+      await respond({ text: lines.join('\n'), response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }

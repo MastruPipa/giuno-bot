@@ -28,6 +28,7 @@ var registry = require('../tools/registry');
 var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/retryPolicy');
 var modelsConfig = require('../config/models');
+var mcpToolsets = require('./mcpToolsets');
 var slackTranscript = require('./slackTranscript');
 
 var MODELS = modelsConfig.MODELS;
@@ -103,7 +104,10 @@ var SYSTEM_PROMPT =
   '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
   'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +
   'Non dire "ho fatto X" se non hai chiamato il tool. ' +
-  'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc.\n\n' +
+  'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc. ' +
+  'Stesso messaggio a più persone → UNA sola send_dm con target_user_ids (mai una chiamata per persona). ' +
+  '"Manda a X il link per collegare Google" → send_google_link: gli URL OAuth non si scrivono mai a mano. ' +
+  'Immagini e video AI: solo se nel contesto del turno compaiono i tool Higgsfield (generate_image, generate_video, jobs_wait); altrimenti di\' che non è collegato, senza promettere.\n\n' +
 
   'PRIVACY E CANALI\n' +
   'Le chat 1:1 tra te e ogni membro del team sono private: quando riporti a una persona qualcosa emerso in DM con un\'altra, non citare testualmente, ' +
@@ -641,12 +645,18 @@ function _wantsRefusalFallback(model) {
     /^claude-(opus-5|fable|mythos)/.test(String(model || ''));
 }
 
+// Alcune richieste vanno per forza sull'endpoint beta: connettore MCP
+// (mcp_servers + beta mcp-client) o beta espliciti. Il fallback per refusal
+// si aggiunge sopra quando il modello lo supporta.
 async function _createMessage(params) {
+  var ownBetas = Array.isArray(params.betas) ? params.betas.slice() : [];
+  var needsBeta = ownBetas.length > 0 || Array.isArray(params.mcp_servers);
+  var plainParams = Object.assign({}, params);
+  delete plainParams.betas;
+
   if (_wantsRefusalFallback(params.model)) {
-    var betaParams = Object.assign({}, params, {
-      betas: [modelsConfig.REFUSAL_FALLBACK_BETA],
-      fallbacks: 'default',
-    });
+    var betas = ownBetas.concat(ownBetas.indexOf(modelsConfig.REFUSAL_FALLBACK_BETA) === -1 ? [modelsConfig.REFUSAL_FALLBACK_BETA] : []);
+    var betaParams = Object.assign({}, plainParams, { betas: betas, fallbacks: 'default' });
     try {
       return await client.beta.messages.create(betaParams);
     } catch(err) {
@@ -660,7 +670,10 @@ async function _createMessage(params) {
       }
     }
   }
-  return client.messages.create(params);
+  if (needsBeta) {
+    return client.beta.messages.create(Object.assign({}, plainParams, { betas: ownBetas }));
+  }
+  return client.messages.create(plainParams);
 }
 
 async function callAnthropicWithRetry(params) {
@@ -704,12 +717,17 @@ function getStableTools() {
   return _toolsCache;
 }
 
+// Output massimo del turno. 4096 bastava per una risposta, non per un turno
+// con 7 send_dm dello stesso testo lungo: la risposta arrivava troncata a
+// metà tool_use e l'utente vedeva il silenzio. Si paga solo l'output reale.
+var DEFAULT_MAX_TOKENS = Number(process.env.GIUNO_MAX_TOKENS) || 16000;
+
 function buildPrimaryRequest(systemBlocks, messages, opts) {
   opts = opts || {};
   var model = opts.model || MODELS.PRIMARY;
   var req = {
     model: model,
-    max_tokens: opts.maxTokens || 4096,
+    max_tokens: opts.maxTokens || DEFAULT_MAX_TOKENS,
     system: systemBlocks,
     messages: messages,
     tools: opts.tools || getStableTools(),
@@ -717,12 +735,41 @@ function buildPrimaryRequest(systemBlocks, messages, opts) {
   if (modelsConfig.supportsEffort(model)) {
     req.output_config = { effort: opts.effort || modelsConfig.PRIMARY_EFFORT };
   }
+  // Connettore MCP (es. Higgsfield): server + toolset + beta. I tool MCP vanno
+  // DOPO quelli stabili così il prefisso cacheato non cambia.
+  if (Array.isArray(opts.mcpServers) && opts.mcpServers.length > 0) {
+    req.mcp_servers = opts.mcpServers;
+    req.tools = req.tools.concat(opts.extraTools || []);
+    req.betas = (opts.betas || []).slice();
+  }
   return req;
 }
 
 // ─── askGiuno — main LLM agentic loop ─────────────────────────────────────────
 
 var MAX_TOOL_ROUNDS = 12;
+
+var TRUNCATED_TOOLS_NOTE = '[La tua risposta è stata troncata per lunghezza. Le chiamate tool complete sono state eseguite (vedi risultati): continua da dove eri senza ripeterle. Per lo stesso testo a più persone usa UNA send_dm con target_user_ids.]';
+var TRUNCATED_EMPTY_NOTE = '[La tua risposta è stata troncata per lunghezza prima di qualsiasi testo o tool completo. Rispondi ora in modo più sintetico; se devi mandare lo stesso testo a più persone usa UNA send_dm con target_user_ids.]';
+var EMPTY_REPLY_NOTE = '[Hai risposto senza testo. Rispondi ora all\'utente.]';
+var EMPTY_REPLY_FALLBACK = 'Mi sono incartato e non sono riuscito a chiudere la risposta. Riprova, o spezza la richiesta in due passaggi.';
+
+// Un blocco di testo vuoto nel turno assistant viene rifiutato dall'API.
+function _cleanAssistantContent(content) {
+  return (content || []).filter(function(b) {
+    if (!b) return false;
+    if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0;
+    if (b.type === 'tool_use') return b.input && typeof b.input === 'object';
+    return true;
+  });
+}
+
+function _mcpResultText(block) {
+  var c = block && block.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map(function(x) { return x && x.type === 'text' ? x.text : JSON.stringify(x); }).join('\n');
+  return JSON.stringify(c || '');
+}
 var CONTEXT_CHAR_BUDGET = 14000;
 
 function _rosterName(userId) {
@@ -926,6 +973,18 @@ async function askGiuno(userId, userMessage, options) {
     }
   } catch(_) {}
 
+  // Generazione immagini/video (Higgsfield via connettore MCP): allegato solo
+  // quando la richiesta lo chiede, con l'account unico dello studio.
+  var mcpAttachment = null;
+  try {
+    mcpAttachment = await mcpToolsets.buildAttachment({
+      message: resolvedMessage, transcript: history, userId: userId, userRole: userRole, isAdmin: userRole === 'admin',
+    });
+  } catch(mcpErr) {
+    logger.warn('[ASK-GIUNO] attachment MCP fallito:', mcpErr.message);
+  }
+  if (mcpAttachment && mcpAttachment.section) sections.push(mcpAttachment.section);
+
   if (options.preflightInstruction) sections.push(String(options.preflightInstruction).trim());
 
   // Tetto al contesto: oltre il budget il segnale annega nel rumore.
@@ -967,11 +1026,17 @@ async function askGiuno(userId, userMessage, options) {
   var toolEvidence = [];
   var rounds = 0;
   var refused = false;
+  var emptyRetried = false;
 
   while (true) {
     var response;
     try {
-      response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, { maxTokens: options.maxTokens }));
+      response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, {
+        maxTokens: options.maxTokens,
+        mcpServers: mcpAttachment && mcpAttachment.mcp_servers,
+        extraTools: mcpAttachment && mcpAttachment.tools,
+        betas: mcpAttachment && mcpAttachment.betas,
+      }));
     } catch(apiErr) {
       if (apiErr.message === 'API_UNAVAILABLE') {
         return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
@@ -986,16 +1051,40 @@ async function askGiuno(userId, userMessage, options) {
       break;
     }
 
-    if (response.stop_reason !== 'tool_use') {
+    // Tool MCP eseguiti lato API dentro la stessa risposta: contano come tool
+    // chiamati (validator) e i risultati come evidenza (URL generati).
+    (response.content || []).forEach(function(b) {
+      if (b.type === 'mcp_tool_use') toolsCalled.push(b.name);
+      else if (b.type === 'mcp_tool_result') toolEvidence.push(_mcpResultText(b));
+    });
+
+    var assistantContent = _cleanAssistantContent(response.content);
+    var toolUses = assistantContent.filter(function(b) { return b.type === 'tool_use'; });
+    var truncated = response.stop_reason === 'max_tokens';
+    if (truncated) {
+      logger.warn('[ASK-GIUNO] risposta troncata (max_tokens) | tool completi:', toolUses.length,
+        '| testo:', extractText(response).length, 'char | key:', convKey);
+    }
+
+    // Fine turno normale, oppure troncamento senza tool eseguibili.
+    if (response.stop_reason !== 'tool_use' && !(truncated && toolUses.length > 0)) {
       finalReply = extractText(response);
-      if (response.stop_reason === 'max_tokens') logger.warn('[ASK-GIUNO] risposta troncata (max_tokens)');
+      if (!finalReply.trim() && !emptyRetried) {
+        // Nessun testo (troncata a metà o vuota): un solo secondo tentativo con
+        // l'istruzione di essere sintetico. Prima qui si tornava '' e in DM
+        // l'utente vedeva Giuno "ignorarlo".
+        emptyRetried = true;
+        logger.warn('[ASK-GIUNO] risposta senza testo (' + response.stop_reason + '), ritento una volta | key:', convKey);
+        if (assistantContent.length > 0) messages.push({ role: 'assistant', content: assistantContent });
+        messages.push({ role: 'user', content: truncated ? TRUNCATED_EMPTY_NOTE : EMPTY_REPLY_NOTE });
+        continue;
+      }
       break;
     }
 
     rounds++;
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: assistantContent });
 
-    var toolUses = response.content.filter(function(b) { return b.type === 'tool_use'; });
     var toolResults = await Promise.all(toolUses.map(async function(tu) {
       toolsCalled.push(tu.name);
       var result;
@@ -1013,10 +1102,17 @@ async function askGiuno(userId, userMessage, options) {
       return block;
     }));
 
+    if (truncated) toolResults.push({ type: 'text', text: TRUNCATED_TOOLS_NOTE });
     if (rounds >= MAX_TOOL_ROUNDS) {
       toolResults.push({ type: 'text', text: '[Limite di chiamate tool raggiunto per questo turno: rispondi ora con quello che hai.]' });
     }
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Mai il silenzio dove una risposta è dovuta (DM, mention diretta).
+  if (!String(finalReply || '').trim() && !options.allowSilence && !options.isCC) {
+    logger.error('[ASK-GIUNO] risposta finale vuota anche dopo il retry | key:', convKey, '| tool:', toolsCalled.join(',') || 'nessuno');
+    finalReply = EMPTY_REPLY_FALLBACK;
   }
 
   if (isNoReply(finalReply)) {
@@ -1116,6 +1212,8 @@ async function askGiuno(userId, userMessage, options) {
 }
 
 module.exports = {
+  EMPTY_REPLY_FALLBACK: EMPTY_REPLY_FALLBACK,
+  DEFAULT_MAX_TOKENS: DEFAULT_MAX_TOKENS,
   client: client,
   askGiuno: askGiuno,
   autoLearn: autoLearn,
