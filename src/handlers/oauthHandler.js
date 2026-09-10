@@ -37,8 +37,15 @@ function isProtectedPath(pathname) {
     pathname === '/dashboard/workload' || pathname === '/export/timelogs.csv';
 }
 
+// In produzione (Railway / NODE_ENV=production) senza token le pagine admin
+// restano CHIUSE: prima erano aperte a chiunque conoscesse l'URL. In locale
+// senza token restano aperte per comodità di sviluppo.
+function isProductionEnv() {
+  return !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.NODE_ENV === 'production');
+}
+
 function isAuthorizedAdminRequest(req, parsed) {
-  if (!OAUTH_ADMIN_TOKEN) return true;
+  if (!OAUTH_ADMIN_TOKEN) return !isProductionEnv();
   var headerToken = req.headers['x-admin-token'];
   var queryToken = parsed && parsed.query ? parsed.query.token : null;
   return headerToken === OAUTH_ADMIN_TOKEN || queryToken === OAUTH_ADMIN_TOKEN;
@@ -204,6 +211,8 @@ function startOAuthServer() {
     logger.info('OAuth + Dashboard server su porta ' + OAUTH_PORT);
     logger.info('Dashboard: http://localhost:' + OAUTH_PORT + '/dashboard');
     if (OAUTH_ADMIN_TOKEN) logger.info('Dashboard/metrics protetti da OAUTH_ADMIN_TOKEN');
+    else if (isProductionEnv()) logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: /dashboard e /metrics rispondono 401 finché non lo imposti.');
+    else logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: dashboard/metrics APERTI (ambiente non di produzione).');
   });
 }
 

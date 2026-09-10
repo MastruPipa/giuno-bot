@@ -14,6 +14,7 @@ var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 var { withTimeout, withRetry } = require('../utils/retryPolicy');
 var modals = require('./timeTrackingModals');
+var norm = require('../jobs/projectFilters').norm;
 var validator = require('../agents/timeLogValidator');
 var dates = require('../utils/trackingDates');
 var timeTracking = require('./timeTracking');
@@ -34,11 +35,12 @@ async function buildPrefillFromWeekDailies(userId) {
     if (!supabase) return null;
     var weekStart = dates.weekStartOf(dates.oggiRome());
     var res = await supabase.from('standup_entries')
-      .select('oggi_tasks')
+      .select('oggi_tasks, source')
       .eq('slack_user_id', userId)
       .gte('date', weekStart)
       .lte('date', dates.oggiRome());
     var tasks = [];
+    // Anche i daily stimati da Giuno contribuiscono al prefill (contano nel consuntivo).
     (res.data || []).forEach(function(r) { tasks = tasks.concat(r.oggi_tasks || []); });
     var prefill = modals.prefillRowsFromTasks(tasks, modals.MAX_ROWS_PLANNER, 60);
     if (prefill.length > 0) return prefill;
@@ -323,6 +325,32 @@ async function closePlannerWindow() {
 
 // ─── Registrazione action/view handlers ──────────────────────────────────────
 
+// Risolve il nome scritto nella riga "Altro" a un progetto: riuso se esiste
+// (attivo, stesso nome normalizzato), altrimenti creazione. Ritorna
+// { project, created } oppure { error } con il messaggio per il campo.
+async function resolveOtherProject(name, userId, activeProjects) {
+  var clean = String(name || '').replace(/\s+/g, ' ').trim();
+  if (clean.length < 2) return { error: 'Scrivi il nome del progetto (almeno 2 caratteri).' };
+  var key = norm(clean);
+  var existing = (activeProjects || []).find(function(p) { return norm(p.name) === key; });
+  if (!existing) {
+    var found = await db.searchProjects({ name: clean, limit: 10 });
+    existing = (found || []).find(function(p) { return norm(p.name) === key; }) || null;
+    if (existing && existing.status && existing.status !== 'active') {
+      // Progetto esistente ma chiuso/archiviato: lo riapriamo, è stato scelto apposta.
+      try { await db.updateProject(existing.id, { status: 'active' }); existing.status = 'active'; } catch(e) { /* best effort */ }
+    }
+  }
+  if (existing) return { project: existing, created: false };
+  var project = await db.createProject({
+    name: clean, status: 'active', owner_slack_id: userId,
+    tags: ['tipo:progetto', 'fonte:planner'],
+    description: 'Creato dal Weekly Planner da <@' + userId + '>',
+  });
+  if (!project || !project.id) return { error: 'Non sono riuscito a creare il progetto: riprova o scegli una voce in lista.' };
+  return { project: project, created: true };
+}
+
 function register(appInstance) {
   var a = appInstance || app;
 
@@ -344,6 +372,29 @@ function register(appInstance) {
     } catch(e) { logger.error('[PLANNER] Errore aggiungi riga:', e.message); }
   });
 
+  // Cambio di selezione in una riga del planner: se l'utente sceglie "Altro"
+  // compare il campo per scrivere il nome del progetto; se torna a una voce
+  // in lista, il campo sparisce. Il resto dei valori resta (block_id stabili).
+  a.action({ action_id: 'project_select', block_id: /^wp_project_\d+$/ }, async function(args) {
+    await args.ack();
+    var view = args.body && args.body.view;
+    if (!view || view.callback_id !== 'wp_submit') return;
+    var action = args.action || (args.body.actions && args.body.actions[0]) || {};
+    var idx = parseInt(String(action.block_id || '').replace('wp_project_', ''), 10);
+    if (!idx) return;
+    var selected = action.selected_option ? action.selected_option.value : null;
+    var meta = JSON.parse(view.private_metadata || '{}');
+    meta.other = meta.other || {};
+    var wasOther = !!meta.other[idx];
+    var isOther = selected === modals.OTHER_PROJECT_VALUE;
+    if (wasOther === isOther) return;
+    if (isOther) meta.other[idx] = true; else delete meta.other[idx];
+    try {
+      var projects = await modals.getActiveProjectsCached();
+      await app.client.views.update({ view_id: view.id, view: modals.buildPlannerView(projects, meta) });
+    } catch(e) { logger.error('[PLANNER] Errore toggle "Altro":', e.message); }
+  });
+
   a.view('wp_submit', async function(args) {
     var userId = args.body.user.id;
     var meta = JSON.parse(args.view.private_metadata || '{}');
@@ -355,6 +406,29 @@ function register(appInstance) {
     var projects = await modals.getActiveProjectsCached();
     var projectsById = {};
     projects.forEach(function(p) { projectsById[p.id] = p; });
+
+    // Righe "Altro": il progetto scritto a mano viene riusato se esiste già
+    // (stesso nome, a meno di maiuscole/spazi) oppure creato adesso, prima
+    // della validazione — così la riga passa come un progetto qualsiasi.
+    var otherErrors = {};
+    var created = [];
+    for (var oi = 0; oi < rows.length; oi++) {
+      var orow = rows[oi];
+      if (orow.project_id !== modals.OTHER_PROJECT_VALUE) continue;
+      var resolved = await resolveOtherProject(orow.other_name, userId, projects);
+      if (resolved.error) { otherErrors['wp_other_' + orow.index] = resolved.error; continue; }
+      orow.project_id = resolved.project.id;
+      projectsById[resolved.project.id] = resolved.project;
+      if (resolved.created) created.push(resolved.project.name);
+    }
+    if (Object.keys(otherErrors).length > 0) {
+      await args.ack({ response_action: 'errors', errors: otherErrors });
+      return;
+    }
+    if (created.length > 0) {
+      modals.invalidateProjectsCache();
+      logger.info('[PLANNER] Progetti creati dal planner:', created.join(', '), 'da', userId);
+    }
 
     var result = await validator.validateSubmission(rows, {
       prefix: 'wp', logType: 'weekly', projectsById: projectsById,
@@ -439,17 +513,17 @@ function schedulePlannerJobs(cron) {
   // mesi di attività NESSUNO ha mai compilato una pianificazione.
   cron.schedule('0 15 * * 4', function() {
     sendPlannerRequests().catch(function(e) { logger.error('[PLANNER] Errore invio:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'planner_send', lockTtl: 15 });
 
   // Venerdì 09:30 — reminder ai soli mancanti
   cron.schedule('30 9 * * 5', function() {
     sendPlannerReminder().catch(function(e) { logger.error('[PLANNER] Errore reminder:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'planner_reminder', lockTtl: 15 });
 
   // Venerdì 12:00 — chiusura finestra + recap in #weekly
   cron.schedule('0 12 * * 5', function() {
     closePlannerWindow().catch(function(e) { logger.error('[PLANNER] Errore chiusura:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'planner_close', lockTtl: 15 });
 
   logger.info('[PLANNER] Cron jobs schedulati: gio 15:00 send, ven 09:30 reminder, ven 12:00 close+recap');
 }

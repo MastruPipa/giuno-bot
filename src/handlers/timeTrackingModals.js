@@ -11,7 +11,13 @@
 var db = require('../../supabase');
 var norm = require('../jobs/projectFilters').norm;
 
-var MAX_ROWS_PLANNER = 8;
+var MAX_ROWS_PLANNER = 10;
+
+// Voce "Altro (non in lista)": chi non trova il progetto nel menu la sceglie e
+// compare un campo di testo per scriverne il nome; il progetto viene creato al
+// momento dell'invio (o riusato se esiste già con lo stesso nome).
+var OTHER_PROJECT_VALUE = '__other__';
+var OTHER_OPTION = { text: { type: 'plain_text', text: 'Altro (non in lista) — lo scrivo io' }, value: OTHER_PROJECT_VALUE };
 var MAX_ROWS_CHECKIN = 6;
 
 // ─── Progetti attivi (cache TTL 5 min) ───────────────────────────────────────
@@ -86,11 +92,11 @@ function buildProjectSelectSource(projects) {
   var seen = {};
   var groups = [];
   var total = 0;
-  for (var i = 0; i < GROUP_ORDER.length && total < 100; i++) {
+  for (var i = 0; i < GROUP_ORDER.length && total < 99; i++) {
     var g = GROUP_ORDER[i];
     var raw = buckets[g.tipo] || [];
     var opts = [];
-    for (var j = 0; j < raw.length && total < 100; j++) {
+    for (var j = 0; j < raw.length && total < 99; j++) {
       var key = norm(raw[j].text && raw[j].text.text);
       if (seen[key]) continue;
       seen[key] = true;
@@ -101,9 +107,12 @@ function buildProjectSelectSource(projects) {
     groups.push({ label: { type: 'plain_text', text: g.label }, options: opts });
   }
 
-  if (groups.length >= 2) return { option_groups: groups };
+  if (groups.length >= 2) {
+    groups.push({ label: { type: 'plain_text', text: 'Altro' }, options: [OTHER_OPTION] });
+    return { option_groups: groups };
+  }
   // Un solo gruppo (o nessuno) → options flat.
-  return { options: projectOptions(projects) };
+  return { options: projectOptions(projects).slice(0, 99).concat([OTHER_OPTION]) };
 }
 
 // ─── Builder righe ───────────────────────────────────────────────────────────
@@ -144,7 +153,8 @@ function findOptionByValue(selectSource, value) {
   return null;
 }
 
-function buildRowBlocks(prefix, i, selectSource, prefillRow) {
+function buildRowBlocks(prefix, i, selectSource, prefillRow, rowOpts) {
+  rowOpts = rowOpts || {};
   // Il check-in è un giorno solo (max 24h); il planner copre l'intera
   // settimana su un progetto, quindi ammette fino a 60h per riga.
   var maxHours = prefix === 'wp' ? '60' : '24';
@@ -165,18 +175,31 @@ function buildRowBlocks(prefix, i, selectSource, prefillRow) {
     var h = parseFloat(prefillRow.hours);
     if (h >= 0.5) hoursElement.initial_value = String(Math.min(h, parseFloat(maxHours)));
   }
-  return [
-    {
-      type: 'input', block_id: prefix + '_project_' + i, optional: i > 1,
-      label: { type: 'plain_text', text: 'Progetto ' + i },
-      element: selectElement,
-    },
-    {
-      type: 'input', block_id: prefix + '_hours_' + i, optional: i > 1,
-      label: { type: 'plain_text', text: '⏱ Ore' },
-      element: hoursElement,
-    },
-  ];
+  var projectBlock = {
+    type: 'input', block_id: prefix + '_project_' + i, optional: i > 1,
+    label: { type: 'plain_text', text: 'Progetto ' + i },
+    element: selectElement,
+  };
+  // Il planner ascolta il cambio di selezione (block_actions) per far comparire
+  // il campo "nome progetto" quando si sceglie "Altro".
+  if (rowOpts.dispatchSelect) projectBlock.dispatch_action = true;
+  var blocks = [projectBlock];
+  if (rowOpts.showOther) {
+    blocks.push({
+      type: 'input', block_id: prefix + '_other_' + i, optional: false,
+      label: { type: 'plain_text', text: '✏️ Nome del progetto (non in lista)' },
+      element: {
+        type: 'plain_text_input', action_id: 'other_input', max_length: 80,
+        placeholder: { type: 'plain_text', text: 'Es. Rebranding Tomarchio' },
+      },
+    });
+  }
+  blocks.push({
+    type: 'input', block_id: prefix + '_hours_' + i, optional: i > 1,
+    label: { type: 'plain_text', text: '⏱ Ore' },
+    element: hoursElement,
+  });
+  return blocks;
 }
 
 function buildAddRowButton(actionId, currentCount) {
@@ -192,7 +215,8 @@ function buildAddRowButton(actionId, currentCount) {
 
 // ─── Weekly Planner ──────────────────────────────────────────────────────────
 
-function buildPlannerBlocks(projects, rowCount, weekStart, prefill, loading) {
+function buildPlannerBlocks(projects, rowCount, weekStart, prefill, loading, otherRows) {
+  otherRows = otherRows || {};
   var selectSource = buildProjectSelectSource(projects);
   var blocks = [];
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '🗓  Pianifica la prossima settimana' } });
@@ -214,7 +238,9 @@ function buildPlannerBlocks(projects, rowCount, weekStart, prefill, loading) {
     });
   }
   for (var i = 1; i <= rowCount; i++) {
-    buildRowBlocks('wp', i, selectSource, prefill && prefill[i - 1]).forEach(function(b) { blocks.push(b); });
+    buildRowBlocks('wp', i, selectSource, prefill && prefill[i - 1], {
+      dispatchSelect: true, showOther: !!otherRows[i],
+    }).forEach(function(b) { blocks.push(b); });
   }
   if (rowCount < MAX_ROWS_PLANNER) blocks.push(buildAddRowButton('wp_add_row', rowCount));
   return blocks;
@@ -223,11 +249,11 @@ function buildPlannerBlocks(projects, rowCount, weekStart, prefill, loading) {
 function buildPlannerView(projects, meta) {
   return {
     type: 'modal', callback_id: 'wp_submit',
-    private_metadata: JSON.stringify({ rows: meta.rows, week_start: meta.week_start, prefill: meta.prefill }),
+    private_metadata: JSON.stringify({ rows: meta.rows, week_start: meta.week_start, prefill: meta.prefill, other: meta.other || {} }),
     title: { type: 'plain_text', text: 'Weekly Planner' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start, meta.prefill, meta.loading),
+    blocks: buildPlannerBlocks(projects, meta.rows || 2, meta.week_start, meta.prefill, meta.loading, meta.other),
   };
 }
 
@@ -310,7 +336,11 @@ function extractRows(stateValues, prefix) {
     var hoursRaw = hBlock && hBlock.hours_input ? hBlock.hours_input.value : null;
     if (!projectId && (hoursRaw == null || hoursRaw === '')) continue;
     var hours = (hoursRaw == null || hoursRaw === '') ? null : parseFloat(String(hoursRaw).replace(',', '.'));
-    rows.push({ index: i, project_id: projectId, hours: hours });
+    var row = { index: i, project_id: projectId, hours: hours };
+    var oBlock = stateValues[prefix + '_other_' + i];
+    var otherName = oBlock && oBlock.other_input ? oBlock.other_input.value : null;
+    if (projectId === OTHER_PROJECT_VALUE) row.other_name = otherName ? String(otherName).trim() : '';
+    rows.push(row);
   }
   return rows;
 }
@@ -321,9 +351,15 @@ function extractNote(stateValues) {
   return v && String(v).trim() ? String(v).trim() : null;
 }
 
+// Invalida la cache dei progetti attivi (dopo la creazione di un progetto dal
+// planner, così la voce compare subito nel menu di tutti).
+function invalidateProjectsCache() { _projCache = null; _projCacheAt = 0; }
+
 module.exports = {
   MAX_ROWS_PLANNER: MAX_ROWS_PLANNER,
   MAX_ROWS_CHECKIN: MAX_ROWS_CHECKIN,
+  OTHER_PROJECT_VALUE: OTHER_PROJECT_VALUE,
+  invalidateProjectsCache: invalidateProjectsCache,
   findOptionByValue: findOptionByValue,
   prefillRowsFromTasks: prefillRowsFromTasks,
   getActiveProjectsCached: getActiveProjectsCached,

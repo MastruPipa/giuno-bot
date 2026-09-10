@@ -11,6 +11,9 @@ async function createProject(data) {
   if (!c.useSupabase) return null;
   try {
     var row = {
+      // Id esplicito con prefisso 'prj_' (i sincronizzati usano 'attio_', le
+      // categorie 'cat_'): non dipendiamo da un default lato DB.
+      id: data.id || ('prj_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
       name: data.name,
       client_name: data.client_name || null,
       lead_id: data.lead_id || null,

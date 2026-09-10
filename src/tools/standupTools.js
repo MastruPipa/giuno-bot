@@ -131,7 +131,7 @@ async function queryStandup(input) {
 
   // Query
   var q = supabase.from('standup_entries')
-    .select('slack_user_id, date, ieri_tasks, oggi_tasks, domani_tasks, blocchi, raw_text, total_hours_ieri, total_hours_oggi, total_hours_domani')
+    .select('slack_user_id, date, ieri_tasks, oggi_tasks, domani_tasks, blocchi, raw_text, total_hours_ieri, total_hours_oggi, total_hours_domani, source')
     .gte('date', dateFrom)
     .lte('date', dateTo)
     .order('date', { ascending: true });
@@ -150,7 +150,18 @@ async function queryStandup(input) {
     };
   }
 
-  return aggregateStandupRows(rows, input, dateFrom, dateTo);
+  // I daily STIMATI da Giuno contano nei totali come gli altri (scelta
+  // esplicita) ma vanno dichiarati: il modello deve dire quali giorni sono
+  // ricostruiti e non compilati dalla persona.
+  var estimated = rows.filter(function(r) { return r.source === 'estimate'; });
+  var out = aggregateStandupRows(rows, input, dateFrom, dateTo);
+  if (estimated.length > 0 && out && typeof out === 'object') {
+    out.daily_stimati = estimated.map(function(r) {
+      return { slack_user_id: r.slack_user_id, date: r.date, ore_stimate: r.total_hours_oggi || 0 };
+    });
+    out.nota_stime = estimated.length + ' daily nel periodo sono STIME ricostruite da Giuno (la persona non ha compilato): sono incluse nei totali, dillo quando riporti le ore.';
+  }
+  return out;
 }
 
 // Aggregazione pura (testabile senza DB). Il default scope è "oggi": sommare

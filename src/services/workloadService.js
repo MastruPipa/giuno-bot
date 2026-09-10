@@ -92,8 +92,10 @@ async function getWeekOverview(weekStart) {
     var supabase = dbClient.getClient();
     if (supabase) {
       var res = await supabase.from('standup_entries')
-        .select('slack_user_id, date, ieri_tasks, oggi_tasks, total_hours_ieri, total_hours_oggi')
+        .select('slack_user_id, date, ieri_tasks, oggi_tasks, total_hours_ieri, total_hours_oggi, source')
         .gte('date', weekStart).lte('date', weekEnd);
+      // I daily STIMATI da Giuno contano nel carico come gli altri (scelta
+      // esplicita): un daily vero della persona li rimpiazza per quel giorno.
       if (!res.error) standupAgg = aggregateStandupRows(res.data || [], {}, weekStart, weekEnd);
     }
   } catch(e) { logger.warn('[WORKLOAD-SVC] standup_entries non disponibili:', e.message); }

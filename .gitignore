@@ -6,3 +6,4 @@ token.json
 user_tokens.json
 .metrics-cache.json
 eval/results/
+.DS_Store

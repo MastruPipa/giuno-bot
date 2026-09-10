@@ -8,7 +8,7 @@ var { MODELS } = require('../config/models');
 
 require('dotenv').config();
 
-var cron   = require('node-cron');
+var cron   = require('../jobs/scheduler'); // proxy di node-cron con registro dei job
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
 var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
@@ -1200,17 +1200,19 @@ async function consolidaMemorie() {
 // lock partono DOPPI (il 6/7 mezzo team ha ricevuto due volte il check-in
 // mensile). Ogni job che invia messaggi o muta dati deve passare da qui.
 function lockedJob(lockName, ttlMinutes, fn) {
-  return async function() {
+  var wrapped = async function() {
     var locked = await acquireCronLock(lockName, ttlMinutes);
     if (!locked) return;
     try { await fn(); }
     catch(e) { logger.error('[CRON:' + lockName + '] Errore:', e.message); }
     finally { await releaseCronLock(lockName); }
   };
+  wrapped._lockName = lockName; // letto dallo scheduler per il registro
+  return wrapped;
 }
 
 function scheduleCrons() {
-  cron.schedule('30 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome' });
+  cron.schedule('30 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome', name: 'routine_giornaliera', lockTtl: 30 });
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
   var dailyStandup = require('./dailyStandupV2');
   dailyStandup.scheduleDailyJobs(cron);
@@ -1222,7 +1224,7 @@ function scheduleCrons() {
   cron.schedule('0 17 * * 5', function() {
     var { sendWeeklyReports } = require('../agents/weeklyReport');
     sendWeeklyReports().catch(function(e) { logger.error('[WEEKLY-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'weekly_report', lockTtl: 30 });
   // Follow-up agent (13:00/17:00) — DISATTIVATO di default: i reminder generati
   // da intenti/azioni estratti via LLM risultavano spesso casuali. Riattivabile
   // con PROACTIVE_FOLLOWUPS_ENABLED=true senza toccare il codice.
@@ -1230,7 +1232,7 @@ function scheduleCrons() {
     cron.schedule('0 13,17 * * 1-5', function() {
       var { runFollowups } = require('../agents/followUpAgent');
       runFollowups().catch(function(e) { logger.error('[FOLLOWUP-CRON] Errore:', e.message); });
-    }, { timezone: 'Europe/Rome' });
+    }, { timezone: 'Europe/Rome', name: 'followup_agent', lockTtl: 20 });
   } else {
     logger.info('[FOLLOWUP-CRON] Follow-up agent disattivato (PROACTIVE_FOLLOWUPS_ENABLED != true)');
   }
@@ -1238,17 +1240,17 @@ function scheduleCrons() {
   cron.schedule('15 10,12,14,16 * * 1-5', function() {
     var { scanEmails } = require('../agents/emailLearner');
     scanEmails().catch(function(e) { logger.error('[EMAIL-LEARN-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'email_learner', lockTtl: 20 });
   // Meeting recap scanner — ogni 2h, legge recap Gemini da Gmail e salva in KB
   cron.schedule('30 10,12,14,16 * * 1-5', function() {
     var { scanMeetingRecaps } = require('../agents/meetingRecapScanner');
     scanMeetingRecaps().catch(function(e) { logger.error('[RECAP-SCAN-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'meeting_recap_scan', lockTtl: 20 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
     checkUpcomingCalls().catch(function(e) { logger.error('[PRECALL-CRON] Errore:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'precall_briefing', lockTtl: 10 });
   // Daily priorities DM — 9:15 lun-ven (il daily unico è alle 16:00)
   cron.schedule('15 9 * * 1-5', lockedJob('daily_priorities', 30, async function() {
     try {
@@ -1275,7 +1277,7 @@ function scheduleCrons() {
         } catch(e) { logger.debug('[DAILY-PRIO] Errore per', u.id + ':', e.message); }
       }
     } catch(e) { logger.error('[DAILY-PRIO] Errore generale:', e.message); }
-  }), { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome', name: 'daily_priorities' });
   // Monthly feedback — primo lunedì del mese alle 10:00
   cron.schedule('0 10 1-7 * 1', async function() {
     // Lock distribuito: senza, due istanze sovrapposte durante un redeploy
@@ -1288,13 +1290,13 @@ function scheduleCrons() {
       logger.info('[FEEDBACK-CRON] Questionario mensile avviato.');
     } catch(e) { logger.error('[FEEDBACK-CRON] Errore:', e.message);
     } finally { await releaseCronLock('monthly_feedback'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'feedback_mensile', lock: 'monthly_feedback' });
   // Legacy weekly recap (kept as fallback)
-  cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome' });
-  cron.schedule('0 */2 * * *', lockedJob('drive_index_all', 60, indicizzaDriveTutti), { timezone: 'Europe/Rome' });
-  cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome' });
-  cron.schedule('0 10 * * 1-5', lockedJob('push_google_invite', 10, invitaNonConnessi), { timezone: 'Europe/Rome' });
-  cron.schedule('30 */2 * * 1-5', lockedJob('monitor_domande', 30, monitoraDomandeInSospeso), { timezone: 'Europe/Rome' }); // ogni 2 ore lun-ven
+  cron.schedule('0 17 * * 5', inviaRecapSettimanale, { timezone: 'Europe/Rome', name: 'recap_settimanale', lockTtl: 30 });
+  cron.schedule('0 */2 * * *', lockedJob('drive_index_all', 60, indicizzaDriveTutti), { timezone: 'Europe/Rome', name: 'drive_index_all' });
+  cron.schedule('0 */2 * * *', digerisciCanali, { timezone: 'Europe/Rome', name: 'digest_canali', lockTtl: 60 });
+  cron.schedule('0 10 * * 1-5', lockedJob('push_google_invite', 10, invitaNonConnessi), { timezone: 'Europe/Rome', name: 'push_google_invite' });
+  cron.schedule('30 */2 * * 1-5', lockedJob('monitor_domande', 30, monitoraDomandeInSospeso), { timezone: 'Europe/Rome', name: 'monitor_domande' }); // ogni 2 ore lun-ven
   // Proactive monitor (10:00/16:00, alert budget/lead/scadenze) — DISATTIVATO
   // di default: gli alert risultavano caotici (lead interni stantii segnalati
   // come critici). Riattivabile con PROACTIVE_ALERTS_ENABLED=true quando i
@@ -1303,7 +1305,7 @@ function scheduleCrons() {
     cron.schedule('0 10,16 * * 1-5', function() {
       var { runProactiveScan } = require('../agents/proactiveMonitor');
       runProactiveScan().catch(function(e) { logger.error('[PROACTIVE-CRON] Errore:', e.message); });
-    }, { timezone: 'Europe/Rome' });
+    }, { timezone: 'Europe/Rome', name: 'proactive_monitor', lockTtl: 20 });
   } else {
     logger.info('[PROACTIVE-CRON] Proactive monitor disattivato (PROACTIVE_ALERTS_ENABLED != true)');
   }
@@ -1354,22 +1356,22 @@ function scheduleCrons() {
 
       if (decayed > 0 || boosted > 0) logger.info('[MEMORY-DECAY] Decayed:', decayed, '| Boosted:', boosted);
     } catch(e) { logger.error('[MEMORY-DECAY] Errore:', e.message); }
-  }), { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome', name: 'memory_decay_daily' });
 
   // Behavior tracker flush — ogni 5 minuti
   cron.schedule('*/5 * * * *', function() {
     var behaviorTracker = require('../services/behaviorTracker');
     behaviorTracker.flushToDb().catch(function(e) { logger.warn('[BEHAVIOR-CRON] Flush error:', e.message); });
-  });
-  cron.schedule('0 3 * * 0,3', lockedJob('consolida_memorie', 60, consolidaMemorie), { timezone: 'Europe/Rome' }); // domenica e mercoledì alle 3:00
+  }, { name: 'behavior_flush' });
+  cron.schedule('0 3 * * 0,3', lockedJob('consolida_memorie', 60, consolidaMemorie), { timezone: 'Europe/Rome', name: 'consolida_memorie' }); // domenica e mercoledì alle 3:00
   // 03:30 (non 04:00): alle 4 gira già il decay giornaliero della confidence
   // sulla stessa tabella — sfalsati per non aggiornare le stesse righe insieme
-  cron.schedule('30 3 * * 0', decayStaleMemories, { timezone: 'Europe/Rome' }); // domenica alle 3:30
+  cron.schedule('30 3 * * 0', decayStaleMemories, { timezone: 'Europe/Rome', name: 'decay_stale_memories', lockTtl: 30 }); // domenica alle 3:30
   // Proactive DM follow-ups (10:00, "volevo sapere com'è andata con...") —
   // DISATTIVATO di default come il follow-up agent: stessi dati LLM-estratti,
   // stessi falsi positivi. Riattivabile con PROACTIVE_FOLLOWUPS_ENABLED=true.
   if (process.env.PROACTIVE_FOLLOWUPS_ENABLED === 'true') {
-    cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome' });
+    cron.schedule('0 10 * * 1-5', sendProactiveFollowups, { timezone: 'Europe/Rome', name: 'proactive_followups', lockTtl: 20 });
   } else {
     logger.info('[FOLLOWUP] Proactive followups disattivati (PROACTIVE_FOLLOWUPS_ENABLED != true)');
   }
@@ -1378,24 +1380,24 @@ function scheduleCrons() {
   cron.schedule('30 8 * * 1-5', function() {
     var { sendPersonalDigests } = require('../agents/personalDigestAgent');
     sendPersonalDigests().catch(function(e) { logger.error('[PERSONAL-DIGEST] cron error:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'personal_digest', lockTtl: 30 });
   // Memory backup — Sunday 02:30 Rome, uploads a JSON snapshot to the admin's
   // Drive and keeps the last 4 weekly backups. Requires MEMORY_BACKUP_ADMIN_USER_ID.
   cron.schedule('30 2 * * 0', function() {
     var { runWeeklyBackup } = require('../jobs/memoryBackupJob');
     runWeeklyBackup().catch(function(e) { logger.error('[MEM-BACKUP] cron error:', e.message); });
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'memory_backup', lockTtl: 30 });
   cron.schedule('30 3 * * 0', async function() {
     try {
       var expired = await db.cleanupExpiredKB();
       var reviewed = await db.reviewPendingKB();
       logger.info('[KB-CLEANUP] Scadute rimosse:', expired, '| Promosse:', reviewed.promoted, '| Rifiutate:', reviewed.rejected);
     } catch(e) { logger.error('[KB-CLEANUP] Errore:', e.message); }
-  }, { timezone: 'Europe/Rome' }); // domenica alle 3:30
+  }, { timezone: 'Europe/Rome', name: 'kb_expired_cleanup', lockTtl: 30 }); // domenica alle 3:30
   cron.schedule('0 2 * * *', function() {
     var { runKnowledgeEngine } = require('../agents/knowledgeEngine');
     runKnowledgeEngine('system').catch(function(e) { logger.error('[KB-ENGINE] Errore cron:', e.message); });
-  }, { timezone: 'Europe/Rome' }); // ogni notte alle 2:00
+  }, { timezone: 'Europe/Rome', name: 'knowledge_engine', lockTtl: 90 }); // ogni notte alle 2:00
   // Historical scanner — gira ogni notte alle 1:00, processa 5 canali per run
   // Continua automaticamente ogni notte finché tutti i canali non sono 'done'
   cron.schedule('0 1 * * *', async function() {
@@ -1407,7 +1409,7 @@ function scheduleCrons() {
       logger.info('[HISTORICAL-SCAN] Nightly run:', JSON.stringify(result));
     } catch(e) { logger.error('[HISTORICAL-SCAN] Errore:', e.message); }
     finally { await releaseCronLock('historical_scan'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'historical_scan', lock: 'historical_scan' });
   // PM Signals — ogni mattina alle 6:30
   cron.schedule('30 6 * * 1-5', async function() {
     var locked = await acquireCronLock('pm_signals', 30);
@@ -1417,7 +1419,7 @@ function scheduleCrons() {
       await runPMSignals();
     } catch(e) { logger.error('[PM-SIGNALS] Errore:', e.message); }
     finally { await releaseCronLock('pm_signals'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'pm_signals', lock: 'pm_signals' });
   // Sheet Scanner — ogni giorno alle 7:00
   cron.schedule('0 7 * * *', async function() {
     var locked = await acquireCronLock('sheet_scanner', 30);
@@ -1427,7 +1429,7 @@ function scheduleCrons() {
       await runSheetScanner();
     } catch(e) { logger.error('[SHEET-SCAN] Errore:', e.message); }
     finally { await releaseCronLock('sheet_scanner'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'sheet_scanner', lock: 'sheet_scanner' });
   // Project Sync (deal Attio attivi → tabella projects) — ogni 2 ore 8-20.
   // Mantiene popolata la casella progetti del weekly planner.
   cron.schedule('0 8-20/2 * * *', async function() {
@@ -1438,7 +1440,7 @@ function scheduleCrons() {
       await syncActiveProjectsFromAttio();
     } catch(e) { logger.error('[PROJECT-SYNC] Errore:', e.message); }
     finally { await releaseCronLock('project_sync'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'project_sync', lock: 'project_sync' });
   // Channel Project Sync (canali Slack attivi ~60g → tabella projects) —
   // giornaliero alle 6:30. Fa ~1 chiamata Slack per canale mappato, quindi
   // gira una volta al giorno (non ogni 2h come il sync Attio).
@@ -1450,7 +1452,7 @@ function scheduleCrons() {
       await syncProjectsFromChannels();
     } catch(e) { logger.error('[CHANNEL-SYNC] Errore:', e.message); }
     finally { await releaseCronLock('channel_project_sync'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'channel_project_sync', lock: 'channel_project_sync' });
   logger.info('Routine schedulata: lun-ven alle 8:45 Europe/Rome');
   logger.info('Channel Project Sync: ogni giorno alle 6:30 (canali attivi → projects)');
   logger.info('Historical scan: ogni notte alle 1:00 (5 canali/run)');
@@ -1466,7 +1468,7 @@ function scheduleCrons() {
       await runDriveWatcher();
     } catch(e) { logger.error('[DRIVE-WATCH] Errore:', e.message); }
     finally { await releaseCronLock('drive_watcher'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'drive_watcher', lock: 'drive_watcher' });
   logger.info('Drive Watcher: ogni 30 min 8-20');
   // Memory maintenance — ogni notte alle 2:00 (prima girava solo la domenica,
   // lasciando le memorie frammentate per giorni).
@@ -1476,21 +1478,21 @@ function scheduleCrons() {
     try { var { runConsolidation } = require('../jobs/memoryConsolidationJob'); await runConsolidation(); }
     catch(e) { logger.error('[MEM-CONSOLIDATE]', e.message); }
     finally { await releaseCronLock('memory_consolidation'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'memory_consolidation', lock: 'memory_consolidation' });
   cron.schedule('0 3 * * 0', async function() {
     var locked = await acquireCronLock('graph_enricher', 60);
     if (!locked) return;
     try { var { runGraphEnricher } = require('../jobs/graphEnricherJob'); await runGraphEnricher(); }
     catch(e) { logger.error('[GRAPH-ENRICH]', e.message); }
     finally { await releaseCronLock('graph_enricher'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'graph_enricher', lock: 'graph_enricher' });
   cron.schedule('0 4 * * 0', async function() {
     var locked = await acquireCronLock('entity_backfill', 60);
     if (!locked) return;
     try { var { runEntityBackfill } = require('../jobs/entityBackfillJob'); await runEntityBackfill(); }
     catch(e) { logger.error('[ENTITY-BACKFILL]', e.message); }
     finally { await releaseCronLock('entity_backfill'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'entity_backfill', lock: 'entity_backfill' });
   // Embedding backfill — ogni notte alle 4:30, genera embeddings per memorie/KB che non li hanno
   cron.schedule('30 4 * * *', lockedJob('embedding_backfill', 60, async function() {
     try {
@@ -1498,19 +1500,19 @@ function scheduleCrons() {
       var processed = await embService.backfillEmbeddings();
       if (processed > 0) logger.info('[EMBEDDING-BACKFILL] Processed:', processed);
     } catch(e) { logger.error('[EMBEDDING-BACKFILL] Errore:', e.message); }
-  }), { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome', name: 'embedding_backfill' });
   cron.schedule('0 5 1-7 * 1', async function() {
     var locked = await acquireCronLock('kb_quality_sweep', 60);
     if (!locked) return;
     try { var { runQualitySweep } = require('../jobs/kbQualitySweepJob'); await runQualitySweep(); }
     catch(e) { logger.error('[KB-SWEEP]', e.message); }
     finally { await releaseCronLock('kb_quality_sweep'); }
-  }, { timezone: 'Europe/Rome' });
+  }, { timezone: 'Europe/Rome', name: 'kb_quality_sweep', lock: 'kb_quality_sweep' });
   // Pulizia rumore KB (regole deterministiche, reversibile): domenica 5:30.
   cron.schedule('30 5 * * 0', lockedJob('kb_noise_cleanup', 30, async function() {
     try { var { runNoiseCleanup } = require('../jobs/kbNoiseCleanupJob'); await runNoiseCleanup({ apply: true }); }
     catch(e) { logger.error('[KB-CLEANUP]', e.message); }
-  }), { timezone: 'Europe/Rome' });
+  }), { timezone: 'Europe/Rome', name: 'kb_noise_cleanup' });
   logger.info('[CRON] Tutti i cron schedulati.');
 
   // ─── Boot tasks: embedding backfill + consolidation (run once 30s after start) ─

@@ -2,6 +2,9 @@
   "name": "giuno-bot",
   "version": "1.0.0",
   "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
@@ -16,11 +19,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
     "@google/generative-ai": "^0.24.1",
-    "@slack/bolt": "^3.17.0",
-    "@supabase/supabase-js": "^2.100.0",
+    "@slack/bolt": "^5.1.0",
+    "@supabase/supabase-js": "^2.116.0",
     "dotenv": "^16.0.0",
-    "googleapis": "^171.4.0",
-    "node-cron": "^4.2.1"
+    "googleapis": "^178.1.1",
+    "node-cron": "^4.6.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"

@@ -88,6 +88,7 @@ var SYSTEM_PROMPT =
   'VERITÀ E FONTI\n' +
   'Non inventare dati, cifre, nomi, date. ' +
   'Le ore di lavoro vengono SOLO dai daily (query_standup) e dal consuntivo per progetto (query_time_logs): mai stimarle a occhio. ' +
+  'Se un daily è una stima ricostruita da Giuno (la persona non l\'ha compilato: il tool lo segnala), riportala come tale, non come ore dichiarate. ' +
   'Non classificare le persone in fasce o giudizi quantitativi non misurati. ' +
   'Il contesto recuperato (memorie, KB) ha una data: un fatto vecchio può essere superato, dallo con la sua età quando conta. ' +
   'Il CRM reale è Attio (attio_search / attio_get_record per aziende, persone, deal: valore, stage Won/Lost, servizio; scrivi con attio_create_record / attio_update_record / attio_add_note). ' +
@@ -522,8 +523,13 @@ async function autoLearn(userId, userMessage, botReply, context) {
       }
     }
 
-    // CRM auto-updates
-    if (analysis.crm_updates && analysis.crm_updates.length > 0) {
+    // CRM auto-updates — scritture automatiche disattivabili con
+    // GIUNO_AUTOLEARN_CRM_WRITES=0 (le memorie/KB continuano a essere salvate).
+    var crmWritesEnabled = process.env.GIUNO_AUTOLEARN_CRM_WRITES !== '0';
+    if (!crmWritesEnabled && ((analysis.crm_updates && analysis.crm_updates.length) || (analysis.contacts && analysis.contacts.length))) {
+      logger.info('[AUTO-LEARN] scritture CRM/contatti saltate (GIUNO_AUTOLEARN_CRM_WRITES=0)');
+    }
+    if (crmWritesEnabled && analysis.crm_updates && analysis.crm_updates.length > 0) {
       try {
         var leadsTools = require('../tools/leadsTools');
         for (var ci = 0; ci < analysis.crm_updates.length; ci++) {
@@ -574,7 +580,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
     }
 
     // External contacts
-    if (analysis.contacts && analysis.contacts.length > 0) {
+    if (crmWritesEnabled && analysis.contacts && analysis.contacts.length > 0) {
       try {
         var supabaseContacts = require('./db/client').getClient();
         if (supabaseContacts) {

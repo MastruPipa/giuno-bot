@@ -899,6 +899,10 @@ app.event('team_join', async function(args) {
 
 // ─── Daily Standup Modal ─────────────────────────────────────────────────────
 
+// Massimo di task per sezione nel daily (Oggi / Domani). 10 righe × 2 blocchi
+// × 2 sezioni + intestazioni ≈ 50 blocchi, sotto il limite Slack di 100.
+var DAILY_MAX_TASKS = 10;
+
 var DURATA_OPTIONS = [
   { text: { type: 'plain_text', text: '15min' }, value: '0.25' },
   { text: { type: 'plain_text', text: '30min' }, value: '0.5' },
@@ -943,7 +947,7 @@ function buildDailyModalBlocks(oggiCount, domaniCount) {
   }
 
   // Add task button for oggi
-  if (oggiCount < 6) {
+  if (oggiCount < DAILY_MAX_TASKS) {
     blocks.push({
       type: 'actions', block_id: 'oggi_add_action',
       elements: [{ type: 'button', text: { type: 'plain_text', text: '+ Aggiungi task oggi' },
@@ -974,7 +978,7 @@ function buildDailyModalBlocks(oggiCount, domaniCount) {
   }
 
   // Add task button for domani
-  if (domaniCount < 6) {
+  if (domaniCount < DAILY_MAX_TASKS) {
     blocks.push({
       type: 'actions', block_id: 'domani_add_action',
       elements: [{ type: 'button', text: { type: 'plain_text', text: '+ Aggiungi task domani' },
@@ -1003,6 +1007,21 @@ app.action('open_dm_from_home', async function(args) {
       text: 'Eccomi! Che ti serve?',
     });
   } catch(e) { logger.debug('[APP-HOME] DM error:', e.message); }
+});
+
+// "Confermo così" sulla proposta di daily ricostruita da Giuno.
+app.action('daily_estimate_confirm', async function(args) {
+  await args.ack();
+  var userId = args.body.user.id;
+  var channel = (args.body.channel && args.body.channel.id) || userId;
+  try {
+    var ok = await require('./dailyStandupV2').confirmEstimate(userId);
+    await app.client.chat.postMessage({
+      channel: channel,
+      text: ok ? 'Registrato come tuo daily ✅ — grazie. Se vuoi cambiare qualcosa, compila il daily e lo sostituisco.'
+               : 'La proposta non è più valida (è di un altro giorno o è già stata sostituita). Compila il daily con il bottone ✏️.',
+    });
+  } catch(e) { logger.error('[DAILY-ESTIMATE] conferma fallita:', e.message); }
 });
 
 app.action('open_daily_modal', async function(args) {
@@ -1072,7 +1091,7 @@ function rebuildDailyModal(meta) {
 app.action('add_task_oggi', async function(args) {
   await args.ack();
   var meta = JSON.parse(args.body.view.private_metadata || '{}');
-  meta.oggi = Math.min((meta.oggi || 2) + 1, 6);
+  meta.oggi = Math.min((meta.oggi || 2) + 1, DAILY_MAX_TASKS);
   try {
     await app.client.views.update({ view_id: args.body.view.id, view: rebuildDailyModal(meta) });
   } catch(e) { logger.error('[DAILY-MODAL] Errore aggiungi oggi:', e.message); }
@@ -1081,7 +1100,7 @@ app.action('add_task_oggi', async function(args) {
 app.action('add_task_domani', async function(args) {
   await args.ack();
   var meta = JSON.parse(args.body.view.private_metadata || '{}');
-  meta.domani = Math.min((meta.domani || 2) + 1, 6);
+  meta.domani = Math.min((meta.domani || 2) + 1, DAILY_MAX_TASKS);
   try {
     await app.client.views.update({ view_id: args.body.view.id, view: rebuildDailyModal(meta) });
   } catch(e) { logger.error('[DAILY-MODAL] Errore aggiungi domani:', e.message); }
@@ -1095,7 +1114,7 @@ app.view('daily_standup_submit', async function(args) {
 
   function extractTasks(section) {
     var tasks = [];
-    for (var i = 1; i <= 6; i++) {
+    for (var i = 1; i <= DAILY_MAX_TASKS; i++) {
       var taskKey = section + '_task_' + i;
       var durKey = section + '_durata_' + i;
       var taskVal = values[taskKey] && values[taskKey].task_input ? values[taskKey].task_input.value : null;
@@ -1275,6 +1294,15 @@ async function handleAdmin(command, respond) {
     roles.sort(function(a, b) { return (order[a.role] || 9) - (order[b.role] || 9); });
     roles.forEach(function(r) { msg += '*' + r.role.toUpperCase() + '* — ' + (r.display_name || r.slack_user_id) + ' (<@' + r.slack_user_id + '>)\n'; });
     await respond({ text: msg, response_type: 'ephemeral' });
+    return;
+  }
+
+  if (sub === 'cron') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono vedere i cron.', response_type: 'ephemeral' }); return; }
+    try {
+      var scheduler = require('../jobs/scheduler');
+      await respond({ text: scheduler.formatReport(), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
 
