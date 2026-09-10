@@ -202,3 +202,53 @@ test('buildPlannerBlocks: stato loading mostra il context "sto recuperando" e ne
   });
   assert.ok(hasBanner);
 });
+
+test('planner: cap a 10 righe e voce "Altro" sempre presente nel menu', function() {
+  assert.equal(modals.MAX_ROWS_PLANNER, 10);
+  var blocks = modals.buildPlannerBlocks(PROJECTS, 1, '2026-06-15');
+  var select = blocks.find(function(b) { return b.block_id === 'wp_project_1'; });
+  assert.equal(select.dispatch_action, true, 'il select del planner emette block_actions');
+  var opts = select.element.option_groups
+    ? select.element.option_groups.reduce(function(a, g) { return a.concat(g.options); }, [])
+    : select.element.options;
+  assert.ok(opts.some(function(o) { return o.value === modals.OTHER_PROJECT_VALUE; }));
+  // 10 righe → nessun bottone "+ Aggiungi"
+  var ten = modals.buildPlannerBlocks(PROJECTS, 10, '2026-06-15');
+  assert.ok(!ten.some(function(b) { return b.type === 'actions'; }));
+  assert.ok(ten.some(function(b) { return b.block_id === 'wp_project_10'; }));
+});
+
+test('planner: con "Altro" selezionato compare il campo nome solo per quella riga', function() {
+  var blocks = modals.buildPlannerBlocks(PROJECTS, 3, '2026-06-15', null, false, { 2: true });
+  var ids = blocks.map(function(b) { return b.block_id; }).filter(Boolean);
+  assert.ok(ids.indexOf('wp_other_2') !== -1);
+  assert.ok(ids.indexOf('wp_other_1') === -1);
+  assert.ok(ids.indexOf('wp_other_3') === -1);
+  var other = blocks.find(function(b) { return b.block_id === 'wp_other_2'; });
+  assert.equal(other.optional, false);
+  assert.equal(other.element.action_id, 'other_input');
+  // la view porta "other" nel private_metadata
+  var view = modals.buildPlannerView(PROJECTS, { rows: 3, week_start: '2026-06-15', other: { 2: true } });
+  assert.deepEqual(JSON.parse(view.private_metadata).other, { 2: true });
+});
+
+test('extractRows: la riga "Altro" porta other_name', function() {
+  var state = {
+    wp_project_1: { project_select: { selected_option: { value: modals.OTHER_PROJECT_VALUE } } },
+    wp_other_1: { other_input: { value: '  Rebranding Tomarchio ' } },
+    wp_hours_1: { hours_input: { value: '6' } },
+    wp_project_2: { project_select: { selected_option: { value: 'p1' } } },
+    wp_hours_2: { hours_input: { value: '2' } },
+  };
+  var rows = modals.extractRows(state, 'wp');
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].project_id, modals.OTHER_PROJECT_VALUE);
+  assert.equal(rows[0].other_name, 'Rebranding Tomarchio');
+  assert.equal(rows[1].other_name, undefined);
+});
+
+test('check-in: nessun dispatch e nessun campo Altro (solo planner)', function() {
+  var blocks = modals.buildCheckinBlocks(PROJECTS, 2, '2026-06-10');
+  var select = blocks.find(function(b) { return b.block_id === 'tt_project_1'; });
+  assert.equal(select.dispatch_action, undefined);
+});
