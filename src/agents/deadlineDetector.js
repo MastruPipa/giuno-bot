@@ -8,6 +8,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
 
@@ -52,7 +54,7 @@ async function detectAndSaveDeadlines(userId, text, channelId) {
   var Anthropic = require('@anthropic-ai/sdk');
   var client = new Anthropic();
   var res = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model: MODELS.FAST,
     max_tokens: 200,
     system: 'Estrai scadenze da messaggi Slack aziendali.\n' +
       'Rispondi SOLO in JSON: ' +

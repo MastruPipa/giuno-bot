@@ -4,6 +4,8 @@
 // normal intent classification.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var { SKILLS } = require('./skillDefinitions');
 var { checkPermission } = require('../../rbac');
@@ -116,13 +118,13 @@ async function executeSkill(skill, message, ctx) {
   try {
     var registry = require('../tools/registry');
     var tools = registry.getAllTools();
-    var messages = [{ role: 'user', content: message }];
+    var messages = (Array.isArray(ctx.conversationHistory) ? ctx.conversationHistory : []).concat([{ role: 'user', content: message }]);
     var finalReply = '';
 
     while (true) {
       var response = await client.messages.create({
-        model: 'claude-opus-4-8',
-        max_tokens: ctx.isDM ? 500 : 800,
+        model: MODELS.PRIMARY,
+        max_tokens: 2048,
         system: systemPrompt,
         messages: messages,
         tools: tools,

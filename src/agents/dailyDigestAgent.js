@@ -2,6 +2,8 @@
 // Personalized briefing: admin sees everything, team sees only their projects.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var registry = require('../tools/registry');
 var dbClient = require('../services/db/client');
@@ -306,15 +308,16 @@ async function run(message, ctx) {
   var systemPrompt = contextData.isAdmin ? SYSTEM_PROMPT_ADMIN : SYSTEM_PROMPT_TEAM;
   var fullSystem = systemPrompt + '\n\n---\nCONTESTO OPERATIVO:\n' + contextData.parts.join('\n\n');
 
-  var messages = [{ role: 'user', content: message }];
+  // Storia della conversazione Slack (dal router) + messaggio corrente.
+  var messages = (Array.isArray(ctx.conversationHistory) ? ctx.conversationHistory : []).concat([{ role: 'user', content: message }]);
   var finalReply = '';
 
   while (true) {
     var response;
     try {
       response = await client.messages.create({
-        model: 'claude-opus-4-8',
-        max_tokens: contextData.isAdmin ? 1000 : 700,
+        model: MODELS.PRIMARY,
+        max_tokens: contextData.isAdmin ? 2048 : 1500,
         system: fullSystem, messages: messages, tools: TOOLS,
       });
     } catch(e) { logger.error('[DIGEST-V3]', e.message); throw e; }

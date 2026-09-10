@@ -4,6 +4,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 require('dotenv').config();
 
 var db = require('../../supabase');
@@ -537,7 +539,7 @@ async function execute(toolName, input, userId) {
       }
 
       var summaryRes = await getAnthropic().messages.create({
-        model: 'claude-opus-4-8',
+        model: MODELS.UTILITY,
         max_tokens: 500,
         system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore, ' + msgs.length + ' messaggi):\n\n' + messagesText.substring(0, 12000) }],
@@ -572,7 +574,7 @@ async function execute(toolName, input, userId) {
       }
 
       var threadSummaryRes = await getAnthropic().messages.create({
-        model: 'claude-opus-4-8',
+        model: MODELS.UTILITY,
         max_tokens: 400,
         system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questo thread Slack (' + threadMsgs.length + ' messaggi):\n\n' + threadText.substring(0, 12000) }],

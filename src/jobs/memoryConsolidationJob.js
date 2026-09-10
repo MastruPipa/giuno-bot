@@ -3,6 +3,8 @@
 // creates semantic/procedural memories. Runs weekly Sunday 2:00 AM.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
@@ -73,7 +75,7 @@ async function runConsolidation() {
 
       try {
         var res = await client.messages.create({
-          model: 'claude-haiku-4-5-20251001', max_tokens: 600,
+          model: MODELS.UTILITY, max_tokens: 600,
           messages: [{ role: 'user', content:
             'Entità: ' + entity + '\n\n' +
             'Memorie episodiche (' + g.episodic.length + '):\n' + epiTexts + '\n\n' +

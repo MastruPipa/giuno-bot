@@ -6,6 +6,8 @@
 // consolidaMemorie in cronHandlers.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/timeout');
@@ -79,7 +81,7 @@ async function parseDailyText(rawText) {
     var client = new Anthropic();
     var res = await withTimeout(function() {
       return client.messages.create({
-        model: 'claude-opus-4-8',
+        model: MODELS.UTILITY,
         max_tokens: 1500,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: text.substring(0, 4000) }],

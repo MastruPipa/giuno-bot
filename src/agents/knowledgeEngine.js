@@ -4,6 +4,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
 var db = require('../../supabase');
@@ -20,7 +22,7 @@ async function classifyDocument(fileName, content) {
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
     var res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.FAST,
       max_tokens: 300,
       system: 'Classifica questo documento aziendale.\n' +
         'Rispondi SOLO in JSON valido:\n' +
@@ -213,7 +215,7 @@ async function classifySlackThread(channelName, threadText) {
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
     var res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.FAST,
       max_tokens: 400,
       system: 'Analizza questo thread Slack aziendale.\n' +
         'Rispondi SOLO in JSON valido:\n' +

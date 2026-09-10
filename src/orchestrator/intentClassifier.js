@@ -5,6 +5,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 
 var INTENTS = {
@@ -25,7 +27,7 @@ var RULES = [
     intent: INTENTS.THREAD_SUMMARY,
     keywords: [
       'riassumi', 'riassunto', 'cosa mi sono perso', 'recap thread', 'recap canale',
-      'summarize', 'summary', 'thread', 'sintetizza', 'cosa è successo in',
+      'summarize', 'sintetizza', 'cosa è successo in',
       'cosa hanno detto', 'riepiloga',
     ],
   },
@@ -169,7 +171,7 @@ async function classifyIntent(message) {
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
     var res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.FAST,
       max_tokens: 20,
       system:
         'Classifica questa richiesta in UNA di queste categorie. Rispondi SOLO con la categoria, nessun altro testo:\n' +

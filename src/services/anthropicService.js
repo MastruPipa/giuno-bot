@@ -1,5 +1,17 @@
 // ─── Anthropic Service ─────────────────────────────────────────────────────────
 // Anthropic client init and the core LLM agentic loop (askGiuno).
+//
+// Ricalibrazione 2026-09 — cosa cambia rispetto al passato:
+//   • La storia della conversazione è il thread/DM Slack (vedi slackTranscript),
+//     condiviso tra tutti i partecipanti. La copia in DB è solo un fallback.
+//   • Il contesto recuperato (memorie, KB, CRM, profilo…) va in un blocco di
+//     sistema dinamico, NON dentro il messaggio dell'utente: la storia resta
+//     pulita e il modello distingue "cosa ha detto la persona" da "cosa so io".
+//   • Il prompt di sistema statico + i tool sono cacheati (prompt caching):
+//     ~100 tool più il prompt costano una volta, non ad ogni turno.
+//   • Modello primario da config (Opus 5), thinking adattivo, effort da env.
+//   • Il modello può NON rispondere ([NO_REPLY]) quando il messaggio in un
+//     thread non è rivolto a lui — decide lui leggendo il thread, non una regex.
 
 'use strict';
 
@@ -9,13 +21,16 @@ var Anthropic = require('@anthropic-ai/sdk');
 var db = require('../../supabase');
 var logger = require('../utils/logger');
 var datesUtil = require('../utils/dates');
-var { formatPerSlack, SLACK_FORMAT_RULES } = require('../utils/slackFormat');
 var { getUserRole, getRoleSystemPrompt } = require('../../rbac');
 var { resolveSlackMentions } = require('./slackService');
 var { generaLinkOAuth } = require('./googleAuthService');
 var registry = require('../tools/registry');
 var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/retryPolicy');
+var modelsConfig = require('../config/models');
+var slackTranscript = require('./slackTranscript');
+
+var MODELS = modelsConfig.MODELS;
 
 var client = new Anthropic();
 
@@ -24,33 +39,6 @@ var client = new Anthropic();
 var rateLimits = new Map();
 var RATE_LIMIT  = 20;
 var RATE_WINDOW = 60 * 1000;
-
-// ─── Response fingerprints ──────────────────────────────────────────────────
-// Keep the last 3 replies per user (truncated + TTL 10min) so we can inject a
-// "do not repeat" hint into the system prompt and catch obvious parroting.
-var _responseFingerprints = new Map(); // userId -> [{ ts, preview }]
-var FINGERPRINT_TTL_MS = 10 * 60 * 1000;
-var FINGERPRINT_MAX = 3;
-
-function pruneFingerprints(arr) {
-  var cutoff = Date.now() - FINGERPRINT_TTL_MS;
-  return (arr || []).filter(function(f) { return f.ts > cutoff; });
-}
-
-function getRecentReplies(userId) {
-  var arr = pruneFingerprints(_responseFingerprints.get(userId));
-  _responseFingerprints.set(userId, arr);
-  return arr;
-}
-
-function recordReply(userId, reply) {
-  var preview = String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 220);
-  if (!preview) return;
-  var arr = getRecentReplies(userId);
-  arr.push({ ts: Date.now(), preview: preview });
-  while (arr.length > FINGERPRINT_MAX) arr.shift();
-  _responseFingerprints.set(userId, arr);
-}
 
 function checkRateLimit(userId) {
   var now   = Date.now();
@@ -64,97 +52,91 @@ function checkRateLimit(userId) {
   return true;
 }
 
-// ─── System prompt ─────────────────────────────────────────────────────────────
+// ─── Sentinel "non rispondere" ────────────────────────────────────────────────
+
+var { NO_REPLY, isNoReply } = require('../utils/noReply');
+
+// ─── System prompt (parte statica, cacheata) ──────────────────────────────────
+// Scritto per un modello che ragiona: principi e vincoli reali, non una lista di
+// divieti. Tutto ciò che cambia per turno (data, utente, canale, contesto
+// recuperato) vive nel blocco dinamico costruito da buildDynamicSystem.
 
 var SYSTEM_PROMPT =
-  // ─── CHI SEI ──────────────────────────────────────────────────────────────
-  'Ti chiami Giuno. Collega di Katania Studio, agenzia marketing, Catania, 9 persone.\n' +
-  'Parli come in ufficio — naturale, diretto, italiano, dai del TU.\n' +
-  'Team: Antonio (CEO), Corrado (GM), Gianna (COO/PM), Alessandra (CCO), ' +
-  'Nicolò (Dir. Creativo), Giusy (Social), Paolo (Designer), Claudia (Designer), Gloria (Marketing).\n\n' +
+  'Sei Giuno, collega digitale di Katania Studio — agenzia di marketing di Catania, 9 persone. ' +
+  'Lavori dentro Slack: rispondi in DM, nei thread e quando ti taggano nei canali. ' +
+  'Parli italiano, dai del tu, tono da ufficio: diretto, concreto, senza formule da chatbot.\n' +
+  'Team: Antonio (CEO), Corrado (GM), Gianna (COO/PM), Alessandra (CCO), Nicolò (Dir. Creativo), ' +
+  'Giusy (Social), Paolo (Designer), Claudia (Designer), Gloria (Marketing).\n\n' +
 
-  // ─── COME PARLI ───────────────────────────────────────────────────────────
-  'COME PARLI:\n' +
-  'Rispondi alla domanda e basta. Non aggiungere altro.\n' +
-  'Domanda sì/no → rispondi sì o no prima.\n' +
-  'Se non sai → "non ho questa info". Non inventare, non compensare con info random.\n' +
-  'Se ti correggono → "hai ragione". Non giustificare.\n' +
-  'Messaggi corti ("nelle mail", "quello", "sì") → il soggetto è quello del messaggio precedente.\n' +
-  'Formato: frasi normali. *grassetto* solo per nomi. No CAPS, no titoloni, no report se non richiesti.\n' +
-  'Conferme: "fatto", "ok", "salvato".\n\n' +
+  'COME LEGGERE LA CONVERSAZIONE\n' +
+  'La storia che vedi è il thread o il DM Slack reale, nell\'ordine in cui è avvenuto. ' +
+  'Nei thread di canale ogni messaggio umano è preceduto dall\'autore (<@U…> (Nome): …); i turni "assistant" sono tuoi. ' +
+  'Le menzioni Slack hanno la forma <@Uxxxx>. Un messaggio breve ("sì", "quello", "e per l\'altro?") si riferisce a quanto detto subito prima: ' +
+  'risolvi il riferimento dal thread, non chiedere di ripetere. ' +
+  'Se nel thread le persone parlano tra loro e nessuno si rivolge a te, e ti è stato detto che puoi restare in silenzio, rispondi esattamente ' + NO_REPLY + '.\n\n' +
 
-  // ─── COSA NON FARE ────────────────────────────────────────────────────────
-  'NON FARE MAI:\n' +
-  '• Inventare dati, cifre, nomi, date.\n' +
-  '• Inventare ore o tempo per persona/progetto: le ore vengono SOLO dai daily (tool query_standup, ore reali dichiarate alle 16:00) e dal consuntivo per progetto (tool query_time_logs). Se i tool non hanno il dato, dillo — mai stimare ore/giorno a occhio.\n' +
-  '• Classificare le persone in fasce (alto/medio/basso engagement, ecc.) inventate: riporta solo cosa risulta dai messaggi, senza giudizi quantitativi non misurati.\n' +
-  '• Mostrare ID Slack grezzi o handle tipo "deactivateduserNNNN": è un utente disattivato, chiamalo così.\n' +
-  '• Aggiungere azioni, reminder, follow-up non richiesti.\n' +
-  '• Mostrare info sconnesse per riempire il vuoto.\n' +
-  '• Mostrare nomi di tool o dire "problemi tecnici".\n' +
-  '• Contraddire quello che hai detto prima.\n' +
-  '• Rispondere se il messaggio è chiaramente rivolto a un\'altra persona, non a te.\n' +
-  '  Se qualcuno scrive "@Antonio ti ricordi di X?" in un thread dove sei presente, NON rispondere — stanno parlando tra loro.\n' +
-  '• Dire "ho fatto X" senza aver chiamato il tool.\n' +
-  '• In canale pubblico: mostrare cifre deal, tariffe, giudizi su persone → manda in DM.\n' +
-  '• Se sei in CC (taggato alla fine, messaggio per altri) → non rispondere.\n\n' +
+  'COME RISPONDI\n' +
+  'Rispondi alla domanda posta, con la lunghezza che serve e non di più: una riga se basta una riga, una struttura se la richiesta è complessa. ' +
+  'Domanda sì/no → prima la risposta, poi (se utile) il perché. ' +
+  'Non aggiungere azioni, promemoria, riepiloghi o offerte di aiuto non richieste. ' +
+  'Se ti correggono: prendi atto, correggi, non giustificarti. ' +
+  'Se non hai l\'informazione dopo aver cercato, dillo chiaramente invece di riempire il vuoto con dati generici. ' +
+  'Non contraddire quanto hai detto prima nello stesso thread senza spiegare cosa è cambiato.\n' +
+  'Formato Slack: *grassetto* con un solo asterisco (per nomi e punti chiave), _corsivo_, elenchi con •. Mai **, mai # per i titoli, niente intestazioni in maiuscolo. ' +
+  'Conferme brevi ("fatto", "salvato"). Mai mostrare ID Slack grezzi o nomi di tool; un utente disattivato si chiama "utente disattivato".\n\n' +
 
-  // ─── TOOL ─────────────────────────────────────────────────────────────────
-  'TOOL:\n' +
-  'Prima di rispondere su clienti/progetti: recall_memory + search_kb.\n' +
-  'CRM REALE = Attio (fonte di verità per clienti, contatti e trattative): usa attio_search/attio_get_record per aziende, persone e deal (valore €, stage Won/Lost, servizio). Scrivi con attio_create_record/attio_update_record/attio_add_note.\n' +
-  'CRM interno: search_leads (is_active:true). "Prospect" = new/contacted. "Clienti" = won. Non mischiare.\n' +
-  'Se utente DÀ numeri → update_lead. Se CHIEDE stima → quotazione.\n' +
-  'Tool fallisce → prova altra via: Slack→email→KB→Drive. Non fermarti.\n' +
-  'Trascrizioni meeting/recap Gemini: cerca prima nella KB, poi nelle TUE email, poi nelle email dei PARTECIPANTI del meeting.\n' +
-  'Se non trovi il recap nelle tue email, prova find_emails sugli altri colleghi che erano alla call.\n' +
-  'Gli appunti di Gemini arrivano via email a tutti i partecipanti — cerca con subject del meeting o "meeting notes".\n' +
-  'Memorie: frase completa con chi/cosa/quando. "Ricordati che..." → remember_this.\n' +
-  '"Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs.\n' +
-  'Dati recenti prioritari. Info 2024 non è attuale.\n' +
-  '#daily (C05846AEV6D): messaggi bot → read_channel con include_bots=true.\n' +
-  'Conferma obbligatoria: send_email, create_event, delete_event, share_file, edit_doc.\n\n' +
+  'VERITÀ E FONTI\n' +
+  'Non inventare dati, cifre, nomi, date. ' +
+  'Le ore di lavoro vengono SOLO dai daily (query_standup) e dal consuntivo per progetto (query_time_logs): mai stimarle a occhio. ' +
+  'Non classificare le persone in fasce o giudizi quantitativi non misurati. ' +
+  'Il contesto recuperato (memorie, KB) ha una data: un fatto vecchio può essere superato, dallo con la sua età quando conta. ' +
+  'Il CRM reale è Attio (attio_search / attio_get_record per aziende, persone, deal: valore, stage Won/Lost, servizio; scrivi con attio_create_record / attio_update_record / attio_add_note). ' +
+  'search_leads è il CRM interno secondario: "prospect" = new/contacted, "clienti" = won; non mischiare le due fonti. ' +
+  'Se rispondi sullo stato di un cliente senza dati CRM live, dichiaralo.\n\n' +
 
-  // ─── CONTESTO ─────────────────────────────────────────────────────────────
-  'CONTESTO:\n' +
-  'Tagga persone solo in canale quando devono agire. Mai in DM. Mai se parli DI qualcuno.\n' +
-  'Formato Slack: *grassetto* singolo. Mai **. Mai #.\n' +
-  'Se vedi LINK_OAUTH → manda il testo formattato. Errore auth → "collega il tuo Google".';
+  'TOOL\n' +
+  'Prima di rispondere su clienti, progetti o persone, se il contesto fornito non basta, usa recall_memory e search_kb. ' +
+  'Se un tool fallisce, prova un\'altra via (Slack → email → KB → Drive) prima di arrenderti. ' +
+  'Trascrizioni/recap meeting (Gemini notes): prima KB, poi le TUE email, poi find_emails sui colleghi che erano alla call; cerca per subject del meeting o "meeting notes". ' +
+  '#daily (C05846AEV6D): contiene messaggi bot → read_channel con include_bots=true. ' +
+  '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
+  'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +
+  'Non dire "ho fatto X" se non hai chiamato il tool. ' +
+  'Azioni che richiedono conferma esplicita prima di eseguire: send_email, create_event, delete_event, share_file, edit_doc.\n\n' +
 
-// Old reference - keeping COME COMUNICARE as a dead variable name to avoid breaking anything
-// that might reference it
-var _PROMPT_VERSION = 'v2_compact_2026_04_05';
+  'PRIVACY E CANALI\n' +
+  'Le chat 1:1 tra te e ogni membro del team sono private: quando riporti a una persona qualcosa emerso in DM con un\'altra, non citare testualmente, ' +
+  'non attribuire per nome ("Antonio mi ha detto…"), non ripetere dettagli personali; rielabora il fatto utile o di\' che non puoi condividerlo. ' +
+  'In un canale pubblico non esporre cifre di deal, tariffe o giudizi su persone: proponi di continuare in DM. ' +
+  'Tagga (<@U…>) qualcuno solo in canale e solo se deve agire; mai in DM, mai quando parli DI qualcuno. ' +
+  'Quando citi un membro del team usa il suo tag preso dal roster; se un nome è ambiguo tra collega e cliente, in DM o canale interno è il collega; se non sei sicuro, chiedi.\n\n' +
 
-// ─── NOTE: The following sections were consolidated into the compact prompt above:
-// COME COMUNICARE, FILO CONVERSAZIONE, TOOL FALLISCE, FORMATO RISPOSTE,
-// VALUTAZIONE E MISURAZIONE, OBIETTIVITÀ, RIFERIMENTI CONTESTO, REGOLA ZERO,
-// ANTI-DUMP, ANTI-INIZIATIVA, ANTI-CONTRADDIZIONE, SLACK FORMATTING,
-// CONFERMA OBBLIGATORIA, ANTI-ALLUCINAZIONE, CANALI PUBBLICI, RIFERIMENTI IMPLICITI,
-// RBAC, ANTI-TRIGGER, COMPRENSIONE RICHIESTE, MODIFICA vs CREAZIONE,
-// CONTESTO CONVERSAZIONE, TOOL USAGE, STRATEGIA SLACK, FILTRO EMAIL,
-// INVALIDAZIONE MEMORIES, DATE MEMORIES, QUOTAZIONI, CRM, ENTITÀ, TASSONOMIA,
-// FORNITORI, FILTRO TEMPORALE, MEMORIA, USO MEMORIA, CONTATTI, SCHEDA ENTITÀ,
-// PRIORITÀ, COSTI API, GESTIONE AGENZIA, TAGGING, CC/PRESA VISIONE,
-// SENSIBILITÀ CONTESTO, DATI SENSIBILI, AUTH
-// All consolidated into 5 sections: CHI SEI, COME PARLI, NON FARE, TOOL, CONTESTO
+  'AUTH\n' +
+  'Se vedi LINK_OAUTH nel contesto, riportalo come testo formattato. Se un tool Google fallisce per autorizzazione: "collega il tuo Google".';
 
-// The following line is needed to avoid a syntax error - the old prompt ended here
-// and the next function starts. We use a dummy comment to bridge.
-// --- END OF SYSTEM_PROMPT ---
+var _PROMPT_VERSION = 'v3_slack_native_2026_09';
 
+// Roster + regola team: cambia raramente, quindi sta nel blocco statico
+// (viene invalidata la cache solo quando il roster cambia davvero).
+function buildStaticSystem() {
+  var roster = '';
+  try { roster = (db.formatTeamRosterForPrompt && db.formatTeamRosterForPrompt()) || ''; } catch(_) {}
+  return SYSTEM_PROMPT + (roster ? '\n\n' + roster : '');
+}
+
+// Mantiene la firma storica: usata dai test e da chi vuole il prompt intero.
 function buildSystemPrompt(userRolePrompt, isDM) {
+  return buildStaticSystem() + '\n\n' + buildDynamicSystem({ userRolePrompt: userRolePrompt, isDM: isDM, sections: [] });
+}
+
+function buildDynamicSystem(params) {
+  params = params || {};
   var now = new Date();
   var dateStr = now.toLocaleDateString('it-IT', {
-    weekday: 'long', year: 'numeric',
-    month: 'long', day: 'numeric',
-    timeZone: 'Europe/Rome',
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Europe/Rome',
   });
-  var timeStr = now.toLocaleTimeString('it-IT', {
-    hour: '2-digit', minute: '2-digit',
-    timeZone: 'Europe/Rome',
-  });
+  var timeStr = now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' });
 
-  // Timestamp helpers for read_channel filtering
   var dayOfWeek = now.getDay();
   var diffToMonday = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
   var monday = new Date(now);
@@ -164,48 +146,48 @@ function buildSystemPrompt(userRolePrompt, isDM) {
   var yesterdayTs = Math.floor((now.getTime() - 86400000) / 1000);
   var todayTs = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
 
-  var dmMode = isDM
-    ? 'MODALITÀ DM:\n' +
-      'Rispondi come persona, NON come sistema. Prosa naturale.\n' +
-      'Domanda semplice → max 3 frasi. Domanda media → max 8 frasi.\n' +
-      'Niente titoli bold, niente sezioni, niente bullet inutili.\n' +
-      'MAI "Serve altro?", MAI recap non richiesti.\n\n'
-    : 'MODALITÀ CANALE:\n' +
-      'Strutturato se complesso. Conciso se semplice.\n\n';
+  var parts = [];
+  parts.push('DATA E ORA: ' + dateStr + ' ore ' + timeStr + ' (Europe/Rome). Orari studio: lun-ven 9:00-18:00.\n' +
+    'Anno corrente ' + now.getFullYear() + ': le info di quest\'anno hanno priorità su quelle degli anni precedenti.\n' +
+    'Timestamp utili per read_channel (oldest): lunedì di questa settimana ' + mondayTs + ' · ieri ' + yesterdayTs + ' · oggi mezzanotte ' + todayTs + '.');
 
-  var lengthRule = 'LUNGHEZZA E COMUNICAZIONE:\n' +
-    'Domanda semplice → 1-3 frasi. Punto. Non aggiungere altro.\n' +
-    'Domanda media → 3-8 frasi. Vai dritto al punto.\n' +
-    'Domanda complessa → strutturata ma senza ripetizioni.\n' +
-    'REGOLE FERRO:\n' +
-    '• MAI ripetere lo stesso concetto con parole diverse.\n' +
-    '• MAI aggiungere info non richieste.\n' +
-    '• MAI dire "SKIP", "knowledge base", "tool", "RPC", "query" — sono termini interni.\n' +
-    '• MAI mostrare ragionamento tecnico all\'utente. Se non hai info, dì semplicemente "non lo so".\n' +
-    '• MAI chiedere "Serve altro?" o "Posso aiutarti con altro?" — se servono ti scrivono.\n' +
-    '• Parla come un collega, non come un sistema. Niente linguaggio da chatbot.\n\n';
+  if (params.isDM) {
+    parts.push('MODALITÀ DM: stai parlando in privato con una persona del team. Prosa naturale, come un collega in chat. ' +
+      'Niente titoli, niente sezioni se non servono. Rispondi sempre: in DM ' + NO_REPLY + ' non è ammesso.');
+  } else {
+    parts.push('MODALITÀ CANALE/THREAD: altre persone leggono. Strutturato se complesso, una riga se semplice. ' +
+      (params.allowSilence
+        ? 'Sei nel thread ma NON sei stato taggato in questo messaggio: se non è rivolto a te (stanno parlando tra loro, o parlano di te ma non a te) rispondi esattamente ' + NO_REPLY + '.'
+        : 'Sei stato taggato: rispondi.') +
+      (params.isCC ? ' ATTENZIONE: sembri in copia (tag in coda a un messaggio per altri). Rispondi solo se c\'è una domanda diretta per te o un errore grave da segnalare; altrimenti ' + NO_REPLY + '.' : ''));
+  }
 
-  return 'DATA E ORA: ' + dateStr + ' ore ' + timeStr + '\n' +
-    'ORARI KATANIA STUDIO: lun-ven 9:00-18:00 (Rome)\n' +
-    'Anno corrente: ' + now.getFullYear() + '. Quest\'anno=' + now.getFullYear() +
-    ', l\'anno scorso=' + (now.getFullYear() - 1) + '.\n' +
-    'Priorità info: ' + now.getFullYear() + ' > ' + (now.getFullYear() - 1) +
-    ' > ' + (now.getFullYear() - 2) + ' > storico.\n' +
-    'TIMESTAMP UTILI (per oldest in read_channel):\n' +
-    '• Lunedì questa settimana: ' + mondayTs + '\n' +
-    '• Ieri: ' + yesterdayTs + '\n' +
-    '• Oggi mezzanotte: ' + todayTs + '\n\n' +
-    dmMode + lengthRule +
-    SYSTEM_PROMPT + '\n\nRUOLO UTENTE:\n' + userRolePrompt;
+  if (params.userRolePrompt) parts.push('RUOLO UTENTE:\n' + params.userRolePrompt);
+  if (params.speakerLine) parts.push(params.speakerLine);
+
+  (params.sections || []).forEach(function(s) { if (s) parts.push(s); });
+
+  return parts.join('\n\n');
 }
 
 // ─── Conversation helpers ──────────────────────────────────────────────────────
 
-function conversationKey(userId, threadTs) {
-  return threadTs ? userId + ':' + threadTs : userId;
+function conversationKey(userId, threadTs, channelId, isDM) {
+  return slackTranscript.conversationKey({ userId: userId, threadTs: threadTs, channelId: channelId, isDM: isDM });
 }
 
 function getConversations() { return db.getConvCache(); }
+
+// Le conversazioni salvate prima della ricalibrazione contengono il blob
+// "[DATI RECUPERATI: …]" appeso al messaggio utente: lo togliamo in lettura.
+function sanitizeStoredTurns(turns) {
+  return (turns || []).map(function(m) {
+    if (!m || typeof m.content !== 'string') return m;
+    var idx = m.content.indexOf('\n\n[DATI RECUPERATI:');
+    if (m.role === 'user' && idx > 0) return { role: 'user', content: m.content.substring(0, idx) };
+    return m;
+  }).filter(function(m) { return m && typeof m.content === 'string' && m.content.trim(); });
+}
 
 // Compresses older messages, keeping the last 12 exchanges fresh
 async function compressConversation(messages, convKey) {
@@ -239,15 +221,15 @@ async function compressConversation(messages, convKey) {
 
   try {
     var res = await client.messages.create({
-      model: 'claude-opus-4-8',
-      max_tokens: 500,
+      model: MODELS.UTILITY,
+      max_tokens: 600,
       system: 'Riassumi questa conversazione di un\'agenzia di marketing. Il riassunto deve essere UTILE per riprendere il discorso domani.\n' +
         'Mantieni: nomi clienti/persone, cifre esatte, decisioni prese, azioni da fare, scadenze, problemi aperti.\n' +
         'Formato: frasi complete, non bullet point. Come se raccontassi a un collega "ieri abbiamo parlato di...".\n' +
         'NON includere: saluti, conferme banali, dettagli tecnici sul bot. Max 150 parole.',
       messages: [{ role: 'user', content: summaryPrompt }],
     });
-    var summaryText = res.content[0].text.trim();
+    var summaryText = extractText(res).trim();
     var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + summaryText + ']';
     logger.info('[COMPRESS] Conversazione compressa:', toSummarize.length, 'messaggi → riassunto');
 
@@ -265,9 +247,6 @@ async function compressConversation(messages, convKey) {
           AP.forEach(function(ap) {
             var m = botText.match(ap.pattern);
             if (!m) return;
-            // Guardia anti-negazione: "non aggiorno il CRM" matchava il
-            // pattern e diventava un follow-up — controlla i ~20 caratteri
-            // prima del match per negazioni nella stessa frase.
             var before = botText.substring(Math.max(0, m.index - 20), m.index);
             if (/\b(non|niente|senza|mai)\b[^.!?\n]*$/i.test(before)) return;
             proposedActions.push({ type: ap.type, description: m[0], proposed_at: new Date().toISOString() });
@@ -291,9 +270,8 @@ async function compressConversation(messages, convKey) {
 }
 
 // ─── DM rolling summary ──────────────────────────────────────────────────────
-// The compressConversation path only fires above 20 messages, which is way too
-// late for a 1:1 DM where Giuno should already remember the last few turns the
-// next morning. Keep a lightweight, debounced Haiku summary per user.
+// Memoria 1:1 persistente per utente: riassunto + action item aperti + fatti
+// stabili (user_facts). Aggiornata in background, debounced.
 
 var _dmSummaryState = new Map(); // userId -> { lastUpdateAt, lastMsgCount }
 var DM_SUMMARY_MIN_MESSAGES = 4;
@@ -308,7 +286,6 @@ async function maybeUpdateDmSummary(userId, messages) {
   var cooledDown = (now - state.lastUpdateAt) > DM_SUMMARY_COOLDOWN_MS;
   if (!cooledDown && growth < DM_SUMMARY_MIN_GROWTH) return;
 
-  // Keep the last ~16 turns so Haiku has enough context without blowing tokens.
   var slice = messages.slice(-16);
   var transcript = slice.map(function(m) {
     var role = m.role === 'user' ? 'Utente' : 'Giuno';
@@ -318,21 +295,21 @@ async function maybeUpdateDmSummary(userId, messages) {
 
   try {
     var res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
+      model: MODELS.UTILITY,
+      max_tokens: 600,
       system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
-        'Produci DUE blocchi in italiano, in questo formato ESATTO:\n\n' +
+        'Produci TRE blocchi in italiano, in questo formato ESATTO:\n\n' +
         'SUMMARY:\n<4-6 frasi su cosa sta cercando di fare, topic/clienti/progetti ricorrenti, preferenze, cosa resta in sospeso. Se domani l\'utente scrive "riprendiamo", deve bastare per ripartire.>\n\n' +
         'OPEN_ITEMS:\n<0-5 bullet di action item aperti, uno per riga, prefisso "- ". Vuoto se nessuno.>\n\n' +
         'FACTS:\n<0-8 fatti stabili, uno per riga, formato "category: fact". ' +
         'category ammesse: role, style, current_client, current_project, preference, schedule, tool. ' +
-        'Fact breve (max ~100 char), asserivo, senza speculation. Esempio "style: conciso, diretto". ' +
+        'Fact breve (max ~100 char), assertivo, senza speculazioni. Esempio "style: conciso, diretto". ' +
         'Vuoto se nulla di chiaro.>\n\n' +
         'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team. ' +
         'Quando citi altri membri del team usa il tag <@U...> preso dal ROSTER. Non confondere i nomi (Peppe ≠ Giusy, Claudia ≠ Clà di un cliente).',
       messages: [{ role: 'user', content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + transcript }],
     });
-    var raw = (res.content[0] && res.content[0].text || '').trim();
+    var raw = extractText(res).trim();
     if (!raw) return;
 
     var summary = '';
@@ -364,7 +341,7 @@ async function maybeUpdateDmSummary(userId, messages) {
       });
     }
 
-    if (!summary) summary = raw; // fallback: raw text is the summary
+    if (!summary) summary = raw;
 
     var topicTokens = summary.toLowerCase().split(/\W+/).filter(function(w) { return w.length > 4; });
     var seenTopics = {};
@@ -379,7 +356,6 @@ async function maybeUpdateDmSummary(userId, messages) {
 
     await db.saveConversationSummary(userId, summary, messages.length, topics, proposedActions);
 
-    // Fire-and-forget: upsert extracted facts so they survive summary rewrites.
     for (var fi = 0; fi < facts.length; fi++) {
       db.upsertUserFact(userId, facts[fi].category, facts[fi].fact, 0.7).catch(function() {});
     }
@@ -393,13 +369,8 @@ async function maybeUpdateDmSummary(userId, messages) {
 
 // ─── Auto-learn ────────────────────────────────────────────────────────────────
 
-var { askGemini } = require('./geminiService');
-
 var _autoLearnBlacklist = /slack_user_token|search:read|limitazioni tecniche|problema tecnico.*slack|token non ha|permessi.*slack|non riesco.*accedere.*canali|configurare.*permessi|sistema briefing|sistema feedback|sistema di reporting|sistema promemoria|tracking costi api|architettura tecnica|setup operativo|pricing consulenza.*LOW.*MID|backfill|embedding.*processate|cron.*schedulat|deploy.*completat/i;
 
-// Track recent rephrases per user. When a user reformulates the same question,
-// the previous bot answer was probably wrong — don't auto-learn from it.
-// Cleared after the next "clean" exchange or after 10 minutes.
 var _recentRephrases = {};
 function _markRephrase(userId) { _recentRephrases[userId] = Date.now(); }
 function _hasRecentRephrase(userId) {
@@ -410,25 +381,45 @@ function _hasRecentRephrase(userId) {
 }
 function _clearRephrase(userId) { delete _recentRephrases[userId]; }
 var _rolesKeywords = /\bceo\b|\bcoo\b|\bgm\b|\bcco\b|organigramma|rate card|€\/h/i;
-// Block auto-learn of financial/contract data — CRM Sheet is source of truth
 var _financialKeywords = /€\s*\d|contratt[oi]|fattur|pipeline|subtotale|totale.*confermati|deal|revenue|ricavi|incasso|pagament|scadenza.*contratt|attivo fino|confermato|archiviato/i;
+
+var AUTO_LEARN_SYSTEM =
+  'Sei il modulo di apprendimento di Giuno, assistente interno di Katania Studio (agenzia marketing, 9 persone).\n' +
+  'Leggi l\'ultimo scambio (con la conversazione recente come contesto) e decidi cosa vale la pena ricordare in modo DURATURO.\n' +
+  'Criterio: salveresti questa cosa negli appunti se fossi un collega attento? Se tra un mese non servirà a nessuno, non salvarla.\n' +
+  'Preferisci POCHE memorie precise a molte generiche. Non risalvare ciò che è già in "GIÀ NOTO".\n' +
+  'Rispondi SOLO con JSON valido. Se non c\'è nulla di durevole: {"skip": true}\n' +
+  '{\n' +
+  '  "memories": [{"content": "frase completa e autonoma: chi, cosa, quando, perché", "tags": ["tipo:valore"]}],\n' +
+  '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
+  '  "kb": [{"content": "regola/procedura/decisione aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
+  '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
+  '  "crm_updates": [{"name": "azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}],\n' +
+  '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}],\n' +
+  '  "contacts": [{"name": "persona esterna", "role": null, "company": "azienda", "email": null, "phone": null}]\n' +
+  '}\n' +
+  'MEMORIE: ogni memoria deve essere comprensibile da sola tra 3 mesi. ' +
+  'SBAGLIATO: "Budget 15k". GIUSTO: "Antonio ha detto (02/04/2026, DM) che il budget del progetto Aitho branding è 15k€".\n' +
+  'Cosa entra in memories: decisioni, preferenze e abitudini esplicite, deadline concrete, feedback, problemi aperti, relazioni tra persone/aziende.\n' +
+  'Cosa entra in kb: procedure, regole e decisioni aziendali che valgono per tutto il team.\n' +
+  'crm_updates SOLO se l\'utente dichiara esplicitamente un cambio di stato/valore/servizio di un lead (non da ipotesi o domande).\n' +
+  'contacts: solo persone ESTERNE al team, con almeno azienda o ruolo.\n' +
+  'TAG: tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo).\n' +
+  'NON salvare: conferme banali; domande senza risposta; ipotesi; contenuto sull\'architettura tecnica del bot (modelli, API, tool, cron, deploy); ' +
+  'pricing generati dal tool di quotazione (LOW/MID/HIGH); errori tecnici, permessi, token; cose già in GIÀ NOTO.';
 
 async function autoLearn(userId, userMessage, botReply, context) {
   context = context || {};
   if (!userMessage || userMessage.length < 10) return;
+  if (isNoReply(botReply)) return;
   var msgLower = userMessage.toLowerCase();
   if (msgLower.startsWith('collega') || msgLower.startsWith('/')) return;
-  // Skip trivial confirmations
   if (/^(ok|sì|si|no|grazie|perfetto|capito|certo|esatto|giusto|bene|fatto|ricevuto|👍|👀)$/i.test(userMessage.trim())) return;
 
-  // C: Don't learn from answers the user is about to (or just did) correct.
-  // If a rephrase happened in the last 10 minutes, this turn is suspect.
   if (_hasRecentRephrase(userId)) {
     logger.info('[AUTO-LEARN] Skip (recent rephrase) for', userId);
     return;
   }
-  // If user is explicitly correcting, route through correctionHandler only —
-  // don't extract "facts" from a turn that's negating something we said.
   try {
     var ch = require('./correctionHandler');
     if (ch.isCorrection(userMessage)) {
@@ -438,54 +429,26 @@ async function autoLearn(userId, userMessage, botReply, context) {
       return;
     }
   } catch(_) {}
-  // Clean exchange — clear any leftover rephrase flag.
   _clearRephrase(userId);
 
   try {
-    // Single LLM call for all auto-learn tasks
+    var known = '';
+    if (Array.isArray(context.knownMemories) && context.knownMemories.length > 0) {
+      known = 'GIÀ NOTO (non risalvare):\n' + context.knownMemories.slice(0, 12).map(function(m) {
+        return '- ' + String(m).substring(0, 220);
+      }).join('\n') + '\n\n---\n';
+    }
     var analysisRes = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
-      system: 'Sei il modulo di apprendimento di un assistente aziendale per un\'agenzia di marketing (Katania Studio, 9 persone).\n' +
-        'Analizza questa conversazione ed estrai TUTTO ciò che è utile. Preferisci salvare troppo piuttosto che perdere info.\n' +
-        'Rispondi SOLO in JSON valido. Se il messaggio è davvero inutile (saluto generico, "ok", "grazie"): {"skip": true}\n' +
-        '{\n' +
-        '  "memories": [{"content": "FRASE COMPLETA con contesto: chi ha detto cosa, a chi, quando, perché", "tags": ["tipo:valore"]}],\n' +
-        '  "profile": {"ruolo": null, "progetto": null, "cliente": null, "competenza": null, "nota": null},\n' +
-        '  "kb": [{"content": "info aziendale condivisa", "tags": ["tipo:valore"]}],\n' +
-        '  "glossary": [{"term": "termine", "definition": "def", "synonyms": [], "category": "gergo_interno"}],\n' +
-        '  "crm_updates": [{"name": "nome azienda/lead", "action": "update|create", "fields": {"status": null, "value": null, "service": null, "last_contact": null, "notes": null}}],\n' +
-        '  "project_updates": [{"project_name": "nome progetto", "update": "cosa è cambiato", "client": null}],\n' +
-        '  "contacts": [{"name": "nome persona esterna", "role": null, "company": "azienda", "email": null, "phone": null}]\n' +
-        '}\n' +
-        'COME SALVARE LE MEMORIE — REGOLA FONDAMENTALE:\n' +
-        'Ogni memoria DEVE essere una frase completa e comprensibile da sola, come se la leggessi tra 3 mesi.\n' +
-        'SBAGLIATO: "Budget 15k" → tra 3 mesi non sai di chi, di cosa, detto da chi.\n' +
-        'GIUSTO: "Antonio ha detto (02/04/2026, DM) che il budget del progetto Aitho branding è 15k€"\n' +
-        'SBAGLIATO: "Call domani" → inutile senza contesto.\n' +
-        'GIUSTO: "Corrado ha organizzato una call con il cliente 869 per il 03/04/2026 alle 15:30 per presentazione branding"\n\n' +
-        'COSA SALVARE:\n' +
-        '- memories: preferenze, abitudini, opinioni, decisioni, task, deadline, feedback, problemi, relazioni tra persone. Sempre con CHI+COSA+QUANDO+DOVE.\n' +
-        '- kb: procedure, decisioni aziendali condivise, info clienti/fornitori, nuove regole\n' +
-        '- profile: ruolo, progetti, clienti seguiti, competenze, stile di lavoro\n' +
-        '- contacts: persone ESTERNE (es. "Marco di Aitho", "Chiara della 869"). Solo fuori dal team KS.\n' +
-        '- crm_updates: aggiornamenti lead/clienti (stato, valore, servizi)\n' +
-        '- project_updates: aggiornamenti progetti (stato, blocchi, progressi)\n' +
-        '- glossary: soprannomi, abbreviazioni, gergo interno\n' +
-        'TAG: tipo:valore (cliente:elfo, progetto:videoclip, persona:paolo, area:sviluppo)\n' +
-        'NON SALVARE MAI:\n' +
-        '- Conferme banali ("ok fatto", "grazie", "capito")\n' +
-        '- Info sulla propria architettura tecnica (Claude, Anthropic, API, tool, sistema)\n' +
-        '- Configurazioni, deploy, briefing automatici, cron, report tecnici\n' +
-        '- Pricing generati dal tool di quotazione (LOW/MID/HIGH) — quelli sono stime, non dati reali\n' +
-        '- Info già presenti nelle memorie precedenti (se l\'utente ripete "Aitho è un cliente" e lo sai già, NON salvare)\n' +
-        '- Log di errori, problemi tecnici, permessi, token',
+      model: MODELS.UTILITY,
+      max_tokens: 900,
+      system: AUTO_LEARN_SYSTEM,
       messages: [{ role: 'user', content:
-        (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1200) + '\n\n---\n' : '') +
-        'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 800) + '\n\nBOT: ' + botReply.substring(0, 600) }],
+        known +
+        (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1600) + '\n\n---\n' : '') +
+        'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 1000) + '\n\nGIUNO: ' + (botReply || '').substring(0, 800) }],
     });
 
-    var analysisText = analysisRes.content[0].text.trim();
+    var analysisText = extractText(analysisRes).trim();
     var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return;
 
@@ -499,9 +462,7 @@ async function autoLearn(userId, userMessage, botReply, context) {
       for (var mi = 0; mi < analysis.memories.length; mi++) {
         var m = analysis.memories[mi];
         if (m.content && m.content.length > 20 && !_autoLearnBlacklist.test(m.content) && !_financialKeywords.test(m.content)) {
-          // Skip if too generic (just a name or single word)
           if (m.content.split(/\s+/).length < 3) continue;
-          // Quality gate: check if we already know this (dedup before saving)
           var memCache = db.getMemCache();
           var userMems = (memCache[userId] || []);
           var contentLower = m.content.toLowerCase();
@@ -510,11 +471,10 @@ async function autoLearn(userId, userMessage, botReply, context) {
             var existWords = (existing.content || '').toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
             if (existWords.length === 0 || contentWords.length === 0) return false;
             var overlap = contentWords.filter(function(w) { return existWords.indexOf(w) !== -1; });
-            return overlap.length / contentWords.length > 0.7; // >70% overlap = duplicate
+            return overlap.length / contentWords.length > 0.7;
           });
           if (isDuplicate) continue;
 
-          // Append date/source if not already in content
           var enrichedContent = m.content;
           if (!/\b\d{4}-\d{2}-\d{2}\b/.test(m.content)) {
             enrichedContent += ' (' + dateTag + ', ' + sourceTag + ')';
@@ -562,14 +522,13 @@ async function autoLearn(userId, userMessage, botReply, context) {
       }
     }
 
-    // CRM auto-updates (fix #5 — proactive CRM update)
+    // CRM auto-updates
     if (analysis.crm_updates && analysis.crm_updates.length > 0) {
       try {
         var leadsTools = require('../tools/leadsTools');
         for (var ci = 0; ci < analysis.crm_updates.length; ci++) {
           var crmUpdate = analysis.crm_updates[ci];
           if (!crmUpdate.name || crmUpdate.name.length < 2) continue;
-          // Try to find existing lead
           var existingLeads = await leadsTools.searchLeads({ query: crmUpdate.name, limit: 1 });
           if (existingLeads && existingLeads.length > 0 && crmUpdate.action !== 'create') {
             var updateFields = {};
@@ -599,25 +558,22 @@ async function autoLearn(userId, userMessage, botReply, context) {
         for (var pi = 0; pi < analysis.project_updates.length; pi++) {
           var pu = analysis.project_updates[pi];
           if (!pu.project_name || !pu.update) continue;
-          // Search for existing project
           var projects = await db.searchProjects({ name: pu.project_name, limit: 1 });
           if (!projects || projects.length === 0) {
             projects = await db.searchProjects({ client_name: pu.project_name, limit: 1 });
           }
           if (projects && projects.length > 0) {
-            // Save update as memory linked to project
             var projMemContent = '[Progetto: ' + projects[0].name + '] ' + pu.update;
             db.addMemory(userId, projMemContent, ['progetto:' + projects[0].name.toLowerCase(), 'tipo:update']);
             logger.info('[AUTO-LEARN] Project update:', projMemContent.substring(0, 60));
           } else {
-            // No project found — save as generic memory
             db.addMemory(userId, 'Progetto ' + pu.project_name + ': ' + pu.update, ['progetto:' + pu.project_name.toLowerCase(), 'tipo:update']);
           }
         }
       } catch(e) { logger.warn('[AUTO-LEARN] Project update error:', e.message); }
     }
 
-    // External contacts — auto-save people mentioned
+    // External contacts
     if (analysis.contacts && analysis.contacts.length > 0) {
       try {
         var supabaseContacts = require('./db/client').getClient();
@@ -625,11 +581,9 @@ async function autoLearn(userId, userMessage, botReply, context) {
           for (var cti = 0; cti < analysis.contacts.length; cti++) {
             var ct = analysis.contacts[cti];
             if (!ct.name || ct.name.length < 2) continue;
-            // Check if contact already exists
             var existing = await supabaseContacts.from('contacts')
               .select('id').ilike('name', '%' + ct.name + '%').limit(1);
-            if (existing.data && existing.data.length > 0) continue; // Already exists
-            // Find linked lead
+            if (existing.data && existing.data.length > 0) continue;
             var ctLeadId = null;
             if (ct.company) {
               var ctLeads = await db.searchLeads({ company_name: ct.company, limit: 1 });
@@ -650,8 +604,8 @@ async function autoLearn(userId, userMessage, botReply, context) {
       for (var gi = 0; gi < analysis.glossary.length; gi++) {
         var gt = analysis.glossary[gi];
         if (gt.term && gt.definition) {
-          var existing = db.searchGlossary(gt.term);
-          if (existing.length === 0) {
+          var existingG = db.searchGlossary(gt.term);
+          if (existingG.length === 0) {
             db.addGlossaryTerm(gt.term, gt.definition, gt.synonyms || [], gt.category || 'gergo_interno', userId);
             logger.info('[AUTO-LEARN] Glossario:', gt.term);
           }
@@ -663,20 +617,61 @@ async function autoLearn(userId, userMessage, botReply, context) {
   }
 }
 
-// ─── Retry wrapper for API calls ──────────────────────────────────────────────
+// ─── API call helpers ─────────────────────────────────────────────────────────
+
+function extractText(response) {
+  if (!response || !Array.isArray(response.content)) return '';
+  return response.content
+    .filter(function(b) { return b && b.type === 'text' && typeof b.text === 'string'; })
+    .map(function(b) { return b.text; })
+    .join('\n');
+}
 
 var RETRY_DELAYS = [2000, 5000, 10000];
+var _refusalFallbackDisabled = false;
+
+function _wantsRefusalFallback(model) {
+  return modelsConfig.REFUSAL_FALLBACK_ENABLED && !_refusalFallbackDisabled &&
+    /^claude-(opus-5|fable|mythos)/.test(String(model || ''));
+}
+
+async function _createMessage(params) {
+  if (_wantsRefusalFallback(params.model)) {
+    var betaParams = Object.assign({}, params, {
+      betas: [modelsConfig.REFUSAL_FALLBACK_BETA],
+      fallbacks: 'default',
+    });
+    try {
+      return await client.beta.messages.create(betaParams);
+    } catch(err) {
+      // Se il beta/fallback non è accettato (400) proseguiamo senza per tutto
+      // il processo: meglio un bot vivo senza fallback che un bot muto.
+      if (err && err.status === 400 && /fallback|beta/i.test(String(err.message || ''))) {
+        _refusalFallbackDisabled = true;
+        logger.warn('[API] server-side fallback non accettato, disattivato per questo processo:', err.message);
+      } else {
+        throw err;
+      }
+    }
+  }
+  return client.messages.create(params);
+}
 
 async function callAnthropicWithRetry(params) {
   var lastError = null;
   for (var attempt = 0; attempt <= 3; attempt++) {
     try {
-      var result = await client.messages.create(params);
-      // Track API cost
+      var result = await _createMessage(params);
       try {
         var costTracker = require('./costTracker');
         var usage = result.usage || {};
-        costTracker.trackCall('anthropic', params.model || 'unknown', usage.input_tokens || 0, usage.output_tokens || 0);
+        var cacheRead = usage.cache_read_input_tokens || 0;
+        var cacheWrite = usage.cache_creation_input_tokens || 0;
+        costTracker.trackCall('anthropic', params.model || 'unknown',
+          (usage.input_tokens || 0) + cacheRead + cacheWrite, usage.output_tokens || 0);
+        if (cacheRead || cacheWrite) {
+          logger.debug('[API] cache — read:', cacheRead, 'write:', cacheWrite, 'uncached:', usage.input_tokens || 0);
+        }
       } catch(e) { /* ignore */ }
       return result;
     } catch(err) {
@@ -696,7 +691,43 @@ async function callAnthropicWithRetry(params) {
   throw lastError;
 }
 
+// Tool list stabile (stesso ordine ad ogni chiamata → prefisso cacheabile).
+var _toolsCache = null;
+function getStableTools() {
+  if (!_toolsCache) _toolsCache = registry.getAllTools();
+  return _toolsCache;
+}
+
+function buildPrimaryRequest(systemBlocks, messages, opts) {
+  opts = opts || {};
+  var model = opts.model || MODELS.PRIMARY;
+  var req = {
+    model: model,
+    max_tokens: opts.maxTokens || 4096,
+    system: systemBlocks,
+    messages: messages,
+    tools: opts.tools || getStableTools(),
+  };
+  if (modelsConfig.supportsEffort(model)) {
+    req.output_config = { effort: opts.effort || modelsConfig.PRIMARY_EFFORT };
+  }
+  return req;
+}
+
 // ─── askGiuno — main LLM agentic loop ─────────────────────────────────────────
+
+var MAX_TOOL_ROUNDS = 12;
+var CONTEXT_CHAR_BUDGET = 14000;
+
+function _rosterName(userId) {
+  try {
+    var roster = db.getTeamRoster ? db.getTeamRoster() : [];
+    for (var i = 0; i < (roster || []).length; i++) {
+      if (roster[i] && roster[i].slack_user_id === userId) return roster[i].canonical_name;
+    }
+  } catch(_) {}
+  return null;
+}
 
 async function askGiuno(userId, userMessage, options) {
   options = options || {};
@@ -706,355 +737,235 @@ async function askGiuno(userId, userMessage, options) {
   }
 
   var userRole = await getUserRole(userId);
-
-  var convKey = conversationKey(userId, options.threadTs);
+  var isDM = options.isDM != null ? !!options.isDM
+    : (!options.channelId || String(options.channelId).charAt(0) === 'D');
+  var convKey = conversationKey(userId, options.threadTs, options.channelId, isDM);
   var convCache = getConversations();
-  if (!convCache[convKey]) convCache[convKey] = [];
 
   var resolvedMessage = await resolveSlackMentions(userMessage);
 
-  var contextData = '';
+  // ── Storia: transcript Slack (fonte di verità) → DB (fallback) ─────────────
+  var history = [];
+  var historySource = 'none';
+  if (Array.isArray(options.transcript) && options.transcript.length > 0) {
+    history = options.transcript.slice();
+    historySource = 'slack';
+  } else {
+    var stored = convCache[convKey];
+    if ((!stored || stored.length === 0) && options.threadTs) {
+      stored = convCache[slackTranscript.legacyConversationKey({ userId: userId, threadTs: options.threadTs })];
+    }
+    if (stored && stored.length > 0) {
+      history = sanitizeStoredTurns(stored);
+      historySource = 'db';
+    }
+  }
 
-  // OAuth link injection
+  // ── Blocco dinamico di sistema ────────────────────────────────────────────
+  var sections = [];
+
   var msgLow = (resolvedMessage || '').toLowerCase();
   if ((/colleg[a-z]|connett[a-z]|autorizz[a-z]/i.test(msgLow)) &&
       (/google|calendar|gmail|account|email|mail/i.test(msgLow))) {
-    var oauthUrl = generaLinkOAuth(userId);
-    contextData += '\nLINK_OAUTH "<' + oauthUrl + '|Collega il tuo Google>"\n';
+    sections.push('LINK_OAUTH "<' + generaLinkOAuth(userId) + '|Collega il tuo Google>"');
   }
 
-  if (options.mentionedBy) {
-    contextData += '\n[Sei stato menzionato da <@' + options.mentionedBy + '>. Taggalo nella risposta.]\n';
-  }
+  var speakerName = _rosterName(userId);
+  var speakerLine = 'Chi ti scrive ora: <@' + userId + '>' + (speakerName ? ' (' + speakerName + ')' : '') +
+    (options.mentionedBy && options.mentionedBy !== userId ? ' — menzionato da <@' + options.mentionedBy + '>' : '') + '.';
 
+  // Canale
   if (options.channelContext) {
-    contextData += '\n' + options.channelContext + '\n';
+    var chBlock = options.channelContext;
     if (options.channelId) {
       var chMap = db.getChannelMapCache()[options.channelId];
       if (chMap) {
-        if (chMap.cliente)  contextData += 'CLIENTE CANALE: ' + chMap.cliente + '\n';
-        if (chMap.progetto) contextData += 'PROGETTO CANALE: ' + chMap.progetto + '\n';
-        if (chMap.tags && chMap.tags.length > 0) contextData += 'TAG CANALE: ' + chMap.tags.join(', ') + '\n';
+        if (chMap.cliente)  chBlock += '\nCLIENTE CANALE: ' + chMap.cliente;
+        if (chMap.progetto) chBlock += '\nPROGETTO CANALE: ' + chMap.progetto;
+        if (chMap.tags && chMap.tags.length > 0) chBlock += '\nTAG CANALE: ' + chMap.tags.join(', ');
       }
     }
+    sections.push(chBlock.trim());
   }
 
-  // Entity injection — only entities relevant to the message (not ALL entities)
-  try {
-    var supabaseForEntities = require('./db/client').getClient();
-    if (supabaseForEntities && resolvedMessage.length > 5) {
-      // Extract potential entity names from the message (words > 3 chars, capitalized or known)
-      var entSearchRes = await supabaseForEntities.from('kb_entities')
-        .select('canonical_name, entity_category, aliases')
-        .limit(500);
-      if (entSearchRes.data && entSearchRes.data.length > 0) {
-        var msgLower = resolvedMessage.toLowerCase();
-        var matchedEntities = entSearchRes.data.filter(function(ent) {
-          if (ent.canonical_name.length > 3 && msgLower.includes(ent.canonical_name.toLowerCase())) return true;
-          if (ent.aliases && Array.isArray(ent.aliases)) {
-            return ent.aliases.some(function(a) { return a.length > 3 && msgLower.includes(a.toLowerCase()); });
-          }
-          return false;
+  // Memoria 1:1 (solo DM principale): fatti stabili, riassunto, action item.
+  var isDmPrincipal = isDM && !options.threadTs;
+  if (isDmPrincipal) {
+    try {
+      var facts = await db.getUserFacts(userId, 12);
+      if (facts && facts.length > 0) {
+        var factsByCat = {};
+        facts.forEach(function(f) {
+          if (!factsByCat[f.category]) factsByCat[f.category] = [];
+          factsByCat[f.category].push(f.fact);
         });
-        if (matchedEntities.length > 0) {
-          contextData += '\nENTITÀ MENZIONATE:\n';
-          matchedEntities.slice(0, 10).forEach(function(ent) {
-            contextData += '• ' + ent.canonical_name + ' [' + (ent.entity_category || 'unknown') + ']\n';
-          });
-        }
+        sections.push('FATTI STABILI SU QUESTO UTENTE:\n' + Object.keys(factsByCat).map(function(cat) {
+          return '- ' + cat + ': ' + factsByCat[cat].join('; ');
+        }).join('\n'));
       }
-    }
-  } catch(e) {
-    logger.debug('[CONTEXT] Entity matching non disponibile:', e.message);
-  }
-
-  // DM summary in thread context (fix #11, #19)
-  if (options.threadTs && options.isDM) {
+    } catch(_) {}
     try {
-      var convSummaries = db.getConversationSummary
-        ? await db.getConversationSummary(conversationKey(userId, options.threadTs))
-        : null;
-      if (convSummaries && convSummaries.summary) {
-        contextData += '\nCONTESTO THREAD PRECEDENTE:\n' + convSummaries.summary + '\n';
-      }
-    } catch(e) {
-      logger.debug('[CONTEXT] DM summary non disponibile:', e.message);
-    }
-  }
-
-  // Reverse context: if we're in a DM, always pull the rolling 1:1 summary
-  // (conv_key = userId, no thread suffix) plus the most recent thread summary
-  // for this user, so a new turn after hours/days lands on real continuity.
-  if (!options.threadTs && (!options.channelId || options.isDM)) {
-    try {
-      var supabaseForThreadCtx = require('./db/client').getClient();
-      if (supabaseForThreadCtx) {
-        // 0) Sticky facts per-user — durable truths that survive summary rewrites.
-        try {
-          var facts = await db.getUserFacts(userId, 12);
-          if (facts && facts.length > 0) {
-            var factsByCat = {};
-            facts.forEach(function(f) {
-              if (!factsByCat[f.category]) factsByCat[f.category] = [];
-              factsByCat[f.category].push(f.fact);
-            });
-            var factsLines = Object.keys(factsByCat).map(function(cat) {
-              return '- ' + cat + ': ' + factsByCat[cat].join('; ');
-            }).join('\n');
-            contextData += '\nFATTI STABILI SU QUESTO UTENTE:\n' + factsLines + '\n';
-          }
-        } catch(factsErr) { /* user_facts may not exist yet */ }
-
-        // 1) Main DM rolling summary — this is the bot's persistent memory of
-        // this team member. Injected verbatim with a clear header.
-        var dmMainRes = await supabaseForThreadCtx.from('conversation_summaries')
+      var supabaseDm = require('./db/client').getClient();
+      if (supabaseDm) {
+        var dmMainRes = await supabaseDm.from('conversation_summaries')
           .select('summary, updated_at, messages_count, proposed_actions')
           .eq('conv_key', userId)
           .limit(1);
         if (dmMainRes.data && dmMainRes.data.length > 0 && dmMainRes.data[0].summary) {
           var dmAge = datesUtil.ageLabelIt(dmMainRes.data[0].updated_at) || 'data sconosciuta';
-          contextData += '\nMEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + dmAge + ', ' +
-            (dmMainRes.data[0].messages_count || 0) + ' messaggi totali — i fatti interni risalgono ad allora o prima):\n' +
-            dmMainRes.data[0].summary + '\n';
+          var dmBlock = 'MEMORIA CHAT 1:1 CON QUESTO UTENTE (aggiornata ' + dmAge + '):\n' + dmMainRes.data[0].summary;
           var openActions = (dmMainRes.data[0].proposed_actions || [])
             .filter(function(a) { return a && a.type === 'open_item' && a.description; });
           if (openActions.length > 0) {
-            contextData += 'ACTION ITEMS APERTI CON QUESTO UTENTE:\n' +
-              openActions.slice(0, 5).map(function(a) {
-                var actAge = datesUtil.ageLabelIt(a.proposed_at);
-                return '- ' + a.description + (actAge ? ' (proposto ' + actAge + ')' : '');
-              }).join('\n') + '\n';
+            dmBlock += '\nACTION ITEMS APERTI:\n' + openActions.slice(0, 5).map(function(a) {
+              var actAge = datesUtil.ageLabelIt(a.proposed_at);
+              return '- ' + a.description + (actAge ? ' (proposto ' + actAge + ')' : '');
+            }).join('\n');
           }
-        }
-
-        // 2) Most recent thread summary for this user (if any) — useful if the
-        // user had a side-thread recently.
-        var recentThreadRes = await supabaseForThreadCtx.from('conversation_summaries')
-          .select('conv_key, summary, updated_at')
-          .like('conv_key', userId + ':%')
-          .order('updated_at', { ascending: false })
-          .limit(1);
-        if (recentThreadRes.data && recentThreadRes.data.length > 0) {
-          var threadSummary = recentThreadRes.data[0];
-          if (threadSummary.summary) {
-            var thrAge = datesUtil.ageLabelIt(threadSummary.updated_at);
-            contextData += '\n[CONTESTO DA UN ALTRO THREAD' + (thrAge ? ', aggiornato ' + thrAge : '') +
-              ' — potrebbe NON riguardare la richiesta attuale, usalo solo se pertinente]\n' +
-              threadSummary.summary.substring(0, 400) + '\n';
-          }
+          sections.push(dmBlock);
         }
       }
-    } catch(threadCtxErr) {
-      // Non-blocking — table may not exist
-    }
+    } catch(_) {}
+  } else if (options.threadTs && isDM) {
+    try {
+      var thrSummary = db.getConversationSummary ? await db.getConversationSummary(convKey) : null;
+      if (thrSummary && thrSummary.summary) sections.push('CONTESTO THREAD PRECEDENTE:\n' + thrSummary.summary);
+    } catch(_) {}
   }
 
-  // User profile context
-  var profiles = db.getProfileCache();
-  var profile = profiles[userId] || {};
+  // Profilo utente
+  var profile = (db.getProfileCache()[userId]) || {};
   if (profile.ruolo || (profile.progetti && profile.progetti.length > 0) || (profile.clienti && profile.clienti.length > 0)) {
-    contextData += '\nPROFILO UTENTE:\n';
-    if (profile.ruolo) contextData += 'Ruolo: ' + profile.ruolo + '\n';
-    if (profile.progetti && profile.progetti.length > 0) contextData += 'Progetti: ' + profile.progetti.join(', ') + '\n';
-    if (profile.clienti && profile.clienti.length > 0) contextData += 'Clienti: ' + profile.clienti.join(', ') + '\n';
-    if (profile.competenze && profile.competenze.length > 0) contextData += 'Competenze: ' + profile.competenze.join(', ') + '\n';
-    if (profile.stile_comunicativo) contextData += 'Stile: ' + profile.stile_comunicativo + '\n';
+    var prof = 'PROFILO UTENTE:';
+    if (profile.ruolo) prof += '\nRuolo: ' + profile.ruolo;
+    if (profile.progetti && profile.progetti.length > 0) prof += '\nProgetti: ' + profile.progetti.join(', ');
+    if (profile.clienti && profile.clienti.length > 0) prof += '\nClienti: ' + profile.clienti.join(', ');
+    if (profile.competenze && profile.competenze.length > 0) prof += '\nCompetenze: ' + profile.competenze.join(', ');
+    if (profile.stile_comunicativo) prof += '\nStile: ' + profile.stile_comunicativo;
+    sections.push(prof);
   }
 
-  // Cross-session context: inject latest conversation summary from this user (any thread)
-  try {
-    var supabaseSess = require('./db/client').getClient();
-    if (supabaseSess) {
-      var { data: lastSession } = await supabaseSess.from('conversation_summaries')
-        .select('summary, updated_at')
-        .like('conv_key', userId + '%')
-        .order('updated_at', { ascending: false })
-        .limit(1);
-      if (lastSession && lastSession.length > 0 && lastSession[0].summary) {
-        var sessionAge = (Date.now() - new Date(lastSession[0].updated_at).getTime()) / 3600000;
-        if (sessionAge < 48) { // Only inject if <48h old
-          contextData += '\nCONTESTO PRECEDENTE (ultima conversazione, ' + Math.round(sessionAge) + 'h fa):\n' +
-            lastSession[0].summary.substring(0, 300) + '\n';
-        }
-      }
-    }
-  } catch(e) { /* non-blocking */ }
-
-  // Behavioral profile injection — user patterns
+  // Stile di risposta (pattern comportamentali) + tono del messaggio
   try {
     var behaviorTracker = require('./behaviorTracker');
     var behavior = await behaviorTracker.getBehaviorContext(userId);
-    if (behavior) {
-      contextData += '\nCOME RISPONDERE A QUESTO UTENTE:\n';
-      if (behavior.communication_style === 'conciso') {
-        contextData += 'Questa persona scrive corto. Rispondi in 1-3 frasi max. Niente elenchi, niente dettagli non richiesti.\n';
-      } else if (behavior.communication_style === 'diretto') {
-        contextData += 'Questa persona è diretta. Rispondi in modo chiaro e operativo, 3-6 frasi.\n';
-      } else if (behavior.communication_style === 'dettagliato') {
-        contextData += 'Questa persona apprezza i dettagli. Puoi dare risposte più strutturate con contesto.\n';
-      } else if (behavior.communication_style === 'elaborato') {
-        contextData += 'Questa persona scrive in modo elaborato. Rispondi con livello di dettaglio simile.\n';
-      }
-      if (behavior.topics_of_interest && behavior.topics_of_interest.length > 0) {
-        contextData += 'Si occupa di: ' + behavior.topics_of_interest.join(', ') + '\n';
-      }
+    if (behavior && behavior.communication_style) {
+      var styleHints = {
+        conciso: 'Questa persona scrive corto: rispondi in poche frasi, niente elenchi se non richiesti.',
+        diretto: 'Questa persona è diretta: rispondi in modo chiaro e operativo.',
+        dettagliato: 'Questa persona apprezza i dettagli: puoi dare contesto in più quando serve.',
+        elaborato: 'Questa persona scrive in modo elaborato: rispondi con un livello di dettaglio simile.',
+      };
+      var hint = styleHints[behavior.communication_style];
+      if (hint) sections.push('COME RISPONDERE A QUESTO UTENTE: ' + hint +
+        (behavior.topics_of_interest && behavior.topics_of_interest.length > 0 ? ' Si occupa di: ' + behavior.topics_of_interest.join(', ') + '.' : ''));
     }
-  } catch(e) {
-    // behaviorTracker may not be ready
-  }
-
-  // Sentiment/urgency injection (from handler)
+  } catch(_) {}
   if (options.sentiment) {
     var s = options.sentiment;
     if (s.urgency !== 'normal' || s.sentiment !== 'neutral') {
-      contextData += '\n[TONO MESSAGGIO: urgenza=' + s.urgency + ', sentiment=' + s.sentiment + '. ' + s.responseStyle + ']\n';
+      sections.push('TONO DEL MESSAGGIO: urgenza=' + s.urgency + ', sentiment=' + s.sentiment + '. ' + (s.responseStyle || ''));
     }
   }
 
-  // Glossary injection
-  var glossaryMatches = db.searchGlossary(resolvedMessage);
-  if (glossaryMatches.length > 0) {
-    contextData += '\nGLOSSARIO AZIENDALE:\n';
-    glossaryMatches.slice(0, 5).forEach(function(g) {
-      contextData += '• ' + g.term + ': ' + g.definition;
-      if (g.synonyms && g.synonyms.length > 0) {
-        contextData += ' (sinonimi: ' + g.synonyms.join(', ') + ')';
+  // Contesto recuperato: dal contextBuilder (via router) oppure, se assente,
+  // recupero minimo locale (glossario + CRM per domande CRM).
+  var knownMemories = [];
+  if (options.retrievedContext) {
+    sections.push(options.retrievedContext.trim());
+    if (Array.isArray(options.retrievedMemories)) knownMemories = options.retrievedMemories;
+  } else {
+    var glossaryMatches = db.searchGlossary(resolvedMessage);
+    if (glossaryMatches.length > 0) {
+      sections.push('GLOSSARIO AZIENDALE:\n' + glossaryMatches.slice(0, 5).map(function(g) {
+        return '• ' + g.term + ': ' + g.definition + (g.synonyms && g.synonyms.length > 0 ? ' (sinonimi: ' + g.synonyms.join(', ') + ')' : '');
+      }).join('\n'));
+    }
+    try {
+      var attioCtxMod = require('../orchestrator/attioContext');
+      if (attioCtxMod.isCrmIsh(userMessage)) {
+        var attioBlock = null;
+        try {
+          var attioData = await withTimeout(function() { return attioCtxMod.buildAttioContext(userMessage, []); }, 4000, 'askGiuno.attio');
+          attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
+        } catch(attioErr) {
+          logger.warn('[ASK-GIUNO] Attio non disponibile per domanda CRM:', attioErr && attioErr.message);
+        }
+        sections.push(attioBlock || '[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili ora: se rispondi su stato/pipeline di un cliente da memorie o KB, dichiara che il dato potrebbe non essere aggiornato.');
       }
-      contextData += '\n';
-    });
+    } catch(e) { logger.debug('[ASK-GIUNO] attio enrich skip:', e && e.message); }
   }
 
-  // Preflight instruction injection
-  if (options.preflightInstruction) {
-    contextData += '\n' + options.preflightInstruction + '\n';
-  }
-
-  // Automatic CRM grounding: for CRM-flavoured questions, pull the real CRM
-  // (Attio) into context so Giuno answers from companies/deals, not memories.
-  try {
-    var attioCtxMod = require('../orchestrator/attioContext');
-    if (attioCtxMod.isCrmIsh(userMessage)) {
-      var attioBlock = null;
-      try {
-        var attioData = await withTimeout(function() {
-          return attioCtxMod.buildAttioContext(userMessage, []);
-        }, 4000, 'askGiuno.attio');
-        attioBlock = attioCtxMod.formatAttioForPrompt(attioData);
-      } catch(attioErr) {
-        logger.warn('[ASK-GIUNO] Attio non disponibile per domanda CRM:', attioErr && attioErr.message);
-      }
-      if (attioBlock) {
-        contextData += '\n' + attioBlock + '\n';
-      } else {
-        // Senza CRM live il modello rispondeva da memorie vecchie come se
-        // fossero attuali ("Aitho è ancora prospect" quando è won da giorni).
-        contextData += '\n[ATTENZIONE CRM] I dati CRM live (Attio) non sono disponibili in questo momento. ' +
-          'Se rispondi su stato/pipeline di un cliente usando memorie o KB, DICHIARA che il dato ' +
-          'potrebbe non essere aggiornato e suggerisci di verificare sul CRM.\n';
-      }
-    }
-  } catch(e) { logger.debug('[ASK-GIUNO] attio enrich skip:', e && e.message); }
-
-  // Cross-user redaction rule — always on. Each team member's DMs are private:
-  // never quote verbatim what user A said in DM when answering user B, and
-  // never attribute sensitive info to a specific colleague by name unless the
-  // current user was part of that conversation.
-  contextData += '\n[PRIVACY] Le chat 1:1 tra Giuno e ogni membro del team sono private. ' +
-    'Se riferisci info emerse in DM con un\'altra persona, NON citare virgolettato, ' +
-    'NON attribuire per nome ("Antonio mi ha detto..."), e NON ripetere dettagli personali. ' +
-    'Rielabora a livello di fatto utile, senza fonte, oppure di\' "non posso dirtelo" se è manifestamente privato.\n';
-
-  // Team roster — authoritative disambiguation for short names like Peppe /
-  // Giusy / Claudia (which otherwise get confused with clients/leads).
-  try {
-    var rosterBlock = db.formatTeamRosterForPrompt && db.formatTeamRosterForPrompt();
-    if (rosterBlock) {
-      contextData += '\n' + rosterBlock + '\n' +
-        '[REGOLA TEAM] Quando citi un membro del team USA SEMPRE il tag <@U...> preso dal ROSTER qui sopra. ' +
-        'Se un nome è ambiguo tra membro team e cliente/lead, preferisci il membro team quando siamo in DM o canale interno. ' +
-        'Se non sei sicuro di chi sia, chiedi invece di tirare a indovinare.\n';
-    }
-  } catch(_) {}
-
-  // Error pattern warnings — if this topic has known mistakes, warn the LLM
+  // Avvisi su errori passati e priorità settimanali
   try {
     var errorTracker = require('./errorTracker');
     var errorWarnings = errorTracker.getErrorWarnings(resolvedMessage);
     if (errorWarnings.length > 0) {
-      contextData += '\n⚠️ ATTENZIONE — ERRORI PASSATI SU QUESTO ARGOMENTO:\n';
-      errorWarnings.forEach(function(w) {
-        contextData += '• Errore ripetuto ' + w.count + 'x: ' + (w.lastError || '').substring(0, 150) + '\n';
-      });
-      contextData += 'PRIMA di rispondere, verifica i dati con un tool. Se non sei sicuro, chiedi conferma.\n';
+      sections.push('ATTENZIONE — ERRORI PASSATI SU QUESTO ARGOMENTO:\n' + errorWarnings.map(function(w) {
+        return '• Errore ripetuto ' + w.count + 'x: ' + (w.lastError || '').substring(0, 150);
+      }).join('\n') + '\nPrima di rispondere verifica i dati con un tool; se non sei sicuro, chiedi conferma.');
     }
-  } catch(e) { /* errorTracker not available */ }
-
-  // Anti-repetition: inject the last 3 replies we sent to this user so the
-  // model knows what NOT to parrot (fixes "tende ad essere ripetitivo").
-  var recentReplies = getRecentReplies(userId);
-  if (recentReplies.length > 0) {
-    contextData += '\n[ULTIME RISPOSTE CHE HAI GIÀ DATO A QUESTO UTENTE (non ripeterle parola per parola, e se la domanda è la stessa di una di queste fai una variazione utile o chiedi precisazione):\n';
-    recentReplies.forEach(function(r, idx) {
-      contextData += (idx + 1) + '. "' + r.preview + '"\n';
-    });
-    contextData += ']\n';
-  }
-
-  // Weekly priorities injection
+  } catch(_) {}
   try {
     var supabaseForPrio = require('./db/client').getClient();
     if (supabaseForPrio) {
       var prioRes = await supabaseForPrio.from('weekly_priorities')
-        .select('priorities')
-        .order('week_start', { ascending: false })
-        .limit(1);
-      if (prioRes.data && prioRes.data.length > 0 && prioRes.data[0].priorities) {
-        var prios = prioRes.data[0].priorities;
-        if (Array.isArray(prios) && prios.length > 0) {
-          contextData += '\n🎯 PRIORITÀ SETTIMANA:\n';
-          prios.forEach(function(p) {
-            contextData += '• ' + (p.rank || '') + '. ' + (p.text || p) + '\n';
-          });
-          contextData += 'Queste sono le priorità correnti. Se la richiesta riguarda una di queste, trattala come urgente.\n';
-        }
+        .select('priorities').order('week_start', { ascending: false }).limit(1);
+      var prios = prioRes.data && prioRes.data[0] && prioRes.data[0].priorities;
+      if (Array.isArray(prios) && prios.length > 0) {
+        sections.push('PRIORITÀ DELLA SETTIMANA (se la richiesta le riguarda, trattala come urgente):\n' + prios.map(function(p) {
+          return '• ' + (p.rank || '') + '. ' + (p.text || p);
+        }).join('\n'));
       }
     }
-  } catch(e) { /* ignore */ }
+  } catch(_) {}
 
-  // Tetto al contesto: oltre ~9000 caratteri il segnale annega nel rumore e
-  // il modello smette di leggere le voci in fondo. Tronca a un confine di
-  // riga e dichiara il taglio invece di degradare in silenzio.
-  var CONTEXT_CHAR_BUDGET = 9000;
-  if (contextData.length > CONTEXT_CHAR_BUDGET) {
-    var cutAt = contextData.lastIndexOf('\n', CONTEXT_CHAR_BUDGET);
+  if (options.preflightInstruction) sections.push(String(options.preflightInstruction).trim());
+
+  // Tetto al contesto: oltre il budget il segnale annega nel rumore.
+  var dynamicBody = sections.filter(Boolean).join('\n\n');
+  if (dynamicBody.length > CONTEXT_CHAR_BUDGET) {
+    var cutAt = dynamicBody.lastIndexOf('\n', CONTEXT_CHAR_BUDGET);
     if (cutAt < CONTEXT_CHAR_BUDGET * 0.8) cutAt = CONTEXT_CHAR_BUDGET;
-    logger.warn('[ASK-GIUNO] contextData oltre budget (' + contextData.length + ' char), troncato a ' + cutAt);
-    contextData = contextData.substring(0, cutAt) +
-      '\n[...altro contesto omesso per limiti di spazio — se ti manca un\'informazione usa i tool di ricerca invece di tirare a indovinare]\n';
+    logger.warn('[ASK-GIUNO] contesto oltre budget (' + dynamicBody.length + ' char), troncato a ' + cutAt);
+    dynamicBody = dynamicBody.substring(0, cutAt) +
+      '\n[…altro contesto omesso per limiti di spazio — se ti manca un\'informazione usa i tool di ricerca invece di tirare a indovinare]';
   }
 
-  var messageWithContext = contextData
-    ? resolvedMessage + '\n\n[DATI RECUPERATI:\n' + contextData + ']'
+  var dynamicSystem = buildDynamicSystem({
+    isDM: isDM,
+    allowSilence: !!options.allowSilence,
+    isCC: !!options.isCC,
+    userRolePrompt: getRoleSystemPrompt(userRole),
+    speakerLine: speakerLine,
+    sections: dynamicBody ? ['═══ CONTESTO PER QUESTO TURNO ═══\n' + dynamicBody] : [],
+  });
+
+  var systemBlocks = [
+    { type: 'text', text: buildStaticSystem(), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: dynamicSystem },
+  ];
+
+  // ── Messaggi ──────────────────────────────────────────────────────────────
+  var currentTurnText = (!isDM && !options.skipAuthorLabel)
+    ? '<@' + userId + '>' + (speakerName ? ' (' + speakerName + ')' : '') + ': ' + resolvedMessage
     : resolvedMessage;
+  var messages = history.concat([{ role: 'user', content: currentTurnText }]);
+  if (messages[0].role !== 'user') messages.unshift({ role: 'user', content: '[inizio della conversazione]' });
 
-  var messages = convCache[convKey].concat([{ role: 'user', content: messageWithContext }]);
+  logger.info('[ASK-GIUNO] user:', userId, '| key:', convKey, '| storia:', history.length, 'turni (' + historySource + ')',
+    '| contesto:', dynamicBody.length, 'char | modello:', MODELS.PRIMARY);
 
-  var allTools = registry.getAllTools();
   var finalReply = '';
-  var retryCount = 0;
   var toolsCalled = [];
   var toolEvidence = [];
+  var rounds = 0;
+  var refused = false;
 
   while (true) {
     var response;
     try {
-      response = await callAnthropicWithRetry({
-        model: 'claude-opus-4-8',
-        max_tokens: options.isDM ? 500 : 900,
-        system: buildSystemPrompt(getRoleSystemPrompt(userRole), options.isDM),
-        messages: messages,
-        tools: allTools,
-      });
+      response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, { maxTokens: options.maxTokens }));
     } catch(apiErr) {
       if (apiErr.message === 'API_UNAVAILABLE') {
         return 'Claude è momentaneamente sovraccarico. Riprova tra qualche minuto.';
@@ -1062,92 +973,96 @@ async function askGiuno(userId, userMessage, options) {
       throw apiErr;
     }
 
-    if (response.stop_reason !== 'tool_use') {
-      finalReply = response.content
-        .filter(function(b) { return b.type === 'text'; })
-        .map(function(b) { return b.text; })
-        .join('\n');
+    if (response.stop_reason === 'refusal') {
+      refused = true;
+      logger.warn('[ASK-GIUNO] refusal', response.stop_details ? JSON.stringify(response.stop_details).substring(0, 200) : '');
+      finalReply = extractText(response).trim() || 'Su questo non posso aiutarti.';
       break;
     }
 
+    if (response.stop_reason !== 'tool_use') {
+      finalReply = extractText(response);
+      if (response.stop_reason === 'max_tokens') logger.warn('[ASK-GIUNO] risposta troncata (max_tokens)');
+      break;
+    }
+
+    rounds++;
     messages.push({ role: 'assistant', content: response.content });
 
-    var toolResults = await Promise.all(
-      response.content
-        .filter(function(b) { return b.type === 'tool_use'; })
-        .map(async function(tu) {
-          toolsCalled.push(tu.name);
-          var result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
-          var resultStr = JSON.stringify(result);
-          logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
-          toolEvidence.push(resultStr);
+    var toolUses = response.content.filter(function(b) { return b.type === 'tool_use'; });
+    var toolResults = await Promise.all(toolUses.map(async function(tu) {
+      toolsCalled.push(tu.name);
+      var result;
+      try {
+        result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
+      } catch(toolErr) {
+        result = { error: 'Tool ' + tu.name + ' fallito: ' + (toolErr && toolErr.message) };
+      }
+      var resultStr = JSON.stringify(result);
+      logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
+      toolEvidence.push(resultStr);
+      var isError = !!(result && typeof result === 'object' && result.error && Object.keys(result).length === 1);
+      var block = { type: 'tool_result', tool_use_id: tu.id, content: resultStr };
+      if (isError) block.is_error = true;
+      return block;
+    }));
 
-          return { type: 'tool_result', tool_use_id: tu.id, content: resultStr };
-        })
-    );
-
+    if (rounds >= MAX_TOOL_ROUNDS) {
+      toolResults.push({ type: 'text', text: '[Limite di chiamate tool raggiunto per questo turno: rispondi ora con quello che hai.]' });
+    }
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  if (isNoReply(finalReply)) {
+    if (options.allowSilence || options.isCC) {
+      logger.info('[ASK-GIUNO] il modello ha scelto di non rispondere (key ' + convKey + ')');
+      return NO_REPLY;
+    }
+    // In DM / mention diretta il silenzio non è ammesso: chiedi.
+    finalReply = 'Dimmi pure — a cosa ti riferisci?';
   }
 
   // Output validation — detect hallucinated actions
   var validator = require('../orchestrator/validator');
-  var validation = validator.validate(finalReply, toolsCalled);
-  if (!validation.valid) {
-    finalReply = validator.fallbackResponse(finalReply, validation.issue);
-  }
+  if (!refused) {
+    var validation = validator.validate(finalReply, toolsCalled);
+    if (!validation.valid) finalReply = validator.fallbackResponse(finalReply, validation.issue);
 
-  // B: Detect capitalized names that don't appear anywhere in the evidence we
-  // gave the model. 1-2 unmatched names → soft hedge appended (the user is
-  // warned but the reply still goes out). 3+ → the reply is replaced with a
-  // hard "non sono sicuro" fallback; suppressing wrong-sounding answers is
-  // better than confidently inventing several names.
-  try {
-    // L'evidenza deve includere TUTTO ciò che il modello ha davvero visto:
-    // senza i risultati dei tool, ogni nome letto da un documento risultava
-    // "non ancorato" e la risposta veniva soppressa (caso Nicolò 9/6: tre
-    // rifiuti di fila su un documento appena letto via tool). Idem lo storico
-    // conversazione: un nome citato dall'utente due messaggi fa è legittimo.
-    var historyEvidence = messages.map(function(m) {
-      return typeof m.content === 'string' ? m.content : '';
-    });
-    var ungrounded = validator.findUngroundedEntities(
-      finalReply,
-      [resolvedMessage, contextData].concat(historyEvidence, toolEvidence)
-    );
-    if (ungrounded.length > 0) {
-      logger.warn('[VALIDATOR] Entità non ancorate nel contesto:', ungrounded.join(', '),
-        '| user:', userId, '| reply:', finalReply.substring(0, 120));
-      try {
-        require('./errorTracker').recordError('ungrounded_entities:' + ungrounded.slice(0, 3).join(','), 'ungrounded_entity', userId);
-      } catch(_) {}
-      if (ungrounded.length >= 3) {
-        finalReply = 'Non sono sicuro su alcuni nomi (' + ungrounded.slice(0, 3).join(', ') +
-          '). Preferisco non rispondere a memoria — puoi confermarmi tu di cosa parliamo?';
-      } else {
-        finalReply += '\n\n_(Nota: non ho conferma esplicita su ' + ungrounded.join(', ') + ' — verifica.)_';
+    // Nomi non ancorati: con la storia Slack completa come evidenza i falsi
+    // positivi calano; in ogni caso NON si sopprime più la risposta, si
+    // aggiunge solo una nota quando i nomi sconosciuti sono ≥3.
+    try {
+      var historyEvidence = messages.map(function(m) { return typeof m.content === 'string' ? m.content : ''; });
+      var ungrounded = validator.findUngroundedEntities(finalReply,
+        [resolvedMessage, dynamicBody].concat(historyEvidence, toolEvidence));
+      if (ungrounded.length > 0) {
+        logger.warn('[VALIDATOR] Entità non ancorate nel contesto:', ungrounded.join(', '), '| user:', userId);
+        try { require('./errorTracker').recordError('ungrounded_entities:' + ungrounded.slice(0, 3).join(','), 'ungrounded_entity', userId); } catch(_) {}
+        if (ungrounded.length >= 3) {
+          finalReply += '\n\n_(Nota: non ho conferma nei dati su ' + ungrounded.slice(0, 3).join(', ') + ' — verifica.)_';
+        }
       }
-    }
-  } catch(_) {}
+    } catch(_) {}
+  }
 
   // Response cleanup — strip tool names and technical jargon from output
   finalReply = finalReply
     .replace(/\bread_channel\b|\bsearch_kb\b|\brecall_memory\b|\bsearch_leads\b|\bfind_emails\b|\bsearch_drive\b|\bsummarize_channel\b|\bget_channel_digest\b|\bentity_card\b|\bsearch_everywhere\b|\bupdate_lead\b|\bcreate_lead\b|\bask_gemini\b/gi, '')
-    .replace(/knowledge base aziendale/gi, '')
-    .replace(/\bknowledge base\b/gi, '')
     .replace(/problemi tecnici/gi, 'un problema')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  convCache[convKey].push({ role: 'user', content: messageWithContext });
+  // ── Persistenza (fallback DB) — turni puliti, senza contesto iniettato ─────
+  if (!convCache[convKey]) convCache[convKey] = [];
+  convCache[convKey].push({ role: 'user', content: currentTurnText });
   convCache[convKey].push({ role: 'assistant', content: finalReply });
-  if (convCache[convKey].length > 20) {
+  if (convCache[convKey].length > 30) {
     convCache[convKey] = await compressConversation(convCache[convKey], convKey);
   }
   db.saveConversation(convKey, convCache[convKey]);
-  recordReply(userId, finalReply);
 
-  // Keep the 1:1 DM memory fresh (debounced, Haiku — see maybeUpdateDmSummary).
-  var isDmPrincipal = !options.threadTs && (options.isDM || !options.channelId || (options.channelId && options.channelId.startsWith('D')));
+  if (refused) return finalReply;
+
   if (isDmPrincipal) {
     maybeUpdateDmSummary(userId, convCache[convKey]).catch(function(e) {
       logger.debug('[DM-SUMMARY] background error:', e.message);
@@ -1156,52 +1071,33 @@ async function askGiuno(userId, userMessage, options) {
 
   var learnContext = {
     channelId: options.channelId || null,
-    channelType: options.channelType || 'dm',
-    isDM: !options.channelId || (options.channelId && options.channelId.startsWith('D')),
+    channelType: options.channelType || (isDM ? 'dm' : 'public'),
+    isDM: isDM,
     threadTs: options.threadTs || null,
+    knownMemories: knownMemories,
   };
-  if (options.channelType) learnContext.channelType = options.channelType;
-  if (options.isDM != null) learnContext.isDM = options.isDM;
-  // Pass recent conversation history so autoLearn has full context
-  var recentConv = convCache[convKey] || [];
-  if (recentConv.length > 2) {
-    var convSummary = recentConv.slice(-8).map(function(m) {
-      var role = m.role === 'user' ? 'Utente' : 'Giuno';
-      var text = typeof m.content === 'string' ? m.content : '';
-      return role + ': ' + text.substring(0, 200);
+  var recentTurns = messages.filter(function(m) { return typeof m.content === 'string'; }).slice(-8);
+  if (recentTurns.length > 1) {
+    learnContext.conversationSummary = recentTurns.map(function(m) {
+      return (m.role === 'user' ? 'Utente' : 'Giuno') + ': ' + m.content.substring(0, 240);
     }).join('\n');
-    learnContext.conversationSummary = convSummary;
   }
-  // Detect implicit negative feedback: if user rephrases their question right after
-  var prevMessages = convCache[convKey] || [];
-  if (prevMessages.length >= 4) {
-    var lastUserMsg = null;
-    var secondLastUserMsg = null;
-    for (var pi = prevMessages.length - 1; pi >= 0; pi--) {
-      if (prevMessages[pi].role === 'user' && typeof prevMessages[pi].content === 'string') {
-        if (!lastUserMsg) lastUserMsg = prevMessages[pi].content;
-        else if (!secondLastUserMsg) { secondLastUserMsg = prevMessages[pi].content; break; }
-      }
-    }
-    if (lastUserMsg && secondLastUserMsg) {
-      // If user's last two messages share >40% words, they're rephrasing = bad answer
-      var words1 = lastUserMsg.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
-      var words2 = secondLastUserMsg.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
-      if (words1.length > 2 && words2.length > 2) {
-        var overlap = words1.filter(function(w) { return words2.indexOf(w) !== -1; });
-        if (overlap.length / Math.max(words1.length, words2.length) > 0.4) {
-          try {
-            var errorTracker = require('./errorTracker');
-            errorTracker.recordError(secondLastUserMsg, 'rephrase_detected', userId);
-            logger.info('[FEEDBACK] Rephrase detected — implicit negative feedback');
-          } catch(e) { /* ignore */ }
-          // Mark this user as "in rephrase state" so the auto-learn that's
-          // about to fire skips this turn (don't learn from a bad answer).
-          _markRephrase(userId);
-          try {
-            require('./correctionHandler').handleRephrase(userId, secondLastUserMsg, '').catch(function() {});
-          } catch(_) {}
-        }
+
+  // Implicit negative feedback: l'utente riformula la stessa domanda.
+  var userTurns = history.filter(function(m) { return m.role === 'user' && typeof m.content === 'string'; });
+  var prevUserMsg = userTurns.length > 0 ? userTurns[userTurns.length - 1].content : null;
+  if (prevUserMsg) {
+    var words1 = resolvedMessage.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
+    var words2 = prevUserMsg.toLowerCase().split(/\s+/).filter(function(w) { return w.length > 3; });
+    if (words1.length > 2 && words2.length > 2) {
+      var overlap = words1.filter(function(w) { return words2.indexOf(w) !== -1; });
+      if (overlap.length / Math.max(words1.length, words2.length) > 0.4) {
+        try {
+          require('./errorTracker').recordError(prevUserMsg, 'rephrase_detected', userId);
+          logger.info('[FEEDBACK] Rephrase detected — implicit negative feedback');
+        } catch(_) {}
+        _markRephrase(userId);
+        try { require('./correctionHandler').handleRephrase(userId, prevUserMsg, '').catch(function() {}); } catch(_) {}
       }
     }
   }
@@ -1219,5 +1115,12 @@ module.exports = {
   autoLearn: autoLearn,
   SYSTEM_PROMPT: SYSTEM_PROMPT,
   buildSystemPrompt: buildSystemPrompt,
+  buildDynamicSystem: buildDynamicSystem,
+  buildPrimaryRequest: buildPrimaryRequest,
+  sanitizeStoredTurns: sanitizeStoredTurns,
   conversationKey: conversationKey,
+  extractText: extractText,
+  NO_REPLY: NO_REPLY,
+  isNoReply: isNoReply,
+  PROMPT_VERSION: _PROMPT_VERSION,
 };

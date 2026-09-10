@@ -7,6 +7,8 @@
 // senza match.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { safeParse } = require('../utils/safeCall');
@@ -65,7 +67,7 @@ async function llmMatch(unmatchedTexts, catalog) {
     var client = new Anthropic();
     var res = await withTimeout(function() {
       return client.messages.create({
-        model: 'claude-opus-4-8',
+        model: MODELS.UTILITY,
         max_tokens: 800,
         system: 'Associa ogni task al progetto/cliente giusto della lista, se evidente. ' +
           'Rispondi SOLO con JSON: {"matches": {"<indice task>": "<nome progetto ESATTO dalla lista>"}}. ' +

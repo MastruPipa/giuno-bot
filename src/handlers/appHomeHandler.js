@@ -4,6 +4,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { getUserRole } = require('../../rbac');
@@ -144,7 +146,7 @@ async function buildHomeBlocks(userId) {
       var Anthropic = require('@anthropic-ai/sdk');
       var homeClient = new Anthropic();
       var snapshotRes = await homeClient.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODELS.UTILITY,
         max_tokens: 150,
         system: 'Scrivi 2-3 frasi sullo stato attuale dell\'agenzia basandoti sui dati. Tono: colloquiale, come un collega che ti aggiorna al volo. No elenchi, no bullet point, no titoli. Solo un paragrafo discorsivo. Se non ci sono dati significativi, scrivi una frase generica sul momento.',
         messages: [{ role: 'user', content: 'Dati agenzia oggi:\n' + JSON.stringify(agencyData).substring(0, 500) }],

@@ -11,10 +11,12 @@
 // timeout di default è 2200ms.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var { withTimeout } = require('../utils/retryPolicy');
 
-var MODEL = 'claude-haiku-4-5-20251001';
+var MODEL = MODELS.FAST;
 var AI_TIMEOUT_MS = 2200;
 var HOURS_MIN = 0.5;
 // Cap per riga: il daily è un giorno solo (max 24h), il weekly è l'intera
