@@ -653,6 +653,33 @@ app.command('/giuno', async function(args) {
     return;
   }
 
+  if (/^progett[oi]\b/i.test(text)) {
+    var prjName = text.replace(/^progett[oi]\s*/i, '').trim();
+    try {
+      var dossierAgentCmd = require('../agents/projectDossier');
+      var dossiersDbCmd = require('../services/db/dossiers');
+      if (!prjName) {
+        var dRows = await dossiersDbCmd.listDossiers();
+        var actives = await db.searchProjects({ status: 'active', limit: 200 });
+        var nameById = {};
+        (actives || []).forEach(function(p) { nameById[p.id] = p.name; });
+        var lines = dRows.filter(function(r) { return nameById[r.project_id] && r.dossier && Object.keys(r.dossier).length; })
+          .map(function(r) { return '• ' + nameById[r.project_id] + (r.dossier.fase ? ' (' + r.dossier.fase + ')' : '') + ' — v' + r.version + ' del ' + String(r.built_at || '').slice(0, 10); });
+        await respond({ text: lines.length ? '*Progetti con scheda:*\n' + lines.join('\n') + '\n`/giuno progetto <nome>` per la scheda.' : 'Nessuna scheda ancora: `/giuno admin dossier refresh` per costruirle.', response_type: 'ephemeral' });
+        return;
+      }
+      var prjCmd = await dossierAgentCmd.findProject(prjName);
+      if (!prjCmd) { await respond({ text: 'Nessun progetto attivo che corrisponda a "' + prjName + '".', response_type: 'ephemeral' }); return; }
+      var dRow = await dossiersDbCmd.getDossier(prjCmd.id);
+      if (!dRow || !dRow.dossier || !Object.keys(dRow.dossier).length) {
+        await respond({ text: 'Per *' + prjCmd.name + '* non c\'è ancora una scheda. Un admin può crearla con `/giuno admin dossier refresh ' + prjCmd.name + '`.', response_type: 'ephemeral' });
+        return;
+      }
+      await respond({ text: dossierAgentCmd.formatDossier(prjCmd, dRow), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (text === 'chi sono' || text === 'chisono') {
     try {
       var myRole = await getUserRole(command.user_id);
@@ -1336,6 +1363,46 @@ async function handleAdmin(command, respond) {
         : 'Abilitati a generare: tutto il team tranne i ruoli restricted (imposta HIGGSFIELD_ALLOWED_USERS per limitare).');
       lines.push('`/giuno admin higgsfield disconnect` per scollegare.');
       await respond({ text: lines.join('\n'), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'dossier') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager possono gestire i dossier.', response_type: 'ephemeral' }); return; }
+    var dossierAgentAdm = require('../agents/projectDossier');
+    if (args[1] === 'refresh') {
+      var target = args.slice(2).join(' ').trim();
+      await respond({ text: target && target !== 'all' ? 'Ricostruisco la scheda di "' + target + '"...' : 'Aggiorno i dossier dei progetti con fonti nuove (qualche minuto)...', response_type: 'ephemeral' });
+      try {
+        if (target && target !== 'all') {
+          var prjAdm = await dossierAgentAdm.findProject(target);
+          if (!prjAdm) { await respond({ text: 'Progetto "' + target + '" non trovato.', response_type: 'ephemeral' }); return; }
+          var builtAdm = await dossierAgentAdm.buildDossier(prjAdm);
+          await respond({ text: builtAdm ? dossierAgentAdm.formatDossier(prjAdm, builtAdm.row) : 'Nessuna fonte per ' + prjAdm.name + ': scheda non costruibile.', response_type: 'ephemeral' });
+        } else {
+          var rep = await dossierAgentAdm.refreshDossiers({ limit: 25 });
+          await respond({ text: dossierAgentAdm.formatRefreshReport(rep), response_type: 'ephemeral' });
+        }
+      } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+      return;
+    }
+    if (args[1] === 'weekly') {
+      try { var nSent = await dossierAgentAdm.weeklyProjectsBrief(); await respond({ text: 'Brief settimanale inviato a ' + nSent + ' admin.', response_type: 'ephemeral' }); }
+      catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+      return;
+    }
+    await respond({ text: 'Uso: `/giuno admin dossier refresh [nome|all]` · `/giuno admin dossier weekly` · `/giuno admin gemini-scan [giorni]`', response_type: 'ephemeral' });
+    return;
+  }
+
+  if (sub === 'gemini-scan') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager.', response_type: 'ephemeral' }); return; }
+    var scanDays = parseInt(args[1], 10) || 3;
+    await respond({ text: 'Cerco gli appunti Gemini su Drive degli ultimi ' + scanDays + ' giorni...', response_type: 'ephemeral' });
+    try {
+      var scanner = require('../agents/geminiNotesScanner');
+      var scanRep = await scanner.scanGeminiNotes({ days: scanDays });
+      await respond({ text: scanner.formatReport(scanRep), response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }

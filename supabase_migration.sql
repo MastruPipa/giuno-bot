@@ -301,3 +301,19 @@ CREATE TABLE IF NOT EXISTS mcp_connections (
   connected_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 2026-09-10: dossier di progetto (scheda strutturata tenuta da Giuno)
+CREATE TABLE IF NOT EXISTS project_dossiers (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  dossier JSONB NOT NULL DEFAULT '{}'::jsonb,
+  summary TEXT,
+  sources JSONB,
+  changelog JSONB DEFAULT '[]'::jsonb,
+  version INTEGER DEFAULT 0,
+  needs_refresh BOOLEAN DEFAULT FALSE,
+  last_source_at TIMESTAMPTZ,
+  built_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS project_documents_file ON project_documents(file_id);
+CREATE INDEX IF NOT EXISTS project_documents_project ON project_documents(project_id);

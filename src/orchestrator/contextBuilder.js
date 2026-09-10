@@ -310,8 +310,35 @@ async function buildContext(params) {
     }, '')) || '';
   }
 
+  // Dossier di progetto: se il canale è collegato a un progetto o il messaggio
+  // ne nomina uno, la scheda compatta entra nel contesto.
+  var projectDossier = null;
+  try {
+    var dossiersDb = require('../services/db/dossiers');
+    var matcher = require('../services/projectMatcher');
+    var catalog = await matcher.getCatalog();
+    var hitProject = null;
+    if (options.channelId) {
+      var chanId = 'chan_' + options.channelId;
+      hitProject = catalog.find(function(p) { return p.id === chanId; }) || null;
+      if (!hitProject && channelMapEntry && (channelMapEntry.progetto || channelMapEntry.cliente)) {
+        hitProject = matcher.matchTaskAgainstCatalog(channelMapEntry.progetto || '', catalog) || matcher.matchTaskAgainstCatalog(channelMapEntry.cliente || '', catalog);
+      }
+    }
+    var namedProject = matcher.matchTaskAgainstCatalog(message, catalog);
+    if (namedProject) hitProject = namedProject;
+    if (hitProject) {
+      var dRow = await dossiersDb.getDossier(hitProject.id);
+      if (dRow && dRow.dossier && Object.keys(dRow.dossier).length) {
+        var dossierAgent = require('../agents/projectDossier');
+        projectDossier = { name: hitProject.name, text: dRow.summary || dossierAgent.formatDossier({ name: hitProject.name }, dRow, { compact: true }), built_at: dRow.built_at };
+      }
+    }
+  } catch(e) { logger.debug('[CTX-V2] dossier lookup skipped:', e && e.message); }
+
   return {
     // V1 backward-compatible fields
+    projectDossier:   projectDossier,
     userId:           userId,
     userRole:         userRole,
     profile:          profile,
@@ -356,6 +383,10 @@ function formatContextForPrompt(ctx) {
     if (cp.key_topics) info += '\nTemi: ' + (Array.isArray(cp.key_topics) ? cp.key_topics.join(', ') : cp.key_topics);
     if (cp.team_members) info += '\nTeam: ' + (Array.isArray(cp.team_members) ? cp.team_members.join(', ') : cp.team_members);
     parts.push('CONTESTO CANALE:\n' + info);
+  }
+
+  if (ctx.projectDossier) {
+    parts.push('DOSSIER PROGETTO (scheda tenuta da Giuno, aggiornata al ' + String(ctx.projectDossier.built_at || '').slice(0, 10) + '; per la scheda completa usa get_project_dossier):\n' + ctx.projectDossier.text);
   }
 
   if (ctx.relevantMemories && ctx.relevantMemories.length > 0) {

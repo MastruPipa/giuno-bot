@@ -8,6 +8,22 @@ var logger = require('../utils/logger');
 
 var definitions = [
   {
+    name: 'get_project_dossier',
+    description: 'Scheda (dossier) aggiornata di un progetto: stato, scadenze, rischi, prossimi passi, decisioni, team, referenti. ' +
+      'Usa per "a che punto è X", "scheda/dossier di X", "cosa sappiamo del progetto X", "scadenze di X". Se non esiste, proponi refresh_project_dossier.',
+    input_schema: { type: 'object', properties: { project_name: { type: 'string', description: 'Nome del progetto o del cliente' } }, required: ['project_name'] },
+  },
+  {
+    name: 'refresh_project_dossier',
+    description: 'Ricostruisce ORA la scheda di un progetto da kick-off, recap delle call, canale Slack, ore e allocazioni. Richiede qualche secondo. Solo admin, manager, finance.',
+    input_schema: { type: 'object', properties: { project_name: { type: 'string', description: 'Nome del progetto' } }, required: ['project_name'] },
+  },
+  {
+    name: 'list_project_dossiers',
+    description: 'Elenco dei progetti con scheda (dossier) disponibile, con fase e data di aggiornamento.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'create_project',
     description: 'Crea un nuovo progetto. Collegalo a un cliente/lead se disponibile. Solo admin e manager.',
     input_schema: {
@@ -118,6 +134,37 @@ var definitions = [
 
 async function execute(toolName, input, userId, userRole) {
   input = input || {};
+
+  if (toolName === 'get_project_dossier' || toolName === 'refresh_project_dossier') {
+    var dossierAgent = require('../agents/projectDossier');
+    var dossiersDb = require('../services/db/dossiers');
+    var prj = await dossierAgent.findProject(input.project_name || '');
+    if (!prj) return { error: 'Nessun progetto attivo che corrisponda a "' + input.project_name + '". Usa list_projects per i nomi esatti.' };
+    if (toolName === 'refresh_project_dossier') {
+      if (['admin', 'manager', 'finance'].indexOf(userRole) === -1) return { error: 'Solo admin, manager e finance possono ricostruire un dossier.' };
+      try {
+        var built = await dossierAgent.buildDossier(prj);
+        if (!built) return { project: prj.name, error: 'Nessuna fonte disponibile per ' + prj.name + ' (né kick-off, né recap, né canale attivo, né ore): la scheda non si può costruire.' };
+        return { project: prj.name, version: built.row.version, changes: built.changes, text: dossierAgent.formatDossier(prj, built.row) };
+      } catch(e) { return { error: 'Costruzione dossier fallita: ' + e.message }; }
+    }
+    var row = await dossiersDb.getDossier(prj.id);
+    if (!row || !row.dossier || !Object.keys(row.dossier).length) {
+      return { project: prj.name, no_dossier: true, message: 'Per ' + prj.name + ' non c\'è ancora una scheda. Posso costruirla adesso con refresh_project_dossier (serve un admin/manager).' };
+    }
+    return { project: prj.name, version: row.version, built_at: row.built_at, needs_refresh: !!row.needs_refresh, dossier: row.dossier, text: dossierAgent.formatDossier(prj, row) };
+  }
+
+  if (toolName === 'list_project_dossiers') {
+    var dossiersDb2 = require('../services/db/dossiers');
+    var rows = await dossiersDb2.listDossiers();
+    var active = await db.searchProjects({ status: 'active', limit: 200 });
+    var names = {};
+    (active || []).forEach(function(p) { names[p.id] = p.name; });
+    var list = rows.filter(function(r) { return names[r.project_id] && r.dossier && Object.keys(r.dossier).length; })
+      .map(function(r) { return { project: names[r.project_id], fase: r.dossier.fase || null, built_at: r.built_at, version: r.version, needs_refresh: !!r.needs_refresh }; });
+    return { count: list.length, dossiers: list };
+  }
 
   if (toolName === 'create_project') {
     if (userRole !== 'admin' && userRole !== 'manager' && userRole !== 'finance') {
