@@ -380,3 +380,23 @@ CREATE TABLE IF NOT EXISTS self_reviews (
   review JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ─── Budget ore per progetto (dashboard giun.os; copia di docs/giunos-budgets.sql) ───
+-- Alimentata da src/agents/budgetImporter.js (proposte verified=false) e
+-- confermata da /giuno admin budget conferma. Nessuna scrittura dal frontend.
+CREATE TABLE IF NOT EXISTS giunos_budgets (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  slack_user_id TEXT,
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL CHECK (period_end >= period_start),
+  scope TEXT NOT NULL DEFAULT 'period' CHECK (scope IN ('period','project')),
+  hours NUMERIC NOT NULL CHECK (hours >= 0),
+  source_url TEXT NOT NULL,
+  source_revision TEXT NOT NULL,
+  verified BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS giunos_budget_scope ON giunos_budgets
+  (scope,project_id,COALESCE(slack_user_id,''),period_start,period_end);
+ALTER TABLE giunos_budgets ENABLE ROW LEVEL SECURITY;

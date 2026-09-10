@@ -449,7 +449,50 @@ dati/processo, impatto, sforzo) e cosa non toccare. Va in DM agli admin e in
 [ieri|YYYY-MM-DD]` la forza. Il livello 2 (Giuno scrive la modifica e apre
 la PR) richiede un token GitHub su Railway: da fare quando lo decidi.
 
-## 17. Da fare
+## 17. Il lato dati della dashboard giun.os (budget, ore, backfill, copertura)
+
+La dashboard di Codex (`src/giunos/*`) legge `projects`, `time_logs`,
+`standup_entries`, `project_dossiers`, `project_actions` e `giunos_budgets`.
+Se quelle tabelle sono vuote o sporche, mostra il vuoto. Quattro pezzi
+alimentano il lato dati; nessuno decide da solo, tutti propongono agli admin.
+
+1. **Budget ore per progetto** (`src/agents/budgetImporter.js`). Per ogni
+   progetto attivo propone un budget in ore, in ordine di affidabilità:
+   preventivo in `quotes` (giornate × 8, alta), documento di kick-off nel
+   dossier (ore o giornate nel testo, media), valore in € del deal Attio o
+   del preventivo diviso per la tariffa oraria media della rate card (bassa;
+   `GIUNO_DEFAULT_HOURLY_RATE` se manca la rate card). Le proposte entrano in
+   `giunos_budgets` con `verified=false` e scope `project`; le righe già
+   verificate non si toccano. `/giuno admin budget` anteprima, `budget
+   applica` scrive, `budget conferma <progetto> [ore]` verifica (o crea con
+   le ore indicate). Cron `budget_proposals` il lunedì alle 6:40: scrive le
+   proposte nuove e avvisa gli admin una volta per set (gate proattivo, 7
+   giorni). Il tool `get_project_dossier` aggiunge "Budget ore: X · registrate
+   Y · restano Z". La DDL è in `docs/giunos-budgets.sql` e ora anche in
+   `supabase_migration.sql`: va applicata (Supabase MCP non era autenticato).
+2. **Attribuzione delle ore orfane** (`src/agents/hoursAttribution.js`). Un
+   task del daily senza `project_id` non entra nei consuntivi per progetto.
+   Ogni sera alle 23:30 (`hours_attribution`) i task orfani degli ultimi 14
+   giorni vengono riprovati col catalogo aggiornato (alias dei duplicati
+   uniti, progetti nuovi); quelli risolti aggiornano `standup_entries` e il
+   consuntivo tramite `syncTimeLogsFromDaily`. `/giuno admin attribuzione
+   [giorni] [apply]` mostra chi ha ore senza progetto e con quali task.
+3. **Backfill automatico** (`geminiNotesScanner`, opzione `autoBackfill`):
+   se `project_documents` è vuota, la corsa oraria del cron guarda indietro
+   60 giorni invece di 3, senza aspettare `gemini-scan 60` a mano. Il
+   `refreshDossiers` delle 5:30/18:30 costruisce poi le schede.
+4. **Report di copertura** (`src/agents/coverageReport.js`,
+   `/giuno admin copertura [giorni]`): per ogni persona del roster Google
+   collegato, daily veri/stimati, ore vere/stimate, preferenze spente; stato
+   delle integrazioni (SLACK_USER_TOKEN, OAUTH_ADMIN_TOKEN, Attio, Gemini,
+   Higgsfield); conteggi di progetti, dossier, documenti, azioni, recap,
+   budget; gruppi di duplicati; e una lista "Da sbloccare" con le azioni
+   concrete. È la pagina da leggere prima di fidarsi dei numeri.
+
+Da fare a mano: applicare la DDL di `giunos_budgets`, poi `/giuno admin
+copertura` e seguire la lista.
+
+## 18. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

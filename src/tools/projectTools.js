@@ -153,7 +153,18 @@ async function execute(toolName, input, userId, userRole) {
     if (!row || !row.dossier || !Object.keys(row.dossier).length) {
       return { project: prj.name, no_dossier: true, message: 'Per ' + prj.name + ' non c\'è ancora una scheda. Posso costruirla adesso con refresh_project_dossier (serve un admin/manager).' };
     }
-    return { project: prj.name, version: row.version, built_at: row.built_at, needs_refresh: !!row.needs_refresh, dossier: row.dossier, text: dossierAgent.formatDossier(prj, row) };
+    var budgetInfo = null;
+    try {
+      var bRow = await require('../agents/budgetImporter').budgetStatus(prj.id);
+      if (bRow && bRow.hours != null) {
+        var logsAll = await dossiersDb.getProjectTimeLogs(prj.id, bRow.period_start || '2000-01-01');
+        var registered = Math.round(logsAll.reduce(function(sum, l) { return sum + (Number(l.hours) || 0); }, 0) * 10) / 10;
+        budgetInfo = { hours: Number(bRow.hours), registered_hours: registered, remaining_hours: Math.round((Number(bRow.hours) - registered) * 10) / 10, verified: !!bRow.verified, period: (bRow.period_start || '') + ' → ' + (bRow.period_end || '') };
+      }
+    } catch(_) {}
+    var dossierText = dossierAgent.formatDossier(prj, row);
+    if (budgetInfo) dossierText += '\n*Budget ore:* ' + budgetInfo.hours + 'h' + (budgetInfo.verified ? '' : ' (proposta, non verificata)') + ' · registrate ' + budgetInfo.registered_hours + 'h · restano ' + budgetInfo.remaining_hours + 'h';
+    return { project: prj.name, version: row.version, built_at: row.built_at, needs_refresh: !!row.needs_refresh, dossier: row.dossier, budget: budgetInfo, text: dossierText };
   }
 
   if (toolName === 'list_project_dossiers') {

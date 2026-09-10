@@ -227,6 +227,18 @@ async function updateProjectAction(id, fields) {
   } catch(e) { c.logErr('updateProjectAction', e); }
 }
 
+// Quanti documenti (kick-off, recap…) sono già collegati: 0 → serve il backfill.
+async function countProjectDocuments() {
+  var c = _c();
+  if (!c.useSupabase) return _readDocs().length;
+  try {
+    var res = await c.getClient().from('project_documents').select('*', { count: 'exact', head: true });
+    if (res.error) throw res.error;
+    return res.count || 0;
+  } catch(e) { c.logErr('countProjectDocuments', e); return null; }
+}
+module.exports.countProjectDocuments = countProjectDocuments;
+
 module.exports.addProjectAction = addProjectAction;
 module.exports.listProjectActions = listProjectActions;
 module.exports.updateProjectAction = updateProjectAction;

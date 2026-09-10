@@ -88,3 +88,14 @@ test('scanGeminiNotes: legge Drive, estrae, salva KB, collega al progetto e marc
   assert.equal(rep.actions, 1);
   assert.match(scanner.formatReport(rep), /1 nuovi[\s\S]*Weekly - Meeting Mandorle → mandorle/);
 });
+
+test('scanGeminiNotes autoBackfill: senza documenti collegati guarda indietro 60 giorni', async function() {
+  var queries = [];
+  var fakeDrive = { files: { list: async function(q) { queries.push(q.q); return { data: { files: [] } }; } } };
+  var base = { db: { getKBCache: function() { return []; } }, matcher: { getCatalog: async function() { return []; } }, client: {},
+    tokens: { U1: 'rt' }, roles: [{ slack_user_id: 'U1', role: 'admin' }], drives: { U1: fakeDrive }, docs: { U1: {} }, now: function() { return Date.parse('2026-09-10T12:00:00Z'); } };
+  var r1 = await scanner.scanGeminiNotes({ days: 3, autoBackfill: true, deps: Object.assign({ dossiers: { countProjectDocuments: async function() { return 0; } } }, base) });
+  assert.equal(r1.days, 60); assert.equal(r1.backfill, true); assert.match(queries[0], /2026-07-12/);
+  var r2 = await scanner.scanGeminiNotes({ days: 3, autoBackfill: true, deps: Object.assign({ dossiers: { countProjectDocuments: async function() { return 12; } } }, base) });
+  assert.equal(r2.days, 3); assert.equal(r2.backfill, false); assert.match(queries[1], /2026-09-07/);
+});

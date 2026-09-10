@@ -168,6 +168,16 @@ async function scanGeminiNotes(opts) {
   var gauth = deps.gauth || require('../services/googleAuthService');
   var client = deps.client || require('../services/anthropicService').client;
   var days = opts.days || 3;
+  // Backfill automatico: se non c'è ancora nessun documento collegato ai
+  // progetti (prima installazione, tabella svuotata) la prima corsa guarda
+  // indietro di 60 giorni invece di 3, senza aspettare un comando manuale.
+  var backfilled = false;
+  if (opts.autoBackfill && typeof dossiers.countProjectDocuments === 'function') {
+    try {
+      var nDocs = await dossiers.countProjectDocuments();
+      if (nDocs === 0) { days = opts.backfillDays || 60; backfilled = true; logger.info('[GEMINI-NOTES] nessun documento collegato: backfill di ' + days + ' giorni'); }
+    } catch(_) {}
+  }
   var now = deps.now ? deps.now() : Date.now();
   var sinceIso = new Date(now - days * 86400000).toISOString();
 
@@ -179,7 +189,7 @@ async function scanGeminiNotes(opts) {
   var catalog = await matcher.getCatalog();
   var projectNames = catalog.map(function(p) { return p.name; });
 
-  var report = { scanned: 0, ingested: 0, skipped: 0, errors: 0, files: [] };
+  var report = { scanned: 0, ingested: 0, skipped: 0, errors: 0, files: [], days: days, backfill: backfilled };
   var seen = {};
 
   for (var ui = 0; ui < userIds.length; ui++) {
