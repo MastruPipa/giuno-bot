@@ -968,26 +968,41 @@ var DURATA_OPTIONS = [
 // Daily unico delle 16:00: FATTO OGGI (ore reali — alimentano anche il
 // consuntivo time_logs via project match) + DOMANI (piano) + BLOCCHI.
 // Sostituisce il vecchio daily mattutino (ieri/oggi) E il check-in serale.
-function buildDailyModalBlocks(oggiCount, domaniCount) {
+// Opzione di durata più vicina alle ore decimali della stima.
+function durataOptionFor(hours) {
+  var h = Number(hours) || 0;
+  if (h <= 0) return null;
+  var best = null;
+  DURATA_OPTIONS.forEach(function(o) { var d = Math.abs(parseFloat(o.value) - h); if (!best || d < best.d) best = { o: o, d: d }; });
+  return best ? best.o : null;
+}
+
+function buildDailyModalBlocks(oggiCount, domaniCount, prefill) {
   var blocks = [];
+  prefill = prefill || {};
+  var pOggi = prefill.oggi || [], pDomani = prefill.domani || [];
 
   // ─── OGGI (fatto) ─────────────────────────────────────────────────────
   blocks.push({ type: 'header', text: { type: 'plain_text', text: '✅  Oggi' } });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Cosa hai fatto oggi? Task e ore reali dedicate — contano come consuntivo.' }] });
 
   for (var i = 1; i <= oggiCount; i++) {
+    var po = pOggi[i - 1];
+    var taskEl = { type: 'plain_text_input', action_id: 'task_input',
+      placeholder: { type: 'plain_text', text: i === 1 ? 'Es. Design logo Aitho' : 'Altra attività...' } };
+    if (po && po.task) taskEl.initial_value = po.task;
     blocks.push({
       type: 'input', block_id: 'oggi_task_' + i, optional: i > 1,
       label: { type: 'plain_text', text: 'Task ' + i },
-      element: { type: 'plain_text_input', action_id: 'task_input',
-        placeholder: { type: 'plain_text', text: i === 1 ? 'Es. Design logo Aitho' : 'Altra attività...' } },
+      element: taskEl,
     });
+    var durEl = { type: 'static_select', action_id: 'durata_select', placeholder: { type: 'plain_text', text: 'Tempo' }, options: DURATA_OPTIONS };
+    var poOpt = po ? durataOptionFor(po.hours) : null;
+    if (poOpt) durEl.initial_option = poOpt;
     blocks.push({
       type: 'input', block_id: 'oggi_durata_' + i, optional: true,
       label: { type: 'plain_text', text: '⏱ Durata' },
-      element: { type: 'static_select', action_id: 'durata_select',
-        placeholder: { type: 'plain_text', text: 'Tempo' },
-        options: DURATA_OPTIONS },
+      element: durEl,
     });
   }
 
@@ -1007,18 +1022,22 @@ function buildDailyModalBlocks(oggiCount, domaniCount) {
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Cosa farai domani? Il tempo stimato è opzionale.' }] });
 
   for (var j = 1; j <= domaniCount; j++) {
+    var pd = pDomani[j - 1];
+    var dTaskEl = { type: 'plain_text_input', action_id: 'task_input',
+      placeholder: { type: 'plain_text', text: j === 1 ? 'Es. Mockup sito cliente' : 'Altra attività...' } };
+    if (pd && pd.task) dTaskEl.initial_value = pd.task;
     blocks.push({
       type: 'input', block_id: 'domani_task_' + j, optional: true,
       label: { type: 'plain_text', text: 'Task ' + j },
-      element: { type: 'plain_text_input', action_id: 'task_input',
-        placeholder: { type: 'plain_text', text: j === 1 ? 'Es. Mockup sito cliente' : 'Altra attività...' } },
+      element: dTaskEl,
     });
+    var dDurEl = { type: 'static_select', action_id: 'durata_select', placeholder: { type: 'plain_text', text: 'Tempo' }, options: DURATA_OPTIONS };
+    var pdOpt = pd ? durataOptionFor(pd.hours) : null;
+    if (pdOpt) dDurEl.initial_option = pdOpt;
     blocks.push({
       type: 'input', block_id: 'domani_durata_' + j, optional: true,
       label: { type: 'plain_text', text: '⏱ Durata (opzionale)' },
-      element: { type: 'static_select', action_id: 'durata_select',
-        placeholder: { type: 'plain_text', text: 'Tempo' },
-        options: DURATA_OPTIONS },
+      element: dDurEl,
     });
   }
 
@@ -1037,7 +1056,7 @@ function buildDailyModalBlocks(oggiCount, domaniCount) {
   blocks.push({
     type: 'input', block_id: 'blocchi', optional: true,
     label: { type: 'plain_text', text: '🚧  Blocchi o problemi' },
-    element: { type: 'plain_text_input', action_id: 'blocchi_input', multiline: true,
+    element: { type: 'plain_text_input', action_id: 'blocchi_input', multiline: true, initial_value: prefill.blocchi ? String(prefill.blocchi) : undefined,
       placeholder: { type: 'plain_text', text: 'Qualcosa ti rallenta o ti blocca?' } },
   });
 
@@ -1094,14 +1113,13 @@ app.action('open_daily_modal', async function(args) {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: {
-            type: 'modal', callback_id: 'daily_standup_submit',
-            private_metadata: JSON.stringify({ oggi: 2, domani: 2 }),
-            title: { type: 'plain_text', text: 'Daily Standup' },
-            submit: { type: 'plain_text', text: '✅ Invia' },
-            close: { type: 'plain_text', text: 'Chiudi' },
-            blocks: buildDailyModalBlocks(2, 2),
-          },
+          view: (function() {
+            // Se c'è una proposta di Giuno in sospeso, il modale si apre già compilato.
+            var dsv2 = require('./dailyStandupV2');
+            var prefill = dsv2.prefillFromEstimate(dsv2.getPendingEstimate(args.body.user.id, dsv2.oggi()));
+            var meta = { oggi: Math.max(2, prefill ? prefill.oggi.length : 0), domani: Math.max(2, prefill ? prefill.domani.length : 0), prefill: prefill || undefined };
+            return rebuildDailyModal(meta);
+          })(),
         });
       }, {
         retries: 1,
@@ -1143,7 +1161,7 @@ function rebuildDailyModal(meta) {
     title: { type: 'plain_text', text: 'Daily Standup' },
     submit: { type: 'plain_text', text: '✅ Invia' },
     close: { type: 'plain_text', text: 'Chiudi' },
-    blocks: buildDailyModalBlocks(meta.oggi || 2, meta.domani || 2),
+    blocks: buildDailyModalBlocks(meta.oggi || 2, meta.domani || 2, meta.prefill),
   };
 }
 
@@ -1412,6 +1430,16 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'pipeline') {
+    if (callerRole !== 'admin' && callerRole !== 'manager' && callerRole !== 'finance') { await respond({ text: 'Solo admin, manager e finance.', response_type: 'ephemeral' }); return; }
+    try {
+      var pfAdm = require('../agents/pipelineFollowups');
+      var pfRev = await pfAdm.runPipelineReview({ notify: args[1] === 'notify', staleDays: parseInt(args[1], 10) || undefined });
+      await respond({ text: pfAdm.formatReport(pfRev.issues) + '\n_' + pfRev.open + ' deal aperti su Attio._', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'campagne') {
     if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager.', response_type: 'ephemeral' }); return; }
     try {
@@ -1645,4 +1673,6 @@ module.exports = {
   rehydrateStandupInAttesa: rehydrateStandupInAttesa,
   stats: stats,
   MANSIONI_TEAM: MANSIONI_TEAM,
+  buildDailyModalBlocks: buildDailyModalBlocks,
+  durataOptionFor: durataOptionFor,
 };

@@ -106,8 +106,22 @@ async function queryRecords(object, filter, limit, sorts, offset) {
   });
   return (json && json.data || []).map(function(rec) {
     var createdAt = rec && (rec.created_at || (rec.id && rec.id.created_at)) || null;
-    return { record_id: recordId(rec), values: simplifyValues(rec.values), created_at: createdAt };
+    return { record_id: recordId(rec), values: simplifyValues(rec.values), created_at: createdAt, last_activity_at: lastActivityAt(rec.values, createdAt) };
   });
+}
+
+// Ultima modifica del record: il più recente active_from fra tutti i valori
+// (Attio lo mette su ogni attributo quando cambia). Fallback: created_at.
+function lastActivityAt(values, createdAt) {
+  var max = createdAt ? new Date(createdAt).getTime() : 0;
+  Object.keys(values || {}).forEach(function(slug) {
+    var arr = values[slug];
+    if (!Array.isArray(arr)) return;
+    arr.forEach(function(item) {
+      if (item && item.active_from) { var t = new Date(item.active_from).getTime(); if (t > max) max = t; }
+    });
+  });
+  return max ? new Date(max).toISOString() : null;
 }
 
 async function getRecord(object, id) {
@@ -151,6 +165,7 @@ async function createNote(parentObject, parentRecordId, title, content) {
 }
 
 module.exports = {
+  lastActivityAt: lastActivityAt,
   isConfigured: isConfigured,
   queryRecords: queryRecords,
   getRecord: getRecord,

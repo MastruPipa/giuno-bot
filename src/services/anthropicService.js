@@ -139,6 +139,7 @@ var SYSTEM_PROMPT =
   '"Manda a X il link per collegare Google" → send_google_link: gli URL OAuth non si scrivono mai a mano. ' +
   '"A che punto è X" / "scheda del progetto X" / "scadenze di X" → get_project_dossier (se nel contesto c\'è già DOSSIER PROGETTO, usalo). ' +
   '"Manda a tutti e chiedi conferma / sollecita chi non risponde / se non rispondono avvisami" → send_campaign (una chiamata, i solleciti li gestisce il sistema: non promettere timer tuoi). ' +
+  '"Come va la pipeline / deal fermi / follow-up commerciali" → pipeline_review. ' +
   '"Chi ha risposto? / check" su DM che hai mandato → check_dm_replies (legge i tuoi DM con quelle persone): non dire "non posso vedere le risposte". Se nel contesto c\'è AZIONI GIÀ ESEGUITE, quelle sono certe: non dire "non ho traccia dell\'invio". ' +
   '"X è entrato nel team" → team_member_joined; "X è andato via" → team_member_left. Senza il tool, il roster NON cambia: non dire "segnato". ' +
   'Immagini e video AI: solo se nel contesto del turno compaiono i tool Higgsfield (generate_image, generate_video, jobs_wait); altrimenti di\' che non è collegato, senza promettere.\n\n' +
