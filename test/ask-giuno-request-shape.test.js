@@ -227,3 +227,67 @@ test('askGiuno: risposta senza testo → un retry, poi fallback leggibile (mai s
   var retry = primaryRequests()[1];
   assert.match(retry.messages[retry.messages.length - 1].content, /senza testo/);
 });
+
+test('askGiuno: manda il nucleo di tool (non tutti) e more_tools carica un pacchetto nel round successivo', async function() {
+  var registry = require('../src/tools/registry');
+  var all = registry.getAllTools().length;
+  var origExec = registry.executeToolCall;
+  registry.executeToolCall = async function(name) { return { success: true, name: name }; };
+  captured = [];
+  var calls = 0;
+  var fake = async function(params) {
+    captured.push(params);
+    calls++;
+    if (calls === 1) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'more_tools', input: { pack: 'drive_write' } }], usage: {} };
+    if (calls === 2) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't2', name: 'create_doc', input: { title: 'x' } }], usage: {} };
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Documento creato.' }], usage: {} };
+  };
+  svc.client.messages.create = fake;
+  svc.client.beta = { messages: { create: fake } };
+  try {
+    var reply = await svc.askGiuno('U1', 'che ne pensi del brief?', { isDM: true, channelId: 'D1' });
+    assert.equal(reply, 'Documento creato.');
+    var reqs = primaryRequests();
+    assert.ok(reqs[0].tools.length < all * 0.5, 'nucleo: ' + reqs[0].tools.length + ' su ' + all);
+    assert.ok(!reqs[0].tools.some(function(t) { return t.name === 'create_doc'; }));
+    assert.ok(reqs.slice(1).some(function(r) { return r.tools.some(function(t) { return t.name === 'create_doc'; }); }), 'dopo more_tools il pacchetto è disponibile');
+    // messages è lo stesso array (mutato) in tutte le richieste: cerco il
+    // tool_result di more_tools ovunque nella storia dell'ultima richiesta.
+    var last = reqs[reqs.length - 1];
+    assert.ok(last.messages.some(function(m) {
+      return Array.isArray(m.content) && m.content.some(function(b) { return b.type === 'tool_result' && /Strumenti caricati/.test(String(b.content)); });
+    }), 'il risultato di more_tools torna al modello');
+  } finally { registry.executeToolCall = origExec; }
+});
+
+test('askGiuno: le azioni eseguite vengono registrate e rientrano nel contesto del turno dopo', async function() {
+  var actionLog = require('../src/services/db/actionLog');
+  var registry = require('../src/tools/registry');
+  var origExec = registry.executeToolCall, origLog = actionLog.logAction, origRecent = actionLog.recentActions;
+  var logged = [];
+  actionLog.logAction = async function(key, uid, tool, summary) { logged.push({ key: key, tool: tool, summary: summary }); };
+  actionLog.recentActions = async function() { return logged.map(function(l) { return { tool: l.tool, summary: l.summary, at: new Date().toISOString() }; }); };
+  registry.executeToolCall = async function(name, input) { return { success: true, sent: [{ target: 'U2', name: 'Paolo' }, { target: 'U3', name: 'Giusy' }], message: 'ok' }; };
+  var calls = 0;
+  var fake = async function(params) {
+    captured.push(params);
+    calls++;
+    if (calls === 1) return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'send_dm', input: { target_user_ids: ['U2', 'U3'], message: 'Ciao team, rispondete LETTO' } }], usage: {} };
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Mandato.' }], usage: {} };
+  };
+  svc.client.messages.create = fake;
+  svc.client.beta = { messages: { create: fake } };
+  try {
+    captured = [];
+    await svc.askGiuno('U1', 'manda', { isDM: true, channelId: 'D1' });
+    await new Promise(function(r) { setTimeout(r, 10); });
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0].tool, 'send_dm');
+    assert.match(logged[0].summary, /DM inviato a 2 \(Paolo, Giusy\)/);
+    // Turno dopo: la sezione con le azioni compare nel system dinamico.
+    captured = [];
+    installStub('Sì, l\'ho mandato alle 14:07 a Paolo e Giusy.');
+    await svc.askGiuno('U1', 'hai mandato?', { isDM: true, channelId: 'D1' });
+    assert.match(primaryRequests()[0].system[1].text, /AZIONI GIÀ ESEGUITE[\s\S]*DM inviato a 2 \(Paolo, Giusy\)/);
+  } finally { registry.executeToolCall = origExec; actionLog.logAction = origLog; actionLog.recentActions = origRecent; }
+});

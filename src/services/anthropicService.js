@@ -29,6 +29,36 @@ var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/retryPolicy');
 var modelsConfig = require('../config/models');
 var mcpToolsets = require('./mcpToolsets');
+var toolPacks = require('../tools/toolPacks');
+var actionLog = require('./db/actionLog');
+
+// Tool con effetto nel mondo: quelli che vale la pena ricordare al modello.
+var SIDE_EFFECT_TOOLS = new Set(['send_dm', 'send_campaign', 'cancel_campaign', 'send_email', 'reply_email', 'forward_email', 'send_draft', 'create_event', 'update_event', 'delete_event', 'add_attendees',
+  'share_file', 'edit_doc', 'create_doc', 'edit_slides', 'create_sheet', 'write_sheet', 'create_folder', 'move_file', 'rename_file', 'upload_file', 'pin_message', 'unpin_message', 'set_channel_topic', 'invite_to_channel', 'create_poll',
+  'create_lead', 'update_lead', 'delete_lead', 'attio_create_record', 'attio_update_record', 'attio_add_note', 'create_project', 'update_project', 'allocate_resource', 'log_hours', 'log_time',
+  'team_member_joined', 'team_member_left', 'send_google_link', 'set_reminder', 'remember_this', 'add_to_kb', 'trigger_daily_request', 'trigger_checkin_request', 'trigger_planner_request', 'refresh_project_dossier']);
+
+function _hhmm(iso) { try { return new Date(iso).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' }); } catch(_) { return ''; } }
+
+function _actionSummary(tool, input, result) {
+  input = input || {}; result = result || {};
+  if (tool === 'send_dm') {
+    var names = (result.sent || []).map(function(r) { return r.name || r.target; });
+    return 'DM inviato a ' + names.length + (names.length ? ' (' + names.join(', ') + ')' : '') + (result.failed && result.failed.length ? ', fallito per ' + result.failed.length : '') + ': "' + String(input.message || '').replace(/\s+/g, ' ').substring(0, 90) + '…"';
+  }
+  if (tool === 'send_campaign') return 'Campagna ' + (result.campaign_id || '') + ' avviata: DM a ' + ((result.sent_to || []).join(', ') || '?') + (input.expected_reply ? ', attesa risposta "' + input.expected_reply + '"' : '');
+  if (tool === 'send_email' || tool === 'reply_email' || tool === 'forward_email' || tool === 'send_draft') return tool + (input.to ? ' a ' + input.to : '') + (input.subject ? ' — "' + input.subject + '"' : '');
+  if (tool === 'create_event' || tool === 'update_event') return tool + ': ' + (input.title || input.summary || '') + (input.start ? ' ' + input.start : '');
+  var txt = result.message || result.summary || '';
+  return tool + (txt ? ': ' + String(txt).substring(0, 140) : ': ' + JSON.stringify(input).substring(0, 120));
+}
+
+function formatActionsSection(actions) {
+  if (!actions || !actions.length) return null;
+  return 'AZIONI GIÀ ESEGUITE DA TE IN QUESTA CONVERSAZIONE (registrate dal sistema: sono avvenute davvero, anche se nella storia qui sopra non le vedi):\n' +
+    actions.map(function(a) { return '• ' + _hhmm(a.at) + ' ' + a.summary; }).join('\n') +
+    '\nNon ripeterle se non ti viene chiesto esplicitamente di rifarle; se l\'utente chiede "hai mandato/fatto?", rispondi da questo elenco. Per sapere chi ha risposto in DM usa check_dm_replies (o campaign_status per le campagne).';
+}
 var slackTranscript = require('./slackTranscript');
 
 var MODELS = modelsConfig.MODELS;
@@ -108,12 +138,16 @@ var SYSTEM_PROMPT =
   'Stesso messaggio a più persone → UNA sola send_dm con target_user_ids (mai una chiamata per persona). ' +
   '"Manda a X il link per collegare Google" → send_google_link: gli URL OAuth non si scrivono mai a mano. ' +
   '"A che punto è X" / "scheda del progetto X" / "scadenze di X" → get_project_dossier (se nel contesto c\'è già DOSSIER PROGETTO, usalo). ' +
+  '"Manda a tutti e chiedi conferma / sollecita chi non risponde / se non rispondono avvisami" → send_campaign (una chiamata, i solleciti li gestisce il sistema: non promettere timer tuoi). ' +
+  '"Chi ha risposto? / check" su DM che hai mandato → check_dm_replies (legge i tuoi DM con quelle persone): non dire "non posso vedere le risposte". Se nel contesto c\'è AZIONI GIÀ ESEGUITE, quelle sono certe: non dire "non ho traccia dell\'invio". ' +
+  '"X è entrato nel team" → team_member_joined; "X è andato via" → team_member_left. Senza il tool, il roster NON cambia: non dire "segnato". ' +
   'Immagini e video AI: solo se nel contesto del turno compaiono i tool Higgsfield (generate_image, generate_video, jobs_wait); altrimenti di\' che non è collegato, senza promettere.\n\n' +
 
   'PRIVACY E CANALI\n' +
   'Le chat 1:1 tra te e ogni membro del team sono private: quando riporti a una persona qualcosa emerso in DM con un\'altra, non citare testualmente, ' +
   'non attribuire per nome ("Antonio mi ha detto…"), non ripetere dettagli personali; rielabora il fatto utile o di\' che non puoi condividerlo. ' +
   'In un canale pubblico non esporre cifre di deal, tariffe o giudizi su persone: proponi di continuare in DM. ' +
+  'Le risposte nei DM altrui (campagne, check_dm_replies) le vede SOLO l\'admin che ha mandato il messaggio: a lui riporta chi ha confermato e, se lo chiede, cosa ha scritto; a chiunque altro al massimo "ha risposto / non ha risposto", mai il contenuto. ' +
   'Tagga (<@U…>) qualcuno solo in canale e solo se deve agire; mai in DM, mai quando parli DI qualcuno. ' +
   'Quando citi un membro del team usa il suo tag preso dal roster; se un nome è ambiguo tra collega e cliente, in DM o canale interno è il collega; se non sei sicuro, chiedi.\n\n' +
 
@@ -986,6 +1020,13 @@ async function askGiuno(userId, userMessage, options) {
   }
   if (mcpAttachment && mcpAttachment.section) sections.push(mcpAttachment.section);
 
+  // Azioni con effetto già eseguite in questa conversazione (ultime 24h).
+  try {
+    var recentActs = await actionLog.recentActions(convKey, 24, 12);
+    var actsSection = formatActionsSection(recentActs);
+    if (actsSection) sections.push(actsSection);
+  } catch(actErr) { logger.debug('[ASK-GIUNO] action log:', actErr.message); }
+
   if (options.preflightInstruction) sections.push(String(options.preflightInstruction).trim());
 
   // Tetto al contesto: oltre il budget il segnale annega nel rumore.
@@ -1022,6 +1063,10 @@ async function askGiuno(userId, userMessage, options) {
   logger.info('[ASK-GIUNO] user:', userId, '| key:', convKey, '| storia:', history.length, 'turni (' + historySource + ')',
     '| contesto:', dynamicBody.length, 'char | modello:', MODELS.PRIMARY);
 
+  // Strumenti del turno: nucleo + pacchetti pertinenti (vedi tools/toolPacks).
+  var toolSelection = toolPacks.selectForTurn(getStableTools(), resolvedMessage, history);
+  logger.info('[ASK-GIUNO] tool:', toolSelection.tools.length, '(nucleo ' + toolSelection.core + (toolSelection.packs.length ? ', pacchetti ' + toolSelection.packs.join('+') : '') + ')');
+
   var finalReply = '';
   var toolsCalled = [];
   var toolEvidence = [];
@@ -1034,6 +1079,7 @@ async function askGiuno(userId, userMessage, options) {
     try {
       response = await callAnthropicWithRetry(buildPrimaryRequest(systemBlocks, messages, {
         maxTokens: options.maxTokens,
+        tools: toolSelection.tools,
         mcpServers: mcpAttachment && mcpAttachment.mcp_servers,
         extraTools: mcpAttachment && mcpAttachment.tools,
         betas: mcpAttachment && mcpAttachment.betas,
@@ -1090,13 +1136,23 @@ async function askGiuno(userId, userMessage, options) {
       toolsCalled.push(tu.name);
       var result;
       try {
-        result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
+        if (tu.name === 'more_tools') {
+          // Il modello chiede un pacchetto: dal prossimo round è nella lista.
+          var added = toolPacks.addPack(getStableTools(), toolSelection, (tu.input && tu.input.pack) || '');
+          toolSelection = added.selection;
+          result = added.error ? { error: added.error } : { success: true, loaded: added.loaded, message: added.note || ('Strumenti caricati: ' + added.loaded.join(', ') + '. Ora usali.') };
+        } else {
+          result = await registry.executeToolCall(tu.name, tu.input, userId, userRole);
+        }
       } catch(toolErr) {
         result = { error: 'Tool ' + tu.name + ' fallito: ' + (toolErr && toolErr.message) };
       }
       var resultStr = JSON.stringify(result);
       logger.info('Tool:', tu.name, '| User:', userId, '| Result:', resultStr.substring(0, 80));
       toolEvidence.push(resultStr);
+      if (SIDE_EFFECT_TOOLS.has(tu.name) && result && typeof result === 'object' && !result.error && !result.requires_confirmation) {
+        actionLog.logAction(convKey, userId, tu.name, _actionSummary(tu.name, tu.input, result)).catch(function() {});
+      }
       var isError = !!(result && typeof result === 'object' && result.error && Object.keys(result).length === 1);
       var block = { type: 'tool_result', tool_use_id: tu.id, content: resultStr };
       if (isError) block.is_error = true;
@@ -1214,6 +1270,8 @@ async function askGiuno(userId, userMessage, options) {
 
 module.exports = {
   EMPTY_REPLY_FALLBACK: EMPTY_REPLY_FALLBACK,
+  formatActionsSection: formatActionsSection,
+  _actionSummary: _actionSummary,
   DEFAULT_MAX_TOKENS: DEFAULT_MAX_TOKENS,
   client: client,
   askGiuno: askGiuno,

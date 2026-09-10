@@ -341,3 +341,34 @@ CREATE TABLE IF NOT EXISTS project_actions (
 );
 CREATE INDEX IF NOT EXISTS project_actions_assignee ON project_actions(assignee_slack_id, status);
 CREATE INDEX IF NOT EXISTS project_actions_source ON project_actions(source_file_id, description_key);
+
+-- 2026-09-10: campagne di messaggi con conferma di lettura e solleciti
+CREATE TABLE IF NOT EXISTS message_campaigns (
+  id TEXT PRIMARY KEY,
+  created_by TEXT NOT NULL,
+  created_by_name TEXT,
+  title TEXT,
+  message TEXT NOT NULL,
+  expected_reply TEXT,
+  push_message TEXT,
+  check_interval_min INTEGER DEFAULT 60,
+  max_pushes INTEGER DEFAULT 2,
+  status TEXT DEFAULT 'active',
+  recipients JSONB NOT NULL DEFAULT '[]'::jsonb,
+  next_check_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS message_campaigns_status ON message_campaigns(status, next_check_at);
+
+-- 2026-09-10: registro azioni eseguite per conversazione (memoria dei tool)
+CREATE TABLE IF NOT EXISTS conversation_actions (
+  id BIGSERIAL PRIMARY KEY,
+  conv_key TEXT NOT NULL,
+  user_id TEXT,
+  tool TEXT NOT NULL,
+  summary TEXT,
+  at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS conversation_actions_key ON conversation_actions(conv_key, at);

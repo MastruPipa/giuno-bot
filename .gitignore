@@ -11,3 +11,5 @@ mcp_connections.json
 project_dossiers.json
 project_documents.json
 project_actions.json
+message_campaigns.json
+conversation_actions.json

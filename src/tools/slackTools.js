@@ -130,9 +130,63 @@ var definitions = [
         target_user_names: { type: 'array', items: { type: 'string' }, description: 'Più destinatari per nome' },
         message:           { type: 'string', description: 'Testo del messaggio da inviare' },
         confirmed:         { type: 'boolean', description: 'true solo dopo che l\'utente ha confermato un invio segnalato come sensibile' },
+        force:             { type: 'boolean', description: 'true per rimandare lo stesso testo alla stessa persona entro 30 minuti (di default viene bloccato come doppione)' },
       },
       required: ['message'],
     },
+  },
+  {
+    name: 'check_dm_replies',
+    description: 'Legge i DM fra Giuno e le persone indicate e dice chi ha risposto (e cosa) dopo un certo momento. Usalo per "chi ha risposto?", "check", "hanno letto?" dopo un invio in DM: le risposte le vedi SOLO così. ' +
+      'Con expected_reply (es. "LETTO") distingue chi ha confermato da chi ha scritto altro.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target_user_ids:   { type: 'array', items: { type: 'string' } },
+        target_user_names: { type: 'array', items: { type: 'string' } },
+        since_minutes:     { type: 'integer', description: 'Finestra all\'indietro in minuti (default 240)' },
+        expected_reply:    { type: 'string', description: 'Parola attesa come conferma (opzionale)' },
+      },
+    },
+  },
+  {
+    name: 'send_campaign',
+    description: 'Manda lo stesso messaggio in DM a più persone e GESTISCE DA SOLO la conferma di lettura: aspetta la risposta attesa (es. "LETTO"), sollecita chi non risponde a intervalli, e riferisce a chi ha lanciato la campagna a ogni giro e alla fine. ' +
+      'Usalo quando l\'utente chiede "manda a tutti e chiedi conferma", "sollecita chi non risponde", "ricordaglielo tra un\'ora", "se non rispondono avvisami". Una sola chiamata per tutti i destinatari. Solo admin, manager, finance.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message:             { type: 'string', description: 'Testo del messaggio (già approvato dall\'utente)' },
+        target_user_ids:     { type: 'array', items: { type: 'string' }, description: 'Slack user ID dei destinatari' },
+        target_user_names:   { type: 'array', items: { type: 'string' }, description: 'Oppure i nomi' },
+        expected_reply:      { type: 'string', description: 'Parola/frase attesa come conferma (es. "LETTO"). Vuoto = qualsiasi risposta vale' },
+        check_after_minutes: { type: 'integer', description: 'Minuti fra un controllo e il successivo (default 60)' },
+        max_pushes:          { type: 'integer', description: 'Numero massimo di solleciti per persona (default 2); dopo, Giuno avvisa chi ha lanciato la campagna' },
+        push_message:        { type: 'string', description: 'Testo del sollecito (opzionale)' },
+        title:               { type: 'string', description: 'Titolo breve della campagna (opzionale)' },
+      },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'campaign_status',
+    description: 'Stato delle campagne di messaggi con conferma (chi ha risposto, chi è in attesa, solleciti fatti). Senza campaign_id: tutte quelle attive dell\'utente.',
+    input_schema: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+  },
+  {
+    name: 'cancel_campaign',
+    description: 'Annulla una campagna di messaggi: niente più solleciti.',
+    input_schema: { type: 'object', properties: { campaign_id: { type: 'string' } }, required: ['campaign_id'] },
+  },
+  {
+    name: 'team_member_joined',
+    description: 'Registra una persona NUOVA nel roster del team (nome, alias, mansione) così Giuno la riconosce nei messaggi, negli appunti delle call e nei giri di daily/planner. Usa quando l\'utente dice "X è entrato nel team", "aggiungi X al team". Solo admin e manager.',
+    input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Nome come appare su Slack' }, slack_user_id: { type: 'string' }, role: { type: 'string', description: 'Mansione (es. "Video content")' }, aliases: { type: 'array', items: { type: 'string' } } }, required: ['name'] },
+  },
+  {
+    name: 'team_member_left',
+    description: 'Segna una persona come USCITA dal team (disattivata nel roster: niente più daily, planner, briefing, né menzioni come collega). Usa quando l\'utente dice "X è andato via / ha lasciato". Solo admin e manager. Non dire mai "segnato" senza aver chiamato questo tool.',
+    input_schema: { type: 'object', properties: { name: { type: 'string' }, slack_user_id: { type: 'string' } } },
   },
   {
     name: 'send_google_link',
@@ -416,6 +470,12 @@ var definitions = [
 
 // ─── Tool execution ────────────────────────────────────────────────────────────
 
+// Anti-doppione: stesso testo alla stessa persona entro 30 minuti.
+var DM_DEDUP_MS = 30 * 60000;
+var _recentDms = new Map();
+function _dmHash(text) { return require('crypto').createHash('sha1').update(String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()).digest('hex').slice(0, 16); }
+function _resetDmDedupForTests() { _recentDms.clear(); }
+
 // Destinatari di send_dm: singolo o multipli, per id o per nome.
 function _dmRecipients(input) {
   var out = [];
@@ -457,6 +517,36 @@ async function execute(toolName, input, userId, userRole) {
     } catch(e) { return { error: e.message }; }
   }
 
+  if (toolName === 'check_dm_replies') {
+    // I DM fra Giuno e le altre persone sono privati: solo gli admin possono
+    // vedere chi ha risposto e cosa, e solo per confermare messaggi mandati.
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono verificare le risposte nei DM di Giuno con altre persone.' };
+    var cdUsers = [];
+    try { cdUsers = await getUtenti(); } catch(e) { /* ok */ }
+    var cdRecipients = _dmRecipients(input).map(function(r) {
+      if (!r.id) { var m = _findUserByName(cdUsers, r.name); if (m) { r.id = m.id; r.name = m.name; } }
+      else if (!r.name) { var b = cdUsers.find(function(u) { return u.id === r.id; }); if (b) r.name = b.name; }
+      return r;
+    }).filter(function(r) { return r.id; });
+    if (!cdRecipients.length) return { error: 'Nessun destinatario riconosciuto.' };
+    var sinceTs = String(Math.floor((Date.now() - (Number(input.since_minutes) || 240) * 60000) / 1000));
+    var expected = input.expected_reply ? String(input.expected_reply).toLowerCase() : null;
+    var out = [];
+    for (var ci = 0; ci < cdRecipients.length; ci++) {
+      var rr = cdRecipients[ci];
+      try {
+        var cdOpen = await app.client.conversations.open({ users: rr.id });
+        var hist = await app.client.conversations.history({ channel: cdOpen.channel.id, oldest: sinceTs, limit: 50 });
+        var theirs = (hist.messages || []).filter(function(m) { return m.user === rr.id && !m.bot_id && m.text; }).reverse();
+        var confirmed = expected ? theirs.some(function(m) { return String(m.text).toLowerCase().indexOf(expected) !== -1; }) : theirs.length > 0;
+        out.push({ user_id: rr.id, name: rr.name, replied: theirs.length > 0, confirmed: confirmed, replies: theirs.slice(-3).map(function(m) { return { ts: m.ts, text: String(m.text).substring(0, 200) }; }) });
+      } catch(e) { out.push({ user_id: rr.id, name: rr.name, error: e.message }); }
+    }
+    var yes = out.filter(function(o) { return o.confirmed; }).map(function(o) { return o.name || o.user_id; });
+    var no = out.filter(function(o) { return !o.confirmed && !o.error; }).map(function(o) { return o.name || o.user_id; });
+    return { checked: out.length, confirmed: yes, missing: no, details: out, message: (expected ? 'Hanno confermato "' + input.expected_reply + '": ' : 'Hanno risposto: ') + (yes.join(', ') || 'nessuno') + '. Mancano: ' + (no.join(', ') || 'nessuno') + '.' };
+  }
+
   if (toolName === 'send_dm') {
     var recipients = _dmRecipients(input);
     if (recipients.length === 0) return { error: 'Nessun destinatario: passa target_user_id, target_user_ids o il nome.' };
@@ -476,7 +566,7 @@ async function execute(toolName, input, userId, userRole) {
     if (recipients.some(function(r) { return !r.id || !r.name; })) {
       try { allUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
     }
-    var sent = [], failed = [];
+    var sent = [], failed = [], skippedDup = [];
     for (var ri = 0; ri < recipients.length; ri++) {
       var r = recipients[ri];
       if (!r.id) {
@@ -487,15 +577,28 @@ async function execute(toolName, input, userId, userRole) {
         if (byId) r.name = byId.name;
       }
       if (!r.id) { failed.push({ name: r.name, error: 'destinatario non trovato' }); continue; }
+      // Stesso testo alla stessa persona entro 30 minuti = doppione (il modello
+      // non vede i tool dei turni precedenti e tende a rimandare). force=true
+      // per rimandare davvero.
+      var dupKey = r.id + '|' + _dmHash(input.message);
+      var dupAt = _recentDms.get(dupKey);
+      if (!input.force && dupAt && (Date.now() - dupAt) < DM_DEDUP_MS) {
+        skippedDup.push({ target: r.id, name: r.name || null, already_sent_at: new Date(dupAt).toISOString() });
+        continue;
+      }
       try {
         var convOpen = await app.client.conversations.open({ users: r.id });
         var dmResult = await app.client.chat.postMessage({ channel: convOpen.channel.id, text: input.message });
         logger.info('[DM] Messaggio inviato a', r.id, 'da', userId);
+        _recentDms.set(dupKey, Date.now());
         sent.push({ target: r.id, name: r.name || null, ts: dmResult.ts });
       } catch(e) {
         logger.error('[DM] Errore invio a', r.id, ':', e.message);
         failed.push({ target: r.id, name: r.name || null, error: e.message });
       }
+    }
+    if (sent.length === 0 && skippedDup.length > 0 && failed.length === 0) {
+      return { success: true, already_sent: skippedDup, message: 'Messaggio identico già inviato a ' + skippedDup.map(function(d) { return (d.name || d.target) + ' alle ' + d.already_sent_at.substring(11, 16) + ' UTC'; }).join(', ') + ': NON rimandato. Se va rimandato davvero, richiama con force=true.' };
     }
     if (sent.length === 0) {
       return { error: 'Nessun DM inviato: ' + failed.map(function(f) { return (f.name || f.target) + ' (' + f.error + ')'; }).join(', ') };
@@ -507,8 +610,81 @@ async function execute(toolName, input, userId, userRole) {
       sent: sent,
     };
     if (failed.length) out.failed = failed;
+    if (skippedDup.length) { out.already_sent = skippedDup; out.message += ' Già inviato poco fa (non ripetuto) a: ' + skippedDup.map(function(d) { return d.name || d.target; }).join(', ') + '.'; }
     if (sent.length === 1) { out.target = sent[0].target; out.ts = sent[0].ts; }
     return out;
+  }
+
+  if (toolName === 'send_campaign') {
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono lanciare una campagna con conferma di lettura.' };
+    var cmpRecipients = _dmRecipients(input);
+    if (!cmpRecipients.length) return { error: 'Nessun destinatario: passa target_user_ids o target_user_names.' };
+    var cmpUsers = [];
+    try { cmpUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
+    var resolved = [], missing = [];
+    cmpRecipients.forEach(function(r) {
+      if (!r.id) { var m = _findUserByName(cmpUsers, r.name); if (m) { r.id = m.id; r.name = m.name; } }
+      else if (!r.name) { var b = cmpUsers.find(function(u) { return u.id === r.id; }); if (b) r.name = b.name; }
+      if (r.id) resolved.push(r); else missing.push(r.name);
+    });
+    if (!resolved.length) return { error: 'Destinatari non trovati: ' + missing.join(', ') };
+    var me = cmpUsers.find(function(u) { return u.id === userId; });
+    try {
+      var campaigns = require('../agents/messageCampaigns');
+      var started = await campaigns.startCampaign({
+        createdBy: userId, createdByName: me ? me.name.split(' ')[0] : null, message: input.message, recipients: resolved,
+        expectedReply: input.expected_reply || null, checkAfterMinutes: input.check_after_minutes, maxPushes: input.max_pushes, pushMessage: input.push_message, title: input.title,
+      });
+      var c = started.campaign;
+      return {
+        success: true, campaign_id: c.id, sent_to: c.recipients.map(function(r) { return r.name || r.user_id; }),
+        failed: started.failed.length ? started.failed : undefined, missing: missing.length ? missing : undefined,
+        message: 'Campagna avviata: messaggio inviato a ' + c.recipients.length + ' person' + (c.recipients.length === 1 ? 'a' : 'e') + '. ' +
+          (c.expected_reply ? 'Aspetto "' + c.expected_reply + '"' : 'Aspetto una risposta') + '; primo controllo tra ' + c.check_interval_min + ' minuti, massimo ' + c.max_pushes + ' solleciti, poi avviso chi ha lanciato la campagna. Nessun timer da parte dell\'utente.',
+      };
+    } catch(e) { return { error: 'Campagna non avviata: ' + e.message }; }
+  }
+
+  if (toolName === 'campaign_status') {
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono vedere lo stato delle campagne.' };
+    var campaignsDb = require('../services/db/campaigns');
+    var campaignsAgent = require('../agents/messageCampaigns');
+    if (input.campaign_id) {
+      var one = await campaignsDb.getCampaign(input.campaign_id);
+      if (!one) return { error: 'Campagna non trovata.' };
+      // Il testo delle risposte lo vede solo chi ha lanciato la campagna.
+      var isCreator = one.created_by === userId;
+      var recips = (one.recipients || []).map(function(r) { return { user_id: r.user_id, name: r.name, status: r.status, pushes: r.pushes, replied_at: r.replied_at, reply_text: isCreator ? r.reply_text : undefined }; });
+      return { text: campaignsAgent.formatStatus(one), campaign: { id: one.id, status: one.status, created_by: one.created_by, recipients: recips } };
+    }
+    var mine = await campaignsDb.listCampaigns({ status: 'active', createdBy: userId });
+    if (!mine.length) return { count: 0, message: 'Nessuna campagna attiva lanciata da te.' };
+    return { count: mine.length, text: mine.map(campaignsAgent.formatStatus).join('\n\n') };
+  }
+
+  if (toolName === 'cancel_campaign') {
+    if (userRole !== 'admin') return { error: 'Solo gli admin possono annullare una campagna.' };
+    return await require('../agents/messageCampaigns').cancelCampaign(input.campaign_id, userId);
+  }
+
+  if (toolName === 'team_member_joined' || toolName === 'team_member_left') {
+    if (['admin', 'manager'].indexOf(userRole || 'member') === -1) return { error: 'Solo admin e manager possono modificare il roster del team.' };
+    var tmUsers = [];
+    try { tmUsers = await getUtenti(); } catch(e) { /* ok */ }
+    var tmUser = input.slack_user_id ? tmUsers.find(function(u) { return u.id === input.slack_user_id; }) || { id: input.slack_user_id, name: input.name } : _findUserByName(tmUsers, input.name);
+    if (toolName === 'team_member_left') {
+      var member = (db.findTeamMemberByName && db.findTeamMemberByName(input.name || '')) || (tmUser && db.findTeamMemberById ? db.findTeamMemberById(tmUser.id) : null);
+      var leftId = (member && member.slack_user_id) || (tmUser && tmUser.id);
+      if (!leftId) return { error: 'Non trovo "' + input.name + '" nel roster né su Slack.' };
+      var okLeft = await db.deactivateTeamMember(leftId);
+      return okLeft ? { success: true, message: (member ? member.canonical_name : input.name) + ' segnato come uscito dal team: niente più daily, planner e briefing.' } : { error: 'Disattivazione fallita.' };
+    }
+    if (!tmUser || !tmUser.id) return { error: 'Non trovo "' + input.name + '" fra gli utenti Slack: serve un account Slack attivo (o passa slack_user_id).' };
+    var full = tmUser.name || input.name;
+    var first = String(full).split(/\s+/)[0];
+    var aliasList = (Array.isArray(input.aliases) ? input.aliases : []).concat(first && first.toLowerCase() !== String(full).toLowerCase() ? [first] : []);
+    var savedMember = await db.upsertTeamMember({ slack_user_id: tmUser.id, canonical_name: full, aliases: aliasList, role: input.role || null, active: true });
+    return savedMember ? { success: true, message: full + ' aggiunto al roster' + (input.role ? ' come ' + input.role : '') + '. Riceverà daily e planner; il ruolo di accesso resta "member" finché un admin non lo cambia.' } : { error: 'Salvataggio roster fallito.' };
   }
 
   if (toolName === 'send_google_link') {
@@ -908,6 +1084,9 @@ async function execute(toolName, input, userId, userRole) {
 
   // ─── Read Channel ──────────────────────────────────────────────────────────
   if (toolName === 'read_channel') {
+    if (/^D[A-Z0-9]+$/.test(String(input.channel_id || '')) && userRole !== 'admin') {
+      return { error: 'I messaggi diretti sono privati: non posso leggerli per conto di chi non è admin.' };
+    }
     try {
       var targetChId = input.channel_id;
       if (!targetChId && input.channel_name) {
@@ -1110,4 +1289,4 @@ async function execute(toolName, input, userId, userRole) {
   return { error: 'Tool sconosciuto nel modulo slackTools: ' + toolName };
 }
 
-module.exports = { definitions: definitions, execute: execute };
+module.exports = { definitions: definitions, execute: execute, _resetDmDedupForTests: _resetDmDedupForTests };

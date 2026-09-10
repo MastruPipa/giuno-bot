@@ -335,7 +335,66 @@ tabella `project_actions`):
 - Brief del lunedì: sezione "Fermi da 14+ giorni" (scheda con cose aperte,
   canale muto, zero ore).
 
-## 11. Da fare
+## 11. Campagne con conferma di lettura e roster automatico (fase 6)
+
+**Campagne** (`src/agents/messageCampaigns.js`, tabella `message_campaigns`,
+tool `send_campaign` / `campaign_status` / `cancel_campaign`). "Manda ai 7,
+chiedi LETTO, sollecita chi non risponde, al terzo giro avvisami" ora è una
+sola chiamata: Giuno manda i DM, registra la risposta attesa (o una reaction
+sul messaggio), ogni `check_interval_min` sollecita chi manca fino a
+`max_pushes`, poi marca "senza risposta" e riferisce a chi ha lanciato la
+campagna a ogni giro e alla chiusura. Se la risposta è solo la conferma,
+Giuno mette la spunta e non scomoda il modello; se contiene altro, la
+registra e risponde normalmente. Cron `campaign_check` ogni 10 minuti;
+`/giuno admin campagne [check|annulla <id>]`.
+
+**Roster** (`src/jobs/teamRosterSyncJob.js`, cron `team_roster_sync` 7:20).
+Il roster era fermo a giugno e Giuno dichiarava di aggiornarlo senza tool.
+Ora: users.list → chi manca viene aggiunto (nome, alias, mansione dal
+profilo Slack), chi è disattivato su Slack viene spento, ospiti e bot fuori,
+riepilogo agli admin. Tool `team_member_joined` / `team_member_left` per
+dirlo a Giuno in chat; il prompt vieta "segnato" senza tool. Il `team_join`
+inserisce subito il nuovo collega nel roster. `/giuno admin team sync [dry]`.
+
+## 12. Pacchetti di tool (fase 7)
+
+Ogni turno mandava tutti i 143 tool: ~21.000 token di sole definizioni,
+prima di contesto e storia (media reale il 10/9: 41.000 token in ingresso per
+chiamata). Ora `src/tools/toolPacks.js`:
+- **Nucleo** di ~45 tool sempre presenti (lettura Slack/mail/calendario/Drive,
+  memoria, KB, progetti e dossier, standup e ore, CRM in lettura, DM e
+  campagne, ricerca). L'ultimo tool del nucleo porta il `cache_control`, così
+  il prefisso resta cacheato qualunque pacchetto segua.
+- **Pacchetti** caricati dal testo del turno e dalle ultime due battute:
+  `email_write`, `calendar_write`, `drive_write`, `crm_write`,
+  `projects_write`, `agency`, `team_admin`, `slack_admin`, `memory_admin`.
+- **`more_tools`**: se al modello manca uno strumento, chiede il pacchetto e
+  dal round successivo lo ha. Nessuna funzione persa.
+- Peso: nucleo ~7.500 token contro ~21.000 (−65%); con un pacchetto ~8.500;
+  con tre pacchetti ~12.000. `GIUNO_TOOL_PACKS=off` ripristina tutti i tool.
+- Il test `tool-packs.test.js` verifica che ogni tool del registro sia nel
+  nucleo o in un pacchetto: un tool nuovo senza collocazione fa fallire la suite.
+
+## 13. Memoria delle azioni e risposte nei DM (incidente del pomeriggio)
+
+Alle 14:07 Giuno ha mandato il messaggio ai 7, alle 14:08 di nuovo, alle
+15:03 ha detto "non ho traccia dell'invio" e alle 15:04 lo ha rimandato:
+Alessandra lo ha ricevuto tre volte. Al "check" ha risposto "nessun LETTO"
+mentre Alessandra aveva risposto. Cause: la storia che il modello vede è il
+transcript Slack, senza i tool eseguiti nei turni precedenti; e le risposte
+degli altri stanno nei DM fra Giuno e loro, che il modello non leggeva.
+- `conversation_actions` + `src/services/db/actionLog.js`: ogni tool con
+  effetto (DM, campagne, email, eventi, CRM, roster…) viene registrato e
+  rientra nel contesto come "AZIONI GIÀ ESEGUITE" (24h). Il prompt vieta
+  "non ho traccia" e le ripetizioni non richieste.
+- `send_dm`: stesso testo alla stessa persona entro 30 minuti viene bloccato
+  come doppione (`force=true` per rimandare davvero).
+- Tool `check_dm_replies` (nel nucleo): legge i DM fra Giuno e le persone
+  indicate e dice chi ha risposto e chi ha confermato la parola attesa.
+- Le campagne, a ogni giro, rileggono anche la history dei DM: le risposte
+  arrivate mentre il bot era giù (deploy) contano.
+
+## 14. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
