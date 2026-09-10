@@ -1,0 +1,21 @@
+{
+  "id": "thread-scheduling-tra-colleghi",
+  "description": "Thread in cui Giuno ha già risposto una volta; poi Alessandra e Corrado si organizzano tra loro per presentare una proposta al cliente. Giuno non è taggato: deve restare in silenzio.",
+  "mode": "thread",
+  "userId": "U3",
+  "channelId": "C_EVAL",
+  "threadTs": "1788788415.332739",
+  "allowSilence": true,
+  "channelContext": "CANALE: #preventivi-clienti",
+  "transcript": [
+    { "role": "user", "content": "<@U2> (Corrado): <@U3> MELI DUCI proposta pronta, possiamo contattare il cliente." },
+    { "role": "assistant", "content": "Ho trovato informazioni rilevanti su Meli Duci in KB: proposta \"Ks x MeliDuci_Proposta.pdf\" (luglio) e script contenuti (27 luglio)." },
+    { "role": "user", "content": "<@U3> (Alessandra): <@U2> vuoi che la mando al cliente o deve essere presentata?" },
+    { "role": "user", "content": "<@U2> (Corrado): no ale, facciamoli venire, la presentiamo" }
+  ],
+  "message": "Ok <@U2>, per le disponibilità guardando il tuo calendar propongo: mercoledì pomeriggio alle 15, giovedì pomeriggio alle 15",
+  "expect": {
+    "no_reply": true,
+    "rubric": "Alessandra parla con Corrado: nessuno si rivolge a Giuno. La risposta corretta è il silenzio."
+  }
+}

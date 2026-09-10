@@ -1,0 +1,16 @@
+{
+  "id": "dm-team-uscito-tool",
+  "description": "Antonio dice che una persona ha lasciato il team. Giuno deve usare il tool team_member_left, non limitarsi a dire 'segnato'.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "Nicolò Paolucci è andato via dallo studio, segnalo come uscito dal team",
+  "expect": {
+    "no_reply": false,
+    "must_call_tool": ["team_member_left"],
+    "must_not_include": ["**"],
+    "max_lines": 6,
+    "rubric": "Deve chiamare team_member_left per Nicolò e confermare in una riga che è stato disattivato (niente più daily, planner, briefing). Se il tool fallisce deve dirlo, non fingere."
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "thread-reminder-con-tag",
+  "description": "Nicolò tagga Giuno e chiede di ricordare ad Antonio e Cocco (indicati con i tag <@U…>) tre pubblicazioni del PED. Nel caso reale Giuno ha chiesto 'a chi?' perché non ha letto i tag: deve invece riconoscere le persone e impostare i tre promemoria.",
+  "mode": "mention",
+  "userId": "U4",
+  "channelId": "C_EVAL",
+  "threadTs": "1785503274.904419",
+  "channelContext": "CANALE: #clienti-angela-intelisano (cliente: Angela Intelisano, progetto: piano editoriale)",
+  "transcript": [
+    { "role": "user", "content": "<@U4> (Nicolò): AAANGELA INTELISANO PUBBLICAZIONI. Nel PED ci sono 6 contenuti fino al 25 agosto. 3 pubblicazioni questa settimana: lunedì Holly e Benji (carosello), mercoledì video presentazione del libro, venerdì Goku e Gohan (citazione). Vi ho messo dei Calendar, occhio nel caso in cui lei lasci commenti <@U1> <@U2>." },
+    { "role": "assistant", "content": "Ecco la situazione del PED di agosto: tutti i contenuti realizzati, nessun flag di approvazione. Questa settimana: lun 3/08 Holly e Benji, mer 5/08 reel presentazione libro, ven 7/08 Goku e Gohan. Le pubblicazioni del 26, 28 e 31/08 non sono ancora realizzate." }
+  ],
+  "message": "perfetto ricorda ad <@U1> e <@U2> lunedì 3 ago, mercoledì 5 ago e venerdì 7 ago le pubblicazioni del ped di angela tra le 16:00 e le 17:00",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["a chi devo", "manca il nome", "dimmi le persone", "**"],
+    "must_call_tool": ["set_reminder"],
+    "max_lines": 10,
+    "rubric": "I destinatari sono chiari dai tag (<@U1> e <@U2>): non deve chiedere a chi mandare i promemoria. Deve impostare (o dichiarare di aver impostato, dopo aver chiamato il tool) i promemoria per il 3, 5 e 7 agosto intorno alle 16:00 per entrambi, con il contenuto della pubblicazione del giorno se lo conosce dal thread. Una sola domanda al massimo, solo se davvero necessaria."
+  }
+}

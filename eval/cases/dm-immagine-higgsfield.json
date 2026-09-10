@@ -1,0 +1,15 @@
+{
+  "id": "dm-immagine-higgsfield",
+  "description": "Richiesta di generare un'immagine. Se Higgsfield è collegato deve usare i tool MCP e restituire l'URL; se non è collegato deve dirlo chiaramente senza promettere.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "generami un'immagine del nostro logo su sfondo nero, stile minimal",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["ecco l'immagine che ho creato con la mia fantasia", "non ho la capacità di generare immagini in generale", "**"],
+    "max_lines": 8,
+    "rubric": "Due esiti validi: (a) Higgsfield collegato → chiama generate_image e riporta l'URL su una riga a sé; (b) non collegato → dice che Higgsfield non è collegato e chi può collegarlo (/giuno admin higgsfield), senza promettere l'immagine né inventare link. Non deve dire genericamente di non poter generare immagini."
+  }
+}

@@ -59,8 +59,11 @@ async function runCase(c, deps) {
   };
   var toolsCalled = [];
   var origExec = deps.registry.executeToolCall;
-  deps.registry.executeToolCall = async function(name) {
+  deps.registry.executeToolCall = async function(name, input) {
     toolsCalled.push(name);
+    // Tool con effetto (DM, email, eventi, CRM, roster…): simulati, così i
+    // casi possono pretendere la chiamata senza che l'eval scriva davvero.
+    if (deps.sideEffects && deps.sideEffects.has(name)) return simulateSideEffect(name, input);
     return origExec.apply(this, arguments);
   };
   var started = Date.now();
@@ -74,6 +77,16 @@ async function runCase(c, deps) {
     deps.registry.executeToolCall = origExec;
   }
   return { reply: reply, toolsCalled: toolsCalled, ms: Date.now() - started, error: error };
+}
+
+function simulateSideEffect(name, input) {
+  input = input || {};
+  var targets = [].concat(input.target_user_ids || [], input.target_user_names || [], input.target_user_id || [], input.target_user_name || []);
+  var out = { success: true, simulated: true, message: 'Azione ' + name + ' simulata dall\'eval (nessun effetto reale).' };
+  if (name === 'send_dm') out.sent = targets.map(function(t) { return { target: t, name: t, ts: '0' }; });
+  if (name === 'send_campaign') { out.campaign_id = 'cmp_eval'; out.sent_to = targets; }
+  if (name === 'send_google_link') out.target = targets[0] || null;
+  return out;
 }
 
 async function main() {
@@ -95,6 +108,7 @@ async function main() {
   var deps = {
     route: require('../src/orchestrator/router').route,
     registry: require('../src/tools/registry'),
+    sideEffects: require('../src/services/anthropicService').SIDE_EFFECT_TOOLS,
   };
   var grader = require('../eval/lib/grader');
   var { MODELS } = require('../src/config/models');
@@ -132,7 +146,9 @@ async function main() {
     ran_at: new Date().toISOString(), model: MODELS.PRIMARY, passed: passed, total: results.length, avg_judge: avg, results: results,
   }, null, 2));
   console.log('Risultati in', path.relative(process.cwd(), out));
+  if (flag('json')) console.log('EVAL_JSON ' + JSON.stringify({ passed: passed, total: results.length, avg_judge: avg, file: out, failed: results.filter(function(r) { return !r.pass; }).map(function(r) { return { id: r.id, failures: r.failures, judge: r.judge && r.judge.reason, reply: String(r.reply || '').substring(0, 160) }; }) }));
   process.exit(passed === results.length ? 0 : 1);
 }
 
-main().catch(function(e) { console.error(e); process.exit(1); });
+if (require.main === module) main().catch(function(e) { console.error(e); process.exit(1); });
+module.exports = { simulateSideEffect: simulateSideEffect, loadCases: loadCases };

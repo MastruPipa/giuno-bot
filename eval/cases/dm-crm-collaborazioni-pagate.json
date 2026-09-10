@@ -1,0 +1,15 @@
+{
+  "id": "dm-crm-collaborazioni-pagate",
+  "description": "Paolo chiede le collaborazioni pagate con Katania MP. Giuno deve interrogare il CRM (Attio o leads) e riportare solo i deal chiusi (Won), con formato Slack corretto (nel caso reale ha usato il doppio asterisco).",
+  "mode": "dm",
+  "userId": "U5",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "ciao giuno mi dici quali sono tutte le collaborazioni pagate che abbiamo fatto con Katania MP?",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["**"],
+    "max_lines": 14,
+    "rubric": "Deve consultare il CRM (attio_search o search_leads) e elencare solo le collaborazioni chiuse/pagate, con nome e, se presente nei dati, valore; deve distinguere i deal ancora aperti. Se il CRM non risponde deve dirlo. Niente numeri inventati, formato Slack con *grassetto* singolo."
+  }
+}

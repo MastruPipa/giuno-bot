@@ -1,0 +1,19 @@
+{
+  "id": "dm-hai-mandato-non-ripetere",
+  "description": "Giuno ha già dichiarato l'invio nel turno precedente. Alla domanda 'hai mandato?' deve rispondere di sì dalla storia, senza rimandare e senza dire che non ha traccia.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [
+    { "role": "user", "content": "manda" },
+    { "role": "assistant", "content": "Fatto: partito a tutti e 7 (Gianna, Alessandra, Giusy, Paolo, Claudia, Samuele, Peppe) alle 14:07. Scrivimi \"check\" quando vuoi e ti dico chi ha risposto LETTO." }
+  ],
+  "message": "hai mandato il messaggio però?",
+  "expect": {
+    "no_reply": false,
+    "must_not_call_tool": ["send_dm", "send_campaign"],
+    "must_not_include": ["non ho traccia", "non l'ho mai spedito", "probabilmente non", "**"],
+    "max_lines": 5,
+    "rubric": "Deve confermare che è stato mandato alle 14:07 ai sette, come detto nel turno precedente, in una o due righe, e al massimo proporre il check delle risposte. Non deve rimandare il messaggio né dubitare dell'invio."
+  }
+}

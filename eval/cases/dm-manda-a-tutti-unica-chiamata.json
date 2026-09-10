@@ -1,0 +1,18 @@
+{
+  "id": "dm-manda-a-tutti-unica-chiamata",
+  "description": "Bozza approvata, destinatari confermati, Antonio dice 'manda'. Giuno deve inviare con UNA chiamata (send_dm con più destinatari o send_campaign), non una per persona, e non promettere timer propri.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [
+    { "role": "user", "content": "prepara un messaggio per il team su daily e planner: daily ogni giorno alle 16 col bottone, weekly planner il giovedì. Chiedi di rispondere LETTO. Destinatari: Gianna, Alessandra, Giusy, Paolo, Claudia, Samuele e Peppe." },
+    { "role": "assistant", "content": "Ecco la bozza.\n\n---\nCiao, sono Giuno. Due minuti su daily e planner.\n*Daily, ogni giorno alle 16:00*: vi arriva un DM col bottone Compila daily: cosa avete fatto oggi con le ore reali e cosa farete domani.\n*Weekly Planner, ogni giovedì*: sempre in DM, dichiarate le ore previste per progetto della settimana dopo.\nRispondete a questo messaggio con *LETTO*.\n---\nDestinatari confermati: Gianna, Alessandra, Giusy, Paolo, Claudia, Samuele, Peppe. Dimmi \"manda\" e parte a tutti e sette." }
+  ],
+  "message": "manda",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["non ho un timer", "non posso", "**"],
+    "max_lines": 8,
+    "rubric": "Deve eseguire l'invio ai sette con una sola chiamata di tool (send_dm con target_user_names/ids, oppure send_campaign con expected_reply LETTO, che è la scelta migliore perché gestisce i solleciti) e confermare in poche righe a chi è partito. Non deve riscrivere la bozza, non deve chiedere di nuovo conferma, non deve promettere di 'avvisare tra un'ora' se non ha lanciato una campagna."
+  }
+}

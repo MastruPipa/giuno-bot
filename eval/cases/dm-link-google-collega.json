@@ -1,0 +1,19 @@
+{
+  "id": "dm-link-google-collega",
+  "description": "Antonio (admin) chiede a Giuno di mandare a Samuele il link per collegare Google. Nel caso reale Giuno ha detto di non poterlo generare per conto suo: ora esiste il tool send_google_link e deve usarlo.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [
+    { "role": "user", "content": "samuele ha un account collegato" },
+    { "role": "assistant", "content": "Hai ragione, l'account Slack ce l'ha: Samuele Licciardello. L'unica cosa che gli manca è il collegamento Google, quindi su di lui non riesco a leggere calendario e mail." }
+  ],
+  "message": "mandagli il link per collegarlo",
+  "expect": {
+    "no_reply": false,
+    "must_call_tool": ["send_google_link"],
+    "must_not_include": ["non posso crearne uno", "il link è personale e viene generato sull'utente che lo richiede", "**"],
+    "max_lines": 6,
+    "rubric": "Deve chiamare send_google_link per Samuele e confermare in una o due righe che il link è partito in DM. Non deve dire che non può generarlo, né scrivere un URL a mano."
+  }
+}

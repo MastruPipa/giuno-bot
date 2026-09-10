@@ -302,7 +302,22 @@ async function reviewPendingKB() {
   } catch(e) { c.logErr('reviewPendingKB', e); return { rejected: 0, promoted: 0 }; }
 }
 
+// Esiste già una voce con questo tag? Legge il DB (la cache in memoria si
+// aggiorna solo al reload: ogni giro del cron risalvava gli stessi recap).
+async function kbHasTag(tag) {
+  if (!tag) return false;
+  var c = require('./client');
+  if (c.useSupabase) {
+    try {
+      var res = await c.getClient().from('knowledge_base').select('id').contains('tags', [tag]).limit(1);
+      if (!res.error) return !!(res.data && res.data.length);
+    } catch(e) { /* fallback cache */ }
+  }
+  return (getKBCache() || []).some(function(e) { return Array.isArray(e.tags) && e.tags.indexOf(tag) !== -1; });
+}
+
 module.exports = {
+  kbHasTag: kbHasTag,
   loadKB: loadKB,
   addKBEntry: addKBEntry,
   deleteKBEntry: deleteKBEntry,
