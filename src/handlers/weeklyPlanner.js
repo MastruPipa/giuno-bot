@@ -35,12 +35,13 @@ async function buildPrefillFromWeekDailies(userId) {
     if (!supabase) return null;
     var weekStart = dates.weekStartOf(dates.oggiRome());
     var res = await supabase.from('standup_entries')
-      .select('oggi_tasks')
+      .select('oggi_tasks, source')
       .eq('slack_user_id', userId)
       .gte('date', weekStart)
       .lte('date', dates.oggiRome());
     var tasks = [];
-    (res.data || []).forEach(function(r) { tasks = tasks.concat(r.oggi_tasks || []); });
+    // Le stime non confermate di Giuno non sono ore dichiarate: fuori dal prefill.
+    (res.data || []).forEach(function(r) { if (r.source !== 'estimate') tasks = tasks.concat(r.oggi_tasks || []); });
     var prefill = modals.prefillRowsFromTasks(tasks, modals.MAX_ROWS_PLANNER, 60);
     if (prefill.length > 0) return prefill;
 

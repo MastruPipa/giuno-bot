@@ -1009,6 +1009,21 @@ app.action('open_dm_from_home', async function(args) {
   } catch(e) { logger.debug('[APP-HOME] DM error:', e.message); }
 });
 
+// "Confermo così" sulla proposta di daily ricostruita da Giuno.
+app.action('daily_estimate_confirm', async function(args) {
+  await args.ack();
+  var userId = args.body.user.id;
+  var channel = (args.body.channel && args.body.channel.id) || userId;
+  try {
+    var ok = await require('./dailyStandupV2').confirmEstimate(userId);
+    await app.client.chat.postMessage({
+      channel: channel,
+      text: ok ? 'Registrato come tuo daily ✅ — grazie. Se vuoi cambiare qualcosa, compila il daily e lo sostituisco.'
+               : 'La proposta non è più valida (è di un altro giorno o è già stata sostituita). Compila il daily con il bottone ✏️.',
+    });
+  } catch(e) { logger.error('[DAILY-ESTIMATE] conferma fallita:', e.message); }
+});
+
 app.action('open_daily_modal', async function(args) {
   var ackStart = Date.now();
   await args.ack();

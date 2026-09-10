@@ -167,7 +167,25 @@ SDK `@anthropic-ai/sdk` aggiornato a 0.124.
 - **Repo**: rimossi `.DS_Store` e `user_tokens.json` (era un esempio; il
   fallback JSON crea il file da solo se serve).
 
-## 6. Da fare
+## 6. Daily stimato per chi non compila
+
+- **17:30** (`daily_push`): per chi non ha risposto, `src/agents/dailyEstimator.js`
+  raccoglie le tracce della giornata — piano scritto nel daily precedente,
+  pianificazione settimanale, calendario Google, messaggi Slack (serve
+  `SLACK_USER_TOKEN` con `search:read`), oggetti delle email — e Sonnet 5
+  ricostruisce un daily (task con tracce reali, ore solo da calendario o
+  piano, totale ≤ 8h). La proposta arriva in DM con **Confermo così** /
+  **Lo compilo io**. Senza tracce, il push resta quello di prima.
+- **18:00** (`daily_recap`): chi non ha risposto né confermato riceve una
+  entry `source = 'estimate'`, pubblicata in #daily marcata "stima di Giuno,
+  non confermata". Le ore stimate **non** entrano in `time_logs`, nel carico
+  (`workloadService`), nel prefill del planner né nei totali di
+  `query_standup` (che le elenca a parte).
+- **Sovrascrittura**: qualsiasi daily vero (modale, DM, canale, conferma del
+  bottone → `estimate_confirmed`) sostituisce la stima e allora sì alimenta il
+  consuntivo. Disattivabile con `DAILY_ESTIMATES_ENABLED=false`.
+
+## 7. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
