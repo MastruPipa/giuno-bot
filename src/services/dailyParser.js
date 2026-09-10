@@ -94,8 +94,7 @@ async function parseDailyText(rawText) {
     var parsed = safeParse('DAILY-PARSER', jsonMatch[0], null);
     var normalized = normalizeParsed(parsed);
     if (normalized) {
-      logger.info('[DAILY-PARSER] Estratti', normalized.ieri.length, 'task ieri,',
-        normalized.oggi.length, 'task oggi (', normalized.totalOggi, 'h oggi)');
+      logger.info('[DAILY-PARSER] Estratti', normalized.oggi.length, 'task oggi (', normalized.totalOggi, 'h oggi)');
     }
     return normalized;
   } catch(e) {

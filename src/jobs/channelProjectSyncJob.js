@@ -79,6 +79,7 @@ async function syncProjectsFromChannels() {
 
     // Verifica attività nella finestra (ultimi 30g).
     var activity = await slackService.channelActivity(channelId, ACTIVITY_DAYS, 1);
+    if (!activity || activity.error) throw new Error('Attività Slack non disponibile: ' + channelId);
     if (!activity.active) continue;
 
     var name = entry.progetto || entry.cliente || entry.channel_name;
@@ -101,7 +102,8 @@ async function syncProjectsFromChannels() {
     };
     activeIds.push(row.id);
     var res = await db.upsertSyncedProject(row);
-    if (res) synced++;
+    if (!res) throw new Error('Sincronizzazione progetto fallita: ' + row.id);
+    synced++;
   }
 
   var archived = await db.archiveStaleSyncedProjects('chan_%', activeIds);

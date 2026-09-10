@@ -84,6 +84,8 @@ async function upsertSyncedProject(row) {
 async function archiveStaleSyncedProjects(prefix, activeIds) {
   if (!c.useSupabase) return 0;
   if (Array.isArray(prefix)) { activeIds = prefix; prefix = 'attio_%'; }
+  // An empty snapshot must never bulk-archive the catalogue automatically.
+  if (!Array.isArray(activeIds) || activeIds.length === 0) return 0;
   try {
     var q = c.getClient().from('projects')
       .update({ status: 'archived', updated_at: new Date().toISOString() })

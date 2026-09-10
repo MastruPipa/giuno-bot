@@ -11,17 +11,19 @@ async function acquireCronLock(jobName, ttlMinutes) {
   ttlMinutes = ttlMinutes || 10;
   try {
     var expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
-    await c.getClient().from('cron_locks').delete().eq('job_name', jobName).lt('expires_at', new Date().toISOString());
+    var expired = await c.getClient().from('cron_locks').delete().eq('job_name', jobName).lt('expires_at', new Date().toISOString());
+    if (expired.error) throw expired.error;
     var res = await c.getClient().from('cron_locks').insert({ job_name: jobName, locked_at: new Date().toISOString(), locked_by: INSTANCE_ID, expires_at: expiresAt });
     if (res.error) {
+      if (res.error.code !== '23505') throw res.error;
       process.stdout.write('[CRON-LOCK] ' + jobName + ' già in esecuzione, skip.\n');
       return false;
     }
     process.stdout.write('[CRON-LOCK] Lock acquisito: ' + jobName + '\n');
     return true;
   } catch(e) {
-    process.stdout.write('[CRON-LOCK] Errore (procedo): ' + e.message + '\n');
-    return true;
+    logger.error('[CRON-LOCK] Lock non disponibile:', e.message);
+    throw e;
   }
 }
 

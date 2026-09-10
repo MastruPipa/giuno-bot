@@ -348,10 +348,9 @@ function hasStructuredTasks(entry) {
 async function syncTimeLogsFromDaily(userId, dateStr, structured, opts) {
   opts = opts || {};
   try {
-    if (!structured || !structured.oggi || structured.oggi.length === 0) return;
+    if (!structured || !Array.isArray(structured.oggi)) return;
     var workloadService = require('../services/workloadService');
     var rows = workloadService.deriveTimeLogRows(structured.oggi, userId, dateStr);
-    if (rows.length === 0) return;
     if (opts.estimate) {
       // Ore STIMATE da Giuno: entrano nel consuntivo (scelta esplicita di
       // Antonio, 10/9/2026) ma restano riconoscibili: la compilazione vera
@@ -361,7 +360,19 @@ async function syncTimeLogsFromDaily(userId, dateStr, structured, opts) {
         r.validation = { status: 'estimate', confidence: opts.confidence || 'bassa', sources: opts.sources || [] };
       });
     }
-    var res = await db.replaceTimeLogs(userId, dateStr, 'daily', rows);
+    // An unresolved task is not evidence that an earlier project disappeared.
+    // Only a fully matched snapshot (including an explicitly empty one) may delete.
+    var unresolved = structured.oggi.some(function(t) {
+      return t && !t.project_id && ((Number(t.hours) || 0) + (Number(t.minutes) || 0) / 60 > 0);
+    });
+    var res;
+    if (unresolved) {
+      var saved = await db.saveTimeLogs(rows);
+      res = saved === null ? null : { saved: saved, removedProjectIds: [] };
+      logger.warn('[DAILY-V2] Attribuzione incompleta: conservate le ore degli altri progetti');
+    } else {
+      res = await db.replaceTimeLogs(userId, dateStr, 'daily', rows, { estimate: !!opts.estimate });
+    }
     if (res === null) {
       logger.warn('[DAILY-V2] Consuntivo time_logs non scritto per', userId, dateStr);
       return;
@@ -687,17 +698,17 @@ async function publishDailySummary() {
 function scheduleDailyJobs(cron) {
   // 16:00 Mon-Fri — Send daily requests
   cron.schedule('0 16 * * 1-5', function() {
-    sendDailyRequests().catch(function(e) { logger.error('[DAILY-V2] Errore invio:', e.message); });
+    return sendDailyRequests();
   }, { timezone: 'Europe/Rome', name: 'daily_send', lockTtl: 15 });
 
   // 17:30 Mon-Fri — Push to missing responders
   cron.schedule('30 17 * * 1-5', function() {
-    pushMissingResponders(1).catch(function(e) { logger.error('[DAILY-V2] Errore push:', e.message); });
+    return pushMissingResponders(1);
   }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 15 });
 
   // 18:00 Mon-Fri — Publish unified summary
   cron.schedule('0 18 * * 1-5', function() {
-    publishDailySummary().catch(function(e) { logger.error('[DAILY-V2] Errore recap:', e.message); });
+    return publishDailySummary();
   }, { timezone: 'Europe/Rome', name: 'daily_recap', lockTtl: 15 });
 
   logger.info('[DAILY-V2] Cron jobs schedulati: 16:00 send, 17:30 push, 18:00 recap');
