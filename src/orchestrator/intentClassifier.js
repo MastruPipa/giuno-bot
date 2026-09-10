@@ -1,18 +1,18 @@
 // ─── Intent Classifier ─────────────────────────────────────────────────────────
 // Classifies user intent into one of:
-//   THREAD_SUMMARY | DAILY_DIGEST | CLIENT_RETRIEVAL | GENERAL
-// Uses keyword matching first, falls back to a fast LLM call if ambiguous.
+//   DAILY_DIGEST | QUOTE_SUPPORT | CRM_UPDATE | HISTORICAL_SCAN | PROSPECTING | GENERAL
+// Solo regole a parole chiave. Ricalibrazione 2026-09: via THREAD_SUMMARY e
+// CLIENT_RETRIEVAL (l'assistente generale ha tutti i tool E il thread Slack in
+// mano, gli agenti dedicati perdevano il contesto) e via il fallback Haiku
+// (una chiamata in più per ogni messaggio ambiguo, che finiva quasi sempre in
+// GENERAL comunque).
 
 'use strict';
-
-var { MODELS } = require('../config/models');
 
 var logger = require('../utils/logger');
 
 var INTENTS = {
-  THREAD_SUMMARY:   'THREAD_SUMMARY',
   DAILY_DIGEST:     'DAILY_DIGEST',
-  CLIENT_RETRIEVAL: 'CLIENT_RETRIEVAL',
   QUOTE_SUPPORT:    'QUOTE_SUPPORT',
   CRM_UPDATE:       'CRM_UPDATE',
   HISTORICAL_SCAN:  'HISTORICAL_SCAN',
@@ -23,14 +23,6 @@ var INTENTS = {
 // ─── Keyword rules ─────────────────────────────────────────────────────────────
 
 var RULES = [
-  {
-    intent: INTENTS.THREAD_SUMMARY,
-    keywords: [
-      'riassumi', 'riassunto', 'cosa mi sono perso', 'recap thread', 'recap canale',
-      'summarize', 'sintetizza', 'cosa è successo in',
-      'cosa hanno detto', 'riepiloga',
-    ],
-  },
   {
     intent: INTENTS.DAILY_DIGEST,
     keywords: [
@@ -110,14 +102,6 @@ var RULES = [
       return true;
     },
   },
-  {
-    intent: INTENTS.CLIENT_RETRIEVAL,
-    keywords: [
-      'dimmi di', 'info su', 'cosa sai di',
-      'lavoriamo con', 'chi è', 'storia di',
-      'dossier', 'cerca tutto su',
-    ],
-  },
 ];
 
 // ─── Classifier ───────────────────────────────────────────────────────────────
@@ -164,35 +148,6 @@ async function classifyIntent(message) {
         return rule.intent;
       }
     }
-  }
-
-  // Ambiguous → fast LLM classification
-  try {
-    var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
-    var res = await client.messages.create({
-      model: MODELS.FAST,
-      max_tokens: 20,
-      system:
-        'Classifica questa richiesta in UNA di queste categorie. Rispondi SOLO con la categoria, nessun altro testo:\n' +
-        'THREAD_SUMMARY — recap/riassunto thread o canale Slack\n' +
-        'DAILY_DIGEST — briefing giornaliero, agenda, mail, piano del giorno\n' +
-        'CLIENT_RETRIEVAL — info su un cliente, progetto o preventivo specifico\n' +
-        'QUOTE_SUPPORT — l\'utente CHIEDE di generare/stimare un preventivo nuovo (es. "quanto costerebbe fare X?"). NON usare se l\'utente fornisce già i numeri.\n' +
-        'CRM_UPDATE — aggiornamento CRM, modifica dati lead, cambio status. INCLUDE: "modifica la quotazione/offerta di X", "sono X€ al mese", "la proposta è di X€" (= l\'utente dà dati da salvare, non chiede una stima)\n' +
-        'HISTORICAL_SCAN — scan storico Slack/Drive, indicizzazione, stato scan\n' +
-        'GENERAL — tutto il resto. NEL DUBBIO, scegli GENERAL. Meglio GENERAL che un intent sbagliato.\n' +
-        'ATTENZIONE: se l\'utente dice "modifica" + fornisce importi in €, è SEMPRE CRM_UPDATE, MAI QUOTE_SUPPORT.\n' +
-        'Se il messaggio è conversazionale, una domanda generica, o ambiguo → GENERAL.',
-      messages: [{ role: 'user', content: message }],
-    });
-    var intent = (res.content[0].text || '').trim().toUpperCase();
-    if (INTENTS[intent]) {
-      logger.info('[INTENT] LLM → ' + intent);
-      return intent;
-    }
-  } catch(e) {
-    logger.warn('[INTENT] LLM fallback error:', e.message);
   }
 
   logger.info('[INTENT] Default → GENERAL');

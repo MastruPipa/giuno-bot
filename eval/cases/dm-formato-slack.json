@@ -1,0 +1,16 @@
+{
+  "id": "dm-formato-slack",
+  "seed": true,
+  "description": "Richiesta strutturata in DM: risposta ordinata ma in formato Slack, senza markdown da documento.",
+  "mode": "dm",
+  "userId": "U_EVAL",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "fammi una lista dei tool che puoi usare per le email, in tre righe",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["**", "## "],
+    "max_lines": 6,
+    "rubric": "Elenco breve e concreto delle capacità email (leggere, cercare, rispondere, inoltrare, bozza) senza nominare gli identificativi tecnici dei tool. Formato Slack: *grassetto* singolo o elenco con •, massimo poche righe."
+  }
+}

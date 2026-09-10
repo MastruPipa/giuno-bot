@@ -1,0 +1,19 @@
+{
+  "id": "dm-follow-up-breve",
+  "seed": true,
+  "description": "In DM, un messaggio breve si riferisce al turno precedente: Giuno deve risolvere il riferimento senza chiedere di ripetere.",
+  "mode": "dm",
+  "userId": "U_EVAL",
+  "channelId": "D_EVAL",
+  "transcript": [
+    { "role": "user", "content": "Per il rebranding di Tomarchio abbiamo detto consegna moodboard venerdì e presentazione al cliente il martedì dopo, giusto?" },
+    { "role": "assistant", "content": "Sì: moodboard venerdì, presentazione al cliente il martedì successivo." }
+  ],
+  "message": "e chi la presenta?",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["a cosa ti riferisci", "quale presentazione", "non ho capito"],
+    "max_lines": 6,
+    "rubric": "Deve capire che 'la' è la presentazione al cliente Tomarchio del martedì. Se non ha il dato su chi la presenta, deve dirlo in una riga e al massimo proporre di verificare, senza inventare un nome. Non deve chiedere di ripetere il contesto."
+  }
+}

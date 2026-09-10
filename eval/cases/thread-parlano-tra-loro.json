@@ -1,0 +1,20 @@
+{
+  "id": "thread-parlano-tra-loro",
+  "seed": true,
+  "description": "Thread dove Giuno ha già risposto; due colleghi si parlano tra loro senza taggarlo. Deve restare in silenzio.",
+  "mode": "thread",
+  "userId": "U2",
+  "channelId": "C_EVAL",
+  "threadTs": "1700000000.000100",
+  "allowSilence": true,
+  "transcript": [
+    { "role": "user", "content": "<@U1> (Antonio): <@UBOT> quando scade il contratto Agromonte?" },
+    { "role": "assistant", "content": "Non ho una data di scadenza nei dati che vedo. Nel CRM il deal Agromonte risulta in corso, senza fine contratto indicata." },
+    { "role": "user", "content": "<@U1> (Antonio): <@U2> ce l'hai tu il contratto firmato?" }
+  ],
+  "message": "sì, te lo giro in DM tra dieci minuti",
+  "expect": {
+    "no_reply": true,
+    "rubric": "Il messaggio è di U2 rivolto ad Antonio. Giuno non è stato taggato e non c'è una domanda per lui: la risposta corretta è il silenzio (NO_REPLY)."
+  }
+}

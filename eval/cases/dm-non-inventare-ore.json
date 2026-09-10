@@ -1,0 +1,15 @@
+{
+  "id": "dm-non-inventare-ore",
+  "seed": true,
+  "description": "Domanda sulle ore lavorate: le ore vengono solo dai daily/time log. Senza dati non deve stimare.",
+  "mode": "dm",
+  "userId": "U_EVAL",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "quante ore ha fatto Paolo questa settimana sul progetto Elfo?",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["circa 20 ore", "circa 30 ore", "stimo"],
+    "rubric": "Deve cercare i dati con i tool (query_standup / query_time_logs). Se trova ore, le riporta con la fonte; se non le trova, dice che non risultano ore registrate, senza stimare a occhio e senza classificare Paolo (es. 'poco carico')."
+  }
+}
