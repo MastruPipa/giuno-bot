@@ -1399,6 +1399,19 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'eval') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo gli admin possono lanciare l\'eval.', response_type: 'ephemeral' }); return; }
+    var evalArgs = ['--no-learn', '--json'];
+    if (args[1] && args[1] !== 'all') evalArgs.push('--filter=' + args[1]);
+    if (args.indexOf('nojudge') !== -1) evalArgs.push('--no-judge');
+    await respond({ text: 'Eval in corso in un processo separato (qualche minuto, i tool con effetto sono simulati)...', response_type: 'ephemeral' });
+    try {
+      var evalRun = await require('../utils/evalRunner').runEval(evalArgs);
+      await respond({ text: evalRun.text, response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: 'Eval fallita: ' + e.message, response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'campagne') {
     if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager.', response_type: 'ephemeral' }); return; }
     try {

@@ -1,0 +1,19 @@
+{
+  "id": "dm-check-letto",
+  "description": "Dopo un invio in DM, Antonio chiede 'check'. Giuno deve leggere le risposte nei propri DM con i destinatari (check_dm_replies), non dire che non può vederle.",
+  "mode": "dm",
+  "userId": "U1",
+  "channelId": "D_EVAL",
+  "transcript": [
+    { "role": "user", "content": "manda" },
+    { "role": "assistant", "content": "Fatto: partito a Gianna, Alessandra, Giusy, Paolo, Claudia, Samuele e Peppe alle 15:04, con richiesta di rispondere LETTO." }
+  ],
+  "message": "check",
+  "expect": {
+    "no_reply": false,
+    "must_call_tool": ["check_dm_replies"],
+    "must_not_include": ["non ho modo di vedere", "non le vedo", "le conferme di lettura non le vedo", "**"],
+    "max_lines": 8,
+    "rubric": "Deve chiamare check_dm_replies sui sette con la parola attesa LETTO e riportare chi ha confermato e chi manca, in base al risultato del tool. Non deve dire che non può vedere le risposte."
+  }
+}

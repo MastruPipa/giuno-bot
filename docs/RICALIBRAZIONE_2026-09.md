@@ -394,7 +394,28 @@ degli altri stanno nei DM fra Giuno e loro, che il modello non leggeva.
 - Le campagne, a ogni giro, rileggono anche la history dei DM: le risposte
   arrivate mentre il bot era giù (deploy) contano.
 
-## 14. Da fare
+## 14. Recap duplicati ed eval con casi reali (fase 8)
+
+- **Recap duplicati**: la cache KB in memoria non vedeva gli insert dello
+  stesso giorno, quindi ogni giro del cron risalvava gli stessi recap (fino a
+  4 copie, 15 righe cancellate il 10/9). Ora `db.kbHasTag` controlla il DB,
+  un insieme per-run copre lo stesso evento su più calendari, e il doc Gemini
+  letto dal calendario porta `drive_file_id:` così lo scanner Drive lo salta.
+- **Eval**: 12 casi nuovi ricavati da conversazioni vere (thread
+  #preventivi-clienti e #clienti-angela-intelisano, DM di Antonio e Paolo),
+  anonimizzati con U1…U5: "segui qui?", silenzio quando i colleghi si
+  organizzano tra loro, reminder con destinatari nei tag, to-do in testo
+  libero, link Google a un collega, invio ai 7 in una chiamata, "hai
+  mandato?" senza rimandare, "check" con `check_dm_replies`, uscita dal team
+  col tool, CRM senza doppio asterisco, recap progetti con le persone giuste,
+  immagine con Higgsfield collegato o no.
+- Il runner **simula i tool con effetto** (DM, email, eventi, CRM, roster,
+  reminder): i casi possono pretendere la chiamata senza scrivere davvero.
+- **`/giuno admin eval [filtro] [nojudge]`** lancia l'harness in un processo
+  separato su Railway (stesse chiavi) e risponde con superati/totale, punteggio
+  del giudice e i casi falliti con motivo. Prima serviva un `.env` locale.
+
+## 15. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

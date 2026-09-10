@@ -38,6 +38,15 @@ async function scanMeetingRecaps() {
     var userIds = Object.keys(tokens);
     var totalSaved = 0;
     var kbCache = (typeof db.getKBCache === 'function') ? db.getKBCache() : [];
+    // Dedup: cache in memoria + DB (la cache non vede gli insert dello stesso
+    // giorno: prima ogni giro risalvava gli stessi recap, fino a 4 copie) +
+    // insieme dei tag salvati in questo giro (stesso evento su più calendari).
+    var savedNow = new Set();
+    async function isAlreadySaved(tag) {
+      if (savedNow.has(tag) || alreadySaved(kbCache, tag)) return true;
+      if (typeof db.kbHasTag === 'function') { try { if (await db.kbHasTag(tag)) return true; } catch(_) {} }
+      return false;
+    }
 
     for (var ui = 0; ui < userIds.length; ui++) {
       var userId = userIds[ui];
@@ -59,7 +68,8 @@ async function scanMeetingRecaps() {
           var msgId = messages[mi].id;
 
           // Dedup by exact tag match against the loaded KB cache.
-          if (alreadySaved(kbCache, 'gmail_id:' + msgId)) continue;
+          if (await isAlreadySaved('gmail_id:' + msgId)) continue;
+          savedNow.add('gmail_id:' + msgId);
 
           // Read the email
           try {
@@ -176,10 +186,12 @@ async function scanMeetingRecaps() {
           if (ROUTINE_TITLE_RX.test(rawTitle)) continue;
 
           // Dedup by exact tag match.
-          if (alreadySaved(kbCache, 'cal_event_id:' + eventId)) continue;
+          if (await isAlreadySaved('cal_event_id:' + eventId)) continue;
+          savedNow.add('cal_event_id:' + eventId);
 
           // Look for Gemini notes in: description, attachments, conferenceData.notes
           var notesContent = '';
+          var notesFileId = null;
           var eventTitle = calEvent.summary || 'Meeting';
 
           // 1. Check description for notes
@@ -205,6 +217,7 @@ async function scanMeetingRecaps() {
                     var docText = extractDocText(docRes.data.body.content);
                     if (docText && docText.length > 50) {
                       notesContent = docText.substring(0, 3000);
+                      notesFileId = att.fileId;
                     }
                   }
                 } catch(e) {
@@ -215,6 +228,9 @@ async function scanMeetingRecaps() {
           }
 
           if (!notesContent || notesContent.length < 50) continue;
+          // Lo stesso doc lo ingerisce anche lo scanner Drive (appunti Gemini):
+          // chi arriva primo vince, l'altro salta.
+          if (notesFileId && await isAlreadySaved('drive_file_id:' + notesFileId)) continue;
 
           // Summarize with LLM
           try {
@@ -232,6 +248,7 @@ async function scanMeetingRecaps() {
 
             var kbContent = '[RECAP MEETING] ' + eventTitle + ' (' + (calEvent.start.dateTime || calEvent.start.date || '') + ')\n' + summary;
             var tags = ['tipo:meeting_recap', 'cal_event_id:' + eventId, 'fonte:calendar'];
+            if (notesFileId) { tags.push('drive_file_id:' + notesFileId); savedNow.add('drive_file_id:' + notesFileId); }
 
             var calClientTag = extractClientTag(eventTitle);
             if (calClientTag) tags.push(calClientTag);

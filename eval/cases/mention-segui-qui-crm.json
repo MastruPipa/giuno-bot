@@ -1,0 +1,19 @@
+{
+  "id": "mention-segui-qui-crm",
+  "description": "Thread in #preventivi-clienti aperto da Corrado con una nota CRM; Antonio tagga Giuno con 'segui qui?'. Giuno deve confermare che segue il thread e riportare SOLO lo stato reale dal CRM, senza inventare cifre.",
+  "mode": "mention",
+  "userId": "U1",
+  "channelId": "C_EVAL",
+  "threadTs": "1789027037.664549",
+  "channelContext": "CANALE: #preventivi-clienti (pipeline commerciale, thread per lead)",
+  "transcript": [
+    { "role": "user", "content": "<@U2> (Corrado): Nuovo lavoro in corso: Loredana Pappalardo. Riprendiamo il lead (già cliente, pacchetto video chiuso a giugno). Nuovo deal in Meet: \"Ristrutturazione sistema lead nurturing + campagna test\". Call già fatta il 2/09 con Alessandra. Prossimo step: follow-up post-call e avvio lavorazione proposta." }
+  ],
+  "message": "segui qui?",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["non ho accesso", "non posso seguire", "**"],
+    "max_lines": 14,
+    "rubric": "Deve dire che segue il thread e dare lo stato reale del lead dal CRM (Attio o leads): deal, stage, valore solo se presente nei dati. Se un dato manca (valore, brief) deve dirlo, non inventarlo. Può proporre un'azione concreta (scrivere la nota di esito call sul deal). Tono da collega, formato Slack con *grassetto* singolo."
+  }
+}

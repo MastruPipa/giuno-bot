@@ -1,0 +1,16 @@
+{
+  "id": "dm-todo-testo-libero",
+  "description": "Paolo manda in DM la sua lista di cose da fare in testo libero. Giuno deve riformattarla fedelmente, senza aggiungere scadenze o dettagli non scritti.",
+  "mode": "dm",
+  "userId": "U5",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "oggi da fare\n----\nscuola di content\nconsegna manuale branding\nkmp - presentazione analisi e direzione e strategia editoriale\nimperfecto - file di stampa packaging",
+  "expect": {
+    "no_reply": false,
+    "must_include": ["scuola di content", "manuale branding", "kmp", "imperfecto"],
+    "must_not_include": ["non ho capito", "**"],
+    "max_lines": 12,
+    "rubric": "Deve restituire le quattro voci in una lista Slack pulita, mantenendo i nomi dei progetti. Non deve inventare orari, scadenze o dettagli ('consegna prevista oggi' va bene solo se implicito dal testo, non deve aggiungere ore). Può offrire in una riga di recuperare contesto su un progetto. Niente sermoni."
+  }
+}

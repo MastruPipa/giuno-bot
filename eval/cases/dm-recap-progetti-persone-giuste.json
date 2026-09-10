@@ -1,0 +1,15 @@
+{
+  "id": "dm-recap-progetti-persone-giuste",
+  "description": "Paolo chiede un recap dei progetti seguiti da lui e da Claudia. Nel caso reale Giuno ha chiamato Paolo 'Claudia' e ha inventato un 'Alessandro'. Deve identificare correttamente chi parla e i colleghi dal roster.",
+  "mode": "dm",
+  "userId": "U5",
+  "channelId": "D_EVAL",
+  "transcript": [],
+  "message": "giuno, bisogna che tu mi faccia un recap di tutti i progetti che sono seguiti da me e da Claudia. Analizza i canali Slack e guarda in quali thread veniamo chiamati in causa o li apriamo noi.",
+  "expect": {
+    "no_reply": false,
+    "must_not_include": ["Alessandro", "tu (Claudia)", "**"],
+    "max_lines": 30,
+    "rubric": "Chi parla è Paolo (U5), la collega è Claudia: non deve confondere i ruoli né inventare persone. Deve usare gli strumenti di ricerca Slack/canali e presentare un elenco per progetto/canale con chi lo segue, dichiarando il metodo in una riga e ammettendo i limiti (thread non visibili, canali privati). Nessun progetto inventato."
+  }
+}

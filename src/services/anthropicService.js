@@ -1270,6 +1270,7 @@ async function askGiuno(userId, userMessage, options) {
 
 module.exports = {
   EMPTY_REPLY_FALLBACK: EMPTY_REPLY_FALLBACK,
+  SIDE_EFFECT_TOOLS: SIDE_EFFECT_TOOLS,
   formatActionsSection: formatActionsSection,
   _actionSummary: _actionSummary,
   DEFAULT_MAX_TOKENS: DEFAULT_MAX_TOKENS,

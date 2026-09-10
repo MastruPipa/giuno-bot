@@ -93,6 +93,7 @@ module.exports = {
   deleteKBEntry:   kb.deleteKBEntry,
   searchKB:        kb.searchKB,
   getKBCache:      kb.getKBCache,
+  kbHasTag:        kb.kbHasTag,
   cleanupExpiredKB: kb.cleanupExpiredKB,
   reviewPendingKB:  kb.reviewPendingKB,
 

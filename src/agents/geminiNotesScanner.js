@@ -206,7 +206,9 @@ async function scanGeminiNotes(opts) {
       if (!kind) continue;
       report.scanned++;
       var existingDoc = await dossiers.findProjectDocumentByFile(f.id);
-      if (alreadyIngested(f.id, kbCache, existingDoc)) { report.skipped++; continue; }
+      var ingested = alreadyIngested(f.id, kbCache, existingDoc);
+      if (!ingested && typeof db.kbHasTag === 'function') { try { ingested = await db.kbHasTag('drive_file_id:' + f.id); } catch(_) {} }
+      if (ingested) { report.skipped++; continue; }
       try {
         var docRes = await docsApi.documents.get({ documentId: f.id });
         var { extractDocText } = require('../tools/driveTools');
