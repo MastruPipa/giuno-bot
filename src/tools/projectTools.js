@@ -106,13 +106,14 @@ var definitions = [
   },
   {
     name: 'log_hours',
-    description: 'Registra ore lavorate su un progetto. Aggiorna sia l\'allocazione che il budget actual del progetto.',
+    description: 'Imposta il TOTALE giornaliero svolto dalla persona sul progetto, nello stesso registro di log_time e dashboard. Sostituisce il totale precedente; NON somma. Per ore aggiuntive leggi prima get_time_report e riconcilia. Non modificare i costi.',
     input_schema: {
       type: 'object',
       properties: {
         project_id:    { type: 'string', description: 'ID del progetto' },
         slack_user_id: { type: 'string', description: 'Slack ID di chi ha lavorato (default: utente corrente)' },
-        hours:         { type: 'number', description: 'Ore da registrare' },
+        hours:         { type: 'number', description: 'Totale giornaliero sul progetto, non incremento' },
+        date:          { type: 'string', description: 'Data del lavoro YYYY-MM-DD (default oggi)' },
         notes:         { type: 'string', description: 'Cosa è stato fatto (opzionale)' },
       },
       required: ['project_id', 'hours'],
@@ -248,32 +249,14 @@ async function execute(toolName, input, userId, userRole) {
   }
 
   if (toolName === 'log_hours') {
-    if (!input.project_id || !input.hours) return { error: 'project_id e hours sono obbligatori.' };
-    var logUserId = input.slack_user_id || userId;
-    // Find existing allocation for this user on this project
-    var allocs = await db.getProjectAllocations(input.project_id);
-    var userAlloc = allocs.find(function(a) { return a.slack_user_id === logUserId; });
-    if (userAlloc) {
-      var newLogged = (parseFloat(userAlloc.hours_logged) || 0) + input.hours;
-      await db.updateAllocation(userAlloc.id, { hours_logged: newLogged, notes: input.notes || userAlloc.notes });
-    } else {
-      // Create allocation on the fly
-      await db.allocateResource({
-        project_id: input.project_id,
-        slack_user_id: logUserId,
-        role: 'contributor',
-        hours_allocated: input.hours,
-        hours_logged: input.hours,
-        notes: input.notes || null,
-      });
+    var targetUser = input.slack_user_id || userId;
+    if (targetUser !== userId && !['admin', 'manager', 'finance'].includes(userRole)) {
+      return { error: 'Puoi registrare soltanto le tue ore.' };
     }
-    // Update project budget_actual (approximate: hours * avg rate)
-    var proj = await db.getProject(input.project_id);
-    if (proj) {
-      var newActual = (parseFloat(proj.budget_actual) || 0) + (input.hours * 45); // €45/h default rate
-      await db.updateProject(input.project_id, { budget_actual: newActual });
-    }
-    return { success: true, hours_logged: input.hours, user: logUserId, project: input.project_id };
+    return require('../services/timeRecording').recordDailyTotal({
+      userId: targetUser, actorId: userId, projectId: input.project_id,
+      date: input.date, hours: input.hours, notes: input.notes,
+    });
   }
 
   if (toolName === 'get_team_workload') {

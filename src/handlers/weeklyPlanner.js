@@ -517,17 +517,17 @@ function schedulePlannerJobs(cron) {
   // troppo strette — chi era in call o in delivery perdeva il treno, e in
   // mesi di attività NESSUNO ha mai compilato una pianificazione.
   cron.schedule('0 15 * * 4', function() {
-    sendPlannerRequests().catch(function(e) { logger.error('[PLANNER] Errore invio:', e.message); });
+    return sendPlannerRequests();
   }, { timezone: 'Europe/Rome', name: 'planner_send', lockTtl: 15 });
 
   // Venerdì 09:30 — reminder ai soli mancanti
   cron.schedule('30 9 * * 5', function() {
-    sendPlannerReminder().catch(function(e) { logger.error('[PLANNER] Errore reminder:', e.message); });
+    return sendPlannerReminder();
   }, { timezone: 'Europe/Rome', name: 'planner_reminder', lockTtl: 15 });
 
   // Venerdì 12:00 — chiusura finestra + recap in #weekly
   cron.schedule('0 12 * * 5', function() {
-    closePlannerWindow().catch(function(e) { logger.error('[PLANNER] Errore chiusura:', e.message); });
+    return closePlannerWindow();
   }, { timezone: 'Europe/Rome', name: 'planner_close', lockTtl: 15 });
 
   logger.info('[PLANNER] Cron jobs schedulati: gio 15:00 send, ven 09:30 reminder, ven 12:00 close+recap');
