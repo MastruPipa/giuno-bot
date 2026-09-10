@@ -9,14 +9,16 @@ var c = require('./client');
 var logger = require('../../utils/logger');
 
 var _rosterCache = null;
+var _inactiveIds = new Set(); // usciti dal team ma ancora presenti su Slack
 
 async function loadTeamRoster() {
   if (!c.useSupabase) { _rosterCache = []; return _rosterCache; }
   try {
     var res = await c.getClient().from('team_members')
-      .select('slack_user_id, canonical_name, aliases, role, primary_projects, primary_clients, active')
-      .eq('active', true);
-    _rosterCache = (res && res.data) || [];
+      .select('slack_user_id, canonical_name, aliases, role, primary_projects, primary_clients, active');
+    var rows = (res && res.data) || [];
+    _inactiveIds = new Set(rows.filter(function(r) { return r.active === false; }).map(function(r) { return r.slack_user_id; }));
+    _rosterCache = rows.filter(function(r) { return r.active !== false; });
     logger.info('[TEAM-ROSTER] caricato:', _rosterCache.length, 'membri');
     return _rosterCache;
   } catch(e) {
@@ -27,6 +29,11 @@ async function loadTeamRoster() {
 }
 
 function getTeamRoster() { return _rosterCache || []; }
+
+// Chi è stato segnato come uscito (active=false) non riceve più daily,
+// planner, briefing né conta nell'appello, anche se il suo account Slack
+// esiste ancora (successo con Nicolò il 10/9).
+function isTeamMemberInactive(slackUserId) { return _inactiveIds.has(slackUserId); }
 
 // Case-insensitive lookup against canonical_name + aliases. Returns the
 // matching row or null. Used by entity resolvers / prompt injectors.
@@ -103,6 +110,7 @@ async function upsertTeamMember(fields) {
     }
     if (idx >= 0) roster[idx] = row; else roster.push(row);
     _rosterCache = roster;
+    if (row.active) _inactiveIds.delete(row.slack_user_id); else _inactiveIds.add(row.slack_user_id);
     return row;
   } catch(e) {
     logger.warn('[TEAM-ROSTER] upsert failed:', e.message);
@@ -117,6 +125,7 @@ async function deactivateTeamMember(slackUserId) {
       .update({ active: false, updated_at: new Date().toISOString() })
       .eq('slack_user_id', slackUserId);
     _rosterCache = (_rosterCache || []).filter(function(m) { return m.slack_user_id !== slackUserId; });
+    _inactiveIds.add(slackUserId);
     return true;
   } catch(e) {
     logger.warn('[TEAM-ROSTER] deactivate failed:', e.message);
@@ -138,6 +147,7 @@ function formatRosterForPrompt() {
 }
 
 module.exports = {
+  isTeamMemberInactive: isTeamMemberInactive,
   loadTeamRoster: loadTeamRoster,
   getTeamRoster: getTeamRoster,
   findTeamMemberByName: findTeamMemberByName,
