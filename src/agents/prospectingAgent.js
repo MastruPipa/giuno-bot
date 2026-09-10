@@ -3,6 +3,8 @@
 // Trigger: /giuno prospect [nome azienda o URL]
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { callGeminiWithSearch } = require('../services/geminiService');
@@ -96,7 +98,7 @@ async function run(companyInput, ctx) {
 
   try {
     var response = await client.messages.create({
-      model: 'claude-opus-4-8', max_tokens: 1200,
+      model: MODELS.PRIMARY, max_tokens: 1200,
       system: 'Analista commerciale di Katania Studio (agenzia creativa Catania, 9 persone).\n' +
         'PROFILI ICP:\n' + icpContext + '\nANTI-ICP: ' + ANTI_ICP.join(', ') + '\n' +
         'SCORECARD:\n' + scorecardContext + '\n\n' +

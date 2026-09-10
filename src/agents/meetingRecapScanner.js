@@ -3,6 +3,8 @@
 // key information to KB and memories.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
 var db = require('../../supabase');
@@ -101,7 +103,7 @@ async function scanMeetingRecaps() {
             var Anthropic = require('@anthropic-ai/sdk');
             var client = new Anthropic();
             var summaryRes = await client.messages.create({
-              model: 'claude-haiku-4-5-20251001',
+              model: MODELS.UTILITY,
               max_tokens: 300,
               system: 'Riassumi questo recap di meeting per un\'agenzia di marketing. Estrai:\n' +
                 '• Partecipanti\n• Decisioni prese\n• Action items (chi fa cosa)\n• Prossimi step\n• Scadenze menzionate\n' +
@@ -219,7 +221,7 @@ async function scanMeetingRecaps() {
             var Anthropic = require('@anthropic-ai/sdk');
             var client = new Anthropic();
             var summaryRes = await client.messages.create({
-              model: 'claude-haiku-4-5-20251001',
+              model: MODELS.UTILITY,
               max_tokens: 300,
               system: 'Riassumi questi appunti di meeting. Estrai: partecipanti, decisioni, action items, prossimi step, scadenze. Max 8 righe. Se non è un vero recap, rispondi "SKIP".',
               messages: [{ role: 'user', content: 'Meeting: ' + eventTitle + '\n\n' + notesContent.substring(0, 2500) }],

@@ -145,7 +145,8 @@ async function getBehaviorContext(userId) {
 }
 
 // Start periodic flush
-setInterval(flushToDb, FLUSH_INTERVAL);
+var _flushTimer = setInterval(flushToDb, FLUSH_INTERVAL);
+if (_flushTimer.unref) _flushTimer.unref(); // non tiene vivo il processo (test, shutdown)
 
 module.exports = {
   trackInteraction: trackInteraction,

@@ -4,6 +4,7 @@
 
 'use strict';
 
+
 var logger = require('../utils/logger');
 var { formatPerSlack } = require('../utils/slackFormat');
 var { app } = require('../services/slackService');
@@ -26,6 +27,9 @@ var appHome = require('./appHomeHandler');
 var behaviorTracker = require('../services/behaviorTracker');
 var sentimentClassifier = require('../services/sentimentClassifier');
 var { withTimeout, withRetry } = require('../utils/retryPolicy');
+var { fetchTranscript, getBotUserId } = require('../services/slackTranscript');
+var { stripBotMention, detectCCMention, mentionsUser } = require('../utils/mentionUtils');
+var { isNoReply } = require('../utils/noReply');
 
 // Register App Home tab
 appHome.register();
@@ -34,7 +38,11 @@ appHome.register();
 
 var processedEvents = new Set();
 var botMessages = new Map(); // ts -> { userId, text, channel, timestamp }
-var lastBotMessageByChannel = new Map(); // channelId -> { ts, userId, timestamp }
+var lastBotMessageByChannel = new Map(); // channelId -> { ts, threadTs, userId, timestamp }
+// Thread in cui Giuno ha scritto: chiave "channel:threadTs" → ultimo post (ms).
+// Un reply nel thread senza tag viene comunque valutato dal modello.
+var activeThreads = new Map();
+var ACTIVE_THREAD_TTL_MS = 24 * 60 * 60 * 1000;
 var stats = { startedAt: new Date().toISOString(), messagesHandled: 0, toolCallsTotal: 0 };
 var standupInAttesa = new Set();
 
@@ -58,7 +66,32 @@ setInterval(function() {
   var cutoff = Date.now() - 30 * 60 * 1000;
   botMessages.forEach(function(v, k) { if (v.timestamp && v.timestamp < cutoff) botMessages.delete(k); });
   lastBotMessageByChannel.forEach(function(v, k) { if (v.timestamp < cutoff) lastBotMessageByChannel.delete(k); });
+  var threadCutoff = Date.now() - ACTIVE_THREAD_TTL_MS;
+  activeThreads.forEach(function(v, k) { if (v < threadCutoff) activeThreads.delete(k); });
 }, 10 * 60 * 1000);
+
+// Registra un post del bot in canale: serve per capire i reply impliciti nel
+// thread e i follow-up top-level entro 2 minuti dello stesso utente.
+function rememberBotPost(channelId, threadTs, postedTs, userId, text) {
+  var now = Date.now();
+  botMessages.set(postedTs, { userId: userId, text: text, channel: channelId, timestamp: now });
+  lastBotMessageByChannel.set(channelId, { ts: postedTs, threadTs: threadTs || postedTs, userId: userId, timestamp: now });
+  if (threadTs) activeThreads.set(channelId + ':' + threadTs, now);
+}
+
+// Thread "vivo": in memoria, oppure (dopo un riavvio) esiste la conversazione
+// condivisa thread:<canale>:<ts> nel DB.
+function isActiveThread(channelId, threadTs) {
+  if (activeThreads.has(channelId + ':' + threadTs)) return true;
+  try {
+    var cc = db.getConvCache();
+    if (cc && cc['thread:' + channelId + ':' + threadTs]) {
+      activeThreads.set(channelId + ':' + threadTs, Date.now());
+      return true;
+    }
+  } catch(_) {}
+  return false;
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,6 +123,9 @@ async function saveCorrectionFeedback(userId, text) {
 }
 
 // ─── app_mention ───────────────────────────────────────────────────────────────
+// Giuno taggato in un canale o in un thread. La storia del thread arriva al
+// modello come transcript Slack (fetchTranscript); per una mention top-level
+// il contesto è la conversazione recente del canale.
 
 app.event('app_mention', async function(args) {
   var event = args.event;
@@ -109,12 +145,11 @@ app.event('app_mention', async function(args) {
     // "Sta scrivendo" — reagisci subito per feedback visivo
     try { await app.client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* already reacted or missing scope */ }
 
-    var text = event.text.replace(/<@[^>]+>/g, '').trim();
+    var botUserId = await getBotUserId(app);
+    // Via SOLO il tag del bot: "@Giuno chiedi a @Antonio" deve arrivare con Antonio dentro.
+    var text = stripBotMention(event.text, botUserId);
 
-    // Daily taggato in #daily ("@Giuno registra da qui il mio daily" + testo):
-    // prima finiva nella risposta LLM libera che DICEVA "registrato" senza
-    // salvare nulla (i messaggi con menzione erano esclusi dalla cattura in
-    // app.message). Ora si registra davvero, con parser AI e conferma secca.
+    // Daily taggato in #daily ("@Giuno registra da qui il mio daily" + testo).
     try {
       var dailyV2ForMention = require('./dailyStandupV2');
       if (event.channel === dailyV2ForMention.DAILY_CHANNEL_ID && !event.thread_ts) {
@@ -137,28 +172,13 @@ app.event('app_mention', async function(args) {
       }
     } catch(e) { logger.warn('[STANDUP-V2] routing daily mention fallito:', e.message); }
 
-    // Track behavior + classify sentiment for channel mentions
     behaviorTracker.trackInteraction(event.user, text, { channelId: event.channel, isDM: false });
     var mentionSentiment = sentimentClassifier.classify(text);
 
-    // Detect CC/presa visione: if message mentions other users AND Giuno is at the end
-    var isCCMention = false;
-    var rawText = event.text || '';
-    var mentionMatches = rawText.match(/<@[A-Z0-9]+>/g) || [];
-    if (mentionMatches.length >= 2) {
-      // Giuno's mention is among several — likely CC
-      var botUserId = (app.client && app.client.token) ? null : null; // We'll detect by position
-      var giunoMentionIdx = rawText.lastIndexOf('<@');
-      var textAfterGiuno = rawText.substring(giunoMentionIdx).replace(/<@[^>]+>/, '').trim();
-      // If Giuno is the last mention and nothing meaningful follows → CC
-      if (textAfterGiuno.length < 10) isCCMention = true;
-    }
-    // Also detect patterns like "message to someone. @Giuno"
-    if (!isCCMention && mentionMatches.length >= 2 && text.length < 15) {
-      isCCMention = true; // Very little text directed at Giuno specifically
-    }
+    // CC / presa visione: tag del bot in coda a un messaggio scritto per altri.
+    var isCCMention = detectCCMention(event.text, botUserId);
 
-    // Collect channel context
+    // Contesto canale: nome, topic, descrizione.
     var channelContext = '';
     var ch = {};
     try {
@@ -172,138 +192,68 @@ app.event('app_mention', async function(args) {
       logger.debug('[SLACK-HANDLER] conversations.info ignorato:', e.message);
     }
 
-    try {
-      var recentMsgs;
-      if (event.thread_ts) {
-        var threadRes = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 30 });
-        recentMsgs = (threadRes.messages || []).slice(-30);
-      } else {
-        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 30 });
-        recentMsgs = (histRes.messages || []).reverse();
-      }
-      if (recentMsgs.length > 0) {
-        // For substantive chatter (>=10 real messages, excluding bots + current
-        // event) ask Haiku for a one-paragraph topic recap BEFORE dumping the
-        // raw transcript. Stops Giuno from answering off-topic when dropped
-        // into a long conversation mid-thread.
-        var realMsgs = recentMsgs.filter(function(m) { return m.ts !== event.ts && !m.bot_id && m.text; });
-        if (realMsgs.length >= 10) {
-          try {
-            var { askGemini: _unused } = require('../services/geminiService'); // lazy check Anthropic availability
-            var Anthropic = require('@anthropic-ai/sdk');
-            var haiku = new Anthropic();
-            var topicTranscript = realMsgs.slice(-20).map(function(m) {
-              return (m.user ? '<@' + m.user + '>' : 'bot') + ': ' + (m.text || '').substring(0, 250);
-            }).join('\n');
-            var topicRes = await haiku.messages.create({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 200,
-              system: 'Sei un osservatore silenzioso in un canale Slack. In 2-3 frasi italiane descrivi: (1) di cosa si sta parlando adesso, (2) chi sta facendo cosa, (3) qual è la domanda/decisione aperta se esiste. Niente saluti, niente meta-commenti.',
-              messages: [{ role: 'user', content: topicTranscript }],
-            });
-            var topic = topicRes.content && topicRes.content[0] && topicRes.content[0].text ? topicRes.content[0].text.trim() : '';
-            if (topic) channelContext += '\nTOPIC ATTUALE DEL ' + (event.thread_ts ? 'THREAD' : 'CANALE') + ':\n' + topic + '\n';
-          } catch(topicErr) {
-            logger.debug('[SLACK-HANDLER] topic autosummary skipped:', topicErr.message);
-          }
+    // Storia: nel thread → transcript Slack come messaggi del modello.
+    // Top-level → gli ultimi messaggi del canale come contesto (non è una
+    // conversazione con Giuno, ma dice di cosa si sta parlando).
+    var transcript = [];
+    if (event.thread_ts) {
+      var tr = await fetchTranscript(app, { channelId: event.channel, threadTs: event.thread_ts, isDM: false, excludeTs: event.ts });
+      transcript = tr.turns;
+    } else {
+      try {
+        var histRes = await app.client.conversations.history({ channel: event.channel, limit: 20 });
+        var recentMsgs = (histRes.messages || []).slice().reverse().filter(function(m) {
+          return m.ts !== event.ts && m.text && !m.subtype;
+        });
+        if (recentMsgs.length > 0) {
+          channelContext += '\nULTIMI MESSAGGI NEL CANALE (prima di questo, dal più vecchio):\n';
+          recentMsgs.slice(-15).forEach(function(rm) {
+            var who = (botUserId && rm.user === botUserId) ? 'Giuno (tu)' : (rm.user ? '<@' + rm.user + '>' : 'bot');
+            channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
+          });
         }
-        channelContext += '\nCONVERSAZIONE RECENTE NEL CANALE:\n';
-        for (var rm of recentMsgs.slice(-15)) {
-          if (rm.ts === event.ts) continue;
-          var who = rm.user ? '<@' + rm.user + '>' : 'bot';
-          channelContext += who + ': ' + (rm.text || '').substring(0, 300) + '\n';
-        }
+      } catch(e) {
+        logger.debug('[SLACK-HANDLER] fetch messaggi recenti ignorato:', e.message);
       }
-    } catch(e) {
-      logger.debug('[SLACK-HANDLER] fetch messaggi recenti ignorato:', e.message);
     }
 
     try {
       var membersRes = await app.client.conversations.members({ channel: event.channel, limit: 50 });
-      var memberIds = (membersRes.members || []).filter(function(id) { return id !== event.user; });
+      var memberIds = (membersRes.members || []).filter(function(id) { return id !== event.user && id !== botUserId; });
       if (memberIds.length > 0) {
-        channelContext += '\nMEMBRI PRESENTI NEL CANALE: ' + memberIds.map(function(id) { return '<@' + id + '>'; }).join(', ') + '\n';
+        channelContext += '\nMEMBRI DEL CANALE: ' + memberIds.map(function(id) { return '<@' + id + '>'; }).join(', ') + '\n';
       }
     } catch(e) {
       logger.debug('[SLACK-HANDLER] fetch membri canale ignorato:', e.message);
     }
 
-    // Inject Giuno's last response in this channel as context
-    var lastBotCtx = '';
-    var lastBot = lastBotMessageByChannel.get(event.channel);
-    if (lastBot && (Date.now() - lastBot.timestamp) < 600000) { // Within 10 min
-      var lastBotMsg = botMessages.get(lastBot.ts);
-      if (lastBotMsg && lastBotMsg.text) {
-        lastBotCtx = '\n[LA MIA ULTIMA RISPOSTA IN QUESTO CANALE (< 10 min fa):\n' + lastBotMsg.text.substring(0, 300) + ']\n';
-      }
-    }
-
     var mentionChannelType = ch.is_private ? 'private' : 'public';
-
-    // If CC mention: add instruction to not respond unless necessary
-    var ccInstruction = '';
-    if (isCCMention) {
-      ccInstruction = '\n[SEI IN CC/PRESA VISIONE su questo messaggio. NON rispondere a meno che:\n' +
-        '1. Ti venga fatta una domanda diretta\n' +
-        '2. Ci sia un errore grave da segnalare\n' +
-        '3. Puoi aggiungere info critiche che nessuno ha\n' +
-        'Se nessuna di queste condizioni è vera, rispondi con un brevissimo "👀 Visto." o non rispondere.]\n';
-    }
 
     var reply = await route(event.user, text, {
       mentionedBy: event.user,
       threadTs: threadTs,
       channelContext: channelContext,
-      channelId: ch.id || null,
+      channelId: event.channel,
       channelType: mentionChannelType,
+      isDM: false,
       sentiment: mentionSentiment,
-      preflightInstruction: (lastBotCtx + (ccInstruction || '')).trim() || undefined,
+      transcript: transcript,
+      isCC: isCCMention,
+      allowSilence: isCCMention,
     });
 
-    var degradedMentionReply = isDegradedReply(reply);
-
-    // Gemini quality gate
-    var { askGemini } = require('../services/geminiService');
-    if (!degradedMentionReply && reply && reply.length > 30) {
-      try {
-        var qgReview = await askGemini(
-          'Rivedi questa risposta di un bot aziendale in un canale Slack pubblico.\n' +
-          'Domanda utente: ' + text.substring(0, 300) + '\n' +
-          'Risposta bot: ' + reply.substring(0, 1000) + '\n\n' +
-          'Controlla: tono professionale ma informale, niente dati sensibili esposti (password, token, IBAN), info coerente, niente hallucination evidenti.\n' +
-          'Se tutto ok rispondi SOLO "OK". Se c\'è un problema, suggerisci la correzione in 1 riga.',
-          'Revisore qualità comunicazione aziendale. Brevissimo, italiano.'
-        );
-        if (qgReview && qgReview.response && qgReview.response.trim() !== 'OK') {
-          logger.warn('[QUALITY-GATE] Gemini nota:', qgReview.response.substring(0, 100));
-          // Non modificare la reply — la nota è solo per i log
-        }
-      } catch(e) { logger.error('Gemini quality gate error:', e.message); }
-    }
-
-    var formatted = formatPerSlack(reply);
-    if (!formatted) {
-      logger.warn('[MENTION] Reply vuota per', event.user, '- skip postMessage');
-      try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
-      return;
-    }
-    // Confidence gate: if reply is low-quality filler, don't post in channel
-    var isFillerReply = /^(non ho (trovato|informazioni|dati)|non sono sicuro|non saprei|devo verificare|al momento non|purtroppo non)/i.test(reply.trim());
-    var isTooGeneric = reply.trim().length < 30 && !/fatto|ok|registrato|salvato/i.test(reply);
-    if (isFillerReply && !event.thread_ts) {
-      // In main channel: don't post filler. In thread: it's ok to say "non so"
-      logger.info('[MENTION] Confidence gate: reply troppo generica, skip');
-      try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
-      return;
-    }
+    var formatted = isNoReply(reply) ? '' : formatPerSlack(reply);
     // Rimuovi reaction "sta scrivendo" prima di rispondere
     try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
-
-    var posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
-    if (posted && posted.ts) {
-      botMessages.set(posted.ts, { userId: event.user, text: formatted, channel: event.channel, timestamp: Date.now() });
-      lastBotMessageByChannel.set(event.channel, { ts: posted.ts, userId: event.user, timestamp: Date.now() });
+    if (!formatted) {
+      logger.info('[MENTION] Nessuna risposta per', event.user, isNoReply(reply) ? '(NO_REPLY: in CC)' : '(reply vuota)');
+      if (isCCMention) { try { await app.client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ } }
+      return;
     }
+
+    var degradedMentionReply = isDegradedReply(reply);
+    var posted = await app.client.chat.postMessage({ channel: event.channel, text: formatted, thread_ts: threadTs });
+    if (posted && posted.ts) rememberBotPost(event.channel, threadTs, posted.ts, event.user, formatted);
 
     // Background: detect deadlines and auto-summarize Drive links
     if (!degradedMentionReply) {
@@ -365,18 +315,22 @@ app.message(async function(args) {
       }
     }
 
+    // Giuno partecipa a un thread se ci ha già scritto (activeThreads, anche
+    // dopo un riavvio grazie alla chiave thread:<canale>:<ts> in DB) — e
+    // risponde a un follow-up top-level dello stesso utente entro 2 minuti.
     var isImplicitReply = false;
     var implicitThreadTs = null;
 
-    if (message.thread_ts && botMessages.has(message.thread_ts)) {
-      isImplicitReply = true;
-      implicitThreadTs = message.thread_ts;
-    }
-    if (!isImplicitReply) {
+    if (message.thread_ts) {
+      if (isActiveThread(message.channel, message.thread_ts) || botMessages.has(message.thread_ts)) {
+        isImplicitReply = true;
+        implicitThreadTs = message.thread_ts;
+      }
+    } else {
       var lastBot = lastBotMessageByChannel.get(message.channel);
       if (lastBot && (Date.now() - lastBot.timestamp) < 120000 && lastBot.userId === message.user) {
         isImplicitReply = true;
-        implicitThreadTs = lastBot.ts;
+        implicitThreadTs = lastBot.threadTs || lastBot.ts;
       }
     }
     if (!isImplicitReply) return;
@@ -384,47 +338,34 @@ app.message(async function(args) {
 
     stats.messagesHandled++;
     try {
-      // Read thread context for implicit replies
-      var implicitRouteOpts = { threadTs: implicitThreadTs, channelId: message.channel, channelType: 'public' };
-      if (implicitThreadTs) {
-        try {
-          var implicitThreadHistory = await app.client.conversations.replies({
-            channel: message.channel, ts: implicitThreadTs, limit: 10,
-          });
-          if (implicitThreadHistory.messages && implicitThreadHistory.messages.length > 1) {
-            var prevImplicit = implicitThreadHistory.messages.slice(0, -1);
-            var implicitCtx = prevImplicit.map(function(m) {
-              var who = m.bot_id ? 'Giuno' : (m.user ? '<@' + m.user + '>' : '???');
-              return who + ': ' + (m.text || '').substring(0, 300);
-            }).join('\n');
-            implicitRouteOpts.preflightInstruction = '[MESSAGGI PRECEDENTI NEL THREAD:\n' + implicitCtx + ']\n' +
-              'IMPORTANTE: usa questi messaggi per capire il SOGGETTO della conversazione. Non perderlo.';
-          }
-        } catch(implErr) { /* non bloccante */ }
-      }
-      // Don't respond if message is clearly directed at another person, not Giuno
       var msgText = message.text || '';
-      var mentionsOther = /<@[A-Z0-9]+>/.test(msgText); // mentions someone
-      var mentionsGiuno = false;
-      try {
-        var authTest = await app.client.auth.test();
-        mentionsGiuno = msgText.includes('<@' + authTest.user_id + '>');
-      } catch(e) { /* ignore */ }
-      if (mentionsOther && !mentionsGiuno) {
-        // Message tags someone else in the thread — they're talking to each other, not to Giuno
+      var botUserIdImplicit = await getBotUserId(app);
+      // Tagga qualcun altro e non Giuno → parlano tra loro, non serve il modello.
+      if (/<@[A-Z0-9]+>/.test(msgText) && !mentionsUser(msgText, botUserIdImplicit)) return;
+
+      var implicitTranscript = await fetchTranscript(app, {
+        channelId: message.channel, threadTs: implicitThreadTs, isDM: false, excludeTs: message.ts,
+      });
+      var implicitRouteOpts = {
+        threadTs: implicitThreadTs,
+        channelId: message.channel,
+        channelType: 'public',
+        isDM: false,
+        sentiment: sentimentClassifier.classify(msgText),
+        transcript: implicitTranscript.turns,
+        allowSilence: true, // non è stato taggato: decide il modello se è per lui
+      };
+
+      var reply = await route(message.user, msgText, implicitRouteOpts);
+      if (isNoReply(reply)) {
+        logger.info('[IMPLICIT-REPLY] NO_REPLY nel thread', implicitThreadTs);
         return;
       }
-
-      var reply = await route(message.user, message.text, implicitRouteOpts);
       var degradedImplicitReply = isDegradedReply(reply);
       var formatted = formatPerSlack(reply);
       if (!formatted) return;
       var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: implicitThreadTs });
-      if (posted && posted.ts) {
-        botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
-        lastBotMessageByChannel.set(message.channel, { ts: posted.ts, userId: message.user, timestamp: Date.now() });
-      }
-      // Background: detect deadlines
+      if (posted && posted.ts) rememberBotPost(message.channel, implicitThreadTs, posted.ts, message.user, formatted);
       if (!degradedImplicitReply) detectAndSaveDeadlines(message.user, message.text, message.channel).catch(function(e) {});
     } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); logger.error('[IMPLICIT-REPLY] Errore:', err.message); }
     return;
@@ -631,7 +572,6 @@ app.message(async function(args) {
     // "Sta scrivendo" — reagisci subito per feedback visivo in DM
     try { await app.client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
 
-    // Track behavior + classify sentiment
     behaviorTracker.trackInteraction(message.user, originalText, { channelId: message.channel, isDM: true });
     var msgSentiment = sentimentClassifier.classify(originalText);
 
@@ -648,46 +588,27 @@ app.message(async function(args) {
       }
     }
 
-    // If in a DM thread, read previous messages for context (fix #12)
-    var dmThreadContext = '';
-    if (threadTs) {
-      try {
-        var threadHistory = await app.client.conversations.replies({
-          channel: message.channel,
-          ts: threadTs,
-          limit: 10,
-        });
-        if (threadHistory.messages && threadHistory.messages.length > 1) {
-          var previousMessages = threadHistory.messages.slice(0, -1);
-          dmThreadContext = previousMessages.map(function(m) {
-            var author = m.user ? '<@' + m.user + '>' : 'bot';
-            return author + ': ' + (m.text || '').substring(0, 300);
-          }).join('\n');
-        }
-      } catch(threadErr) {
-        logger.debug('[DM-THREAD] Lettura thread fallita:', threadErr.message);
-      }
-    }
+    // Storia del DM (o del thread nel DM) direttamente da Slack: è quello che
+    // vede l'utente, sopravvive ai riavvii e non contiene contesto iniettato.
+    var dmTranscript = await fetchTranscript(app, {
+      channelId: message.channel, threadTs: threadTs, isDM: true, excludeTs: message.ts,
+    });
 
-    var dmRouteOptions = { threadTs: threadTs, channelType: 'dm', channelId: message.channel, isDM: true, sentiment: msgSentiment };
-    // Inject sentiment instruction
-    var sentimentInstruction = '';
-    if (msgSentiment.urgency !== 'normal' || msgSentiment.sentiment !== 'neutral') {
-      sentimentInstruction = '\n[TONO MESSAGGIO: urgenza=' + msgSentiment.urgency + ', sentiment=' + msgSentiment.sentiment + '. Stile risposta: ' + msgSentiment.responseStyle + ']\n';
-    }
-    if (dmThreadContext) {
-      dmRouteOptions.preflightInstruction = sentimentInstruction + '[MESSAGGI PRECEDENTI IN QUESTO THREAD:\n' + dmThreadContext + '\n]\n' +
-        'USA QUESTI MESSAGGI per capire il contesto. Se l\'utente si riferisce a qualcosa detto "sopra", le info sono QUI.\n' +
-        'Il SOGGETTO della conversazione è determinato da questi messaggi precedenti. Non perderlo.';
-    } else if (sentimentInstruction) {
-      dmRouteOptions.preflightInstruction = sentimentInstruction;
-    }
+    var dmRouteOptions = {
+      threadTs: threadTs,
+      channelType: 'dm',
+      channelId: message.channel,
+      isDM: true,
+      sentiment: msgSentiment,
+      transcript: dmTranscript.turns,
+    };
     var reply = await route(message.user, textForRoute, dmRouteOptions);
 
     // Rimuovi reaction "sta scrivendo"
     try { await app.client.reactions.remove({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
 
     var formatted = formatPerSlack(reply);
+    if (!formatted) return;
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
   } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(err) }); }

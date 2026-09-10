@@ -3,6 +3,8 @@
 // Processes new/modified Docs, Slides, Sheets → KB + Drive Content Index.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var dbClient = require('../services/db/client');
 var { getDrivePerUtente, getDocsPerUtente, getSheetPerUtente } = require('../services/googleAuthService');
@@ -10,7 +12,7 @@ var { extractDocText } = require('../tools/driveTools');
 var { safeParse } = require('../utils/safeCall');
 
 var CONFIG = {
-  MODEL: 'claude-haiku-4-5-20251001',
+  MODEL: MODELS.FAST,
   MAX_FILES_PER_RUN: 20,
   DEFAULT_USER_ID: process.env.GIUNO_DEFAULT_USER_ID || process.env.ANTONIO_SLACK_ID || 'U052S2RT7B6',
 };

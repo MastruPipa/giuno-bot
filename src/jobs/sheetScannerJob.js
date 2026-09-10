@@ -2,6 +2,8 @@
 // Scans registered Google Sheets, detects changes via MD5, generates AI summaries.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var crypto = require('crypto');
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
@@ -9,7 +11,7 @@ var { getSheetPerUtente } = require('../services/googleAuthService');
 var { safeParse } = require('../utils/safeCall');
 
 var CONFIG = {
-  MODEL: 'claude-haiku-4-5-20251001',
+  MODEL: MODELS.FAST,
   MAX_ROWS: 5000,
   DEFAULT_USER_ID: process.env.GIUNO_DEFAULT_USER_ID || process.env.ANTONIO_SLACK_ID || 'U052S2RT7B6',
 };

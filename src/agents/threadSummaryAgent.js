@@ -4,6 +4,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var registry = require('../tools/registry');
 
@@ -82,15 +84,16 @@ async function run(message, ctx) {
   var fullSystemPrompt = SYSTEM_PROMPT +
     (dynamicContext ? '\n\n---\nCONTESTO CORRENTE:\n' + dynamicContext : '');
 
-  var messages = [{ role: 'user', content: message }];
+  // Storia della conversazione Slack (dal router) + messaggio corrente.
+  var messages = (Array.isArray(ctx.conversationHistory) ? ctx.conversationHistory : []).concat([{ role: 'user', content: message }]);
   var finalReply = '';
 
   while (true) {
     var response;
     try {
       response = await client.messages.create({
-        model: 'claude-opus-4-8',
-        max_tokens: 800,
+        model: MODELS.PRIMARY,
+        max_tokens: 2048,
         system: fullSystemPrompt,
         messages: messages,
         tools: TOOLS,

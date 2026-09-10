@@ -8,7 +8,10 @@ var dates = require('../utils/dates');
 
 // Pricing per 1M tokens (USD) — update as needed
 var PRICING = {
-  'claude-opus-4-8':    { input: 5.00, output: 25.00 },
+  'claude-opus-5':               { input: 5.00, output: 25.00 },
+  'claude-sonnet-5':             { input: 2.00, output: 10.00 },
+  'claude-haiku-4-5':            { input: 1.00, output: 5.00 },
+  'claude-opus-4-8':             { input: 5.00, output: 25.00 },
   'claude-haiku-4-5-20251001':   { input: 1.00, output: 5.00 },
   'text-embedding-3-small':      { input: 0.02, output: 0 },
 };
@@ -144,6 +147,7 @@ async function getCostSummary(days) {
 }
 
 // Auto-flush every 5 minutes
-setInterval(flushToDb, 5 * 60 * 1000);
+var _flushTimer = setInterval(flushToDb, 5 * 60 * 1000);
+if (_flushTimer.unref) _flushTimer.unref(); // non tiene vivo il processo (test, shutdown)
 
 module.exports = { trackCall: trackCall, flushToDb: flushToDb, getCostSummary: getCostSummary, estimateCost: estimateCost };

@@ -12,7 +12,7 @@
     "resolve:slack-conflict": "bash scripts/resolve-slackservice-conflict.sh"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.0",
+    "@anthropic-ai/sdk": "^0.124.0",
     "@google/generative-ai": "^0.24.1",
     "@slack/bolt": "^3.17.0",
     "@supabase/supabase-js": "^2.100.0",

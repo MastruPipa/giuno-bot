@@ -3,6 +3,8 @@
 // Reads content, categorizes, saves to KB.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 var { app } = require('../services/slackService');
@@ -80,7 +82,7 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
           var Anthropic = require('@anthropic-ai/sdk');
           var visionClient = new Anthropic();
           var visionRes = await visionClient.messages.create({
-            model: 'claude-opus-4-8',
+            model: MODELS.PRIMARY,
             max_tokens: 500,
             messages: [{
               role: 'user',
@@ -141,7 +143,7 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
         var Anthropic = require('@anthropic-ai/sdk');
         var client = new Anthropic();
         var summaryRes = await client.messages.create({
-          model: 'claude-haiku-4-5-20251001',
+          model: MODELS.FAST,
           max_tokens: 300,
           system: 'Riassumi questo file condiviso su Slack. Estrai: scopo del documento, punti chiave, azioni/deadline se presenti. Max 5 righe. Formato Slack: *grassetto*, •liste. MAI **.',
           messages: [{ role: 'user', content: 'File: "' + fileName + '" (categoria: ' + category + ')\n\n' + contentText.substring(0, 3000) }],

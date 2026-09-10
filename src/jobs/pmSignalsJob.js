@@ -2,6 +2,8 @@
 // Nightly: detects stale channels, approaching deadlines, sends admin alerts.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
@@ -56,7 +58,7 @@ async function detectDeadlines(supabase) {
         var client = new Anthropic();
         var texts = res.data.map(function(d) { return d.content; }).join('\n---\n');
         var aiRes = await client.messages.create({
-          model: 'claude-haiku-4-5-20251001', max_tokens: 600,
+          model: MODELS.FAST, max_tokens: 600,
           messages: [{ role: 'user', content: dates.dateContextIt() + '\nEstrai scadenze entro 7 giorni. JSON array:\n[{"deadline":"YYYY-MM-DD","who":"chi","what":"cosa","days_left":N,"severity":"high|medium|low"}]\nSe nessuna: []\n\nMEMORIE:\n' + texts }],
         });
         var match = aiRes.content[0].text.trim().replace(/```json|```/g, '').match(/\[[\s\S]*\]/);

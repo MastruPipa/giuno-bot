@@ -4,6 +4,8 @@
 // Sends DM with briefing: attendees, client status, recent slack activity, docs.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var dates = require('../utils/dates');
 var db = require('../../supabase');
@@ -182,7 +184,7 @@ async function buildBriefing(userId, event) {
     var Anthropic = require('@anthropic-ai/sdk');
     var llmClient = new Anthropic();
     var res = await llmClient.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: MODELS.UTILITY,
       max_tokens: 200,
       system: 'Briefing pre-call per agenzia marketing. Max 6 righe, tono naturale.\n' +
         'Scrivi SOLO quello che SAI dai dati. Non inventare scopi, cifre, o strategie.\n' +

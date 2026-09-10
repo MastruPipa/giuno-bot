@@ -2,6 +2,8 @@
 // Deduplicates and scores KB entries. Monthly, 1st Monday 5:00 AM.
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
@@ -76,7 +78,7 @@ async function runQualitySweep() {
 
         try {
           var res = await client.messages.create({
-            model: 'claude-haiku-4-5-20251001', max_tokens: 300,
+            model: MODELS.FAST, max_tokens: 300,
             messages: [{ role: 'user', content:
               'Valuta queste entry di knowledge base aziendale (Katania Studio, agenzia creativa).\n' +
               'Per ognuna: score 0.0-1.0 e azione: promote (→semantic), keep, archive (inutile).\n' +

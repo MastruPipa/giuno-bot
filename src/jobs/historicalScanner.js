@@ -4,6 +4,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var dbClient = require('../services/db/client');
 var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
@@ -14,7 +16,7 @@ var CONFIG = {
   MAX_MESSAGES_PER_CHANNEL: 500,  // Cap per evitare scan infiniti
   MAX_LLM_CALLS_PER_CHANNEL: 20, // Cap chiamate LLM per canale
   MIN_IMPORTANCE: 3,
-  SUMMARY_MODEL: 'claude-haiku-4-5-20251001',
+  SUMMARY_MODEL: MODELS.FAST,
   MAX_CONTENT_CHARS: 6000,
   SKIP_CHANNELS: ['general', 'casuale', 'candidature'],
 };

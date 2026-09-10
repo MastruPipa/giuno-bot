@@ -8,6 +8,8 @@
 
 'use strict';
 
+var { MODELS } = require('../config/models');
+
 var logger = require('../utils/logger');
 var db = require('../../supabase');
 
@@ -149,7 +151,7 @@ async function autoSummarizeDriveLinks(userId, text, channelId, threadTs) {
       var summary = '';
       try {
         var summaryRes = await anthropicClient.messages.create({
-          model: 'claude-haiku-4-5-20251001',
+          model: MODELS.UTILITY,
           max_tokens: 400,
           system: 'Riassumi questo documento condiviso in un canale Slack di un\'agenzia di marketing.\n' +
             'Estrai: tema principale, punti chiave, azioni richieste, deadline menzionate.\n' +

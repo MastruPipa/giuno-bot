@@ -75,6 +75,7 @@ async function route(userId, message, options) {
       // Build minimal context for skill
       var skillCtx = await buildContext({ userId: userId, message: message, options: options, intent: 'GENERAL' });
       skillCtx = preflight(message, skillCtx);
+      if (Array.isArray(options.transcript) && options.transcript.length > 0) skillCtx.conversationHistory = options.transcript;
       var skillReply = await executeSkill(skillMatch.skill, message, skillCtx);
       if (skillReply) {
         logger.info('[ROUTER] Skill handled:', skillMatch.skill.id);
@@ -93,10 +94,25 @@ async function route(userId, message, options) {
     }
 
     // 1. Classify intent — pass last messages for disambiguation
+    // La storia è il transcript Slack passato dall'handler (thread/DM reale,
+    // condiviso tra i partecipanti); il DB è solo il fallback.
     var db2 = require('../../supabase');
-    var convKey = options.threadTs ? userId + ':' + options.threadTs : userId;
+    var slackTranscript = require('../services/slackTranscript');
+    var convKey = slackTranscript.conversationKey({
+      userId: userId, threadTs: options.threadTs, channelId: options.channelId, isDM: options.isDM,
+    });
     var convCache = db2.getConvCache();
-    var recentConv = (convCache[convKey] || []).slice(-6); // last 3 exchanges
+    var recentConv;
+    if (Array.isArray(options.transcript) && options.transcript.length > 0) {
+      recentConv = options.transcript;
+    } else {
+      var storedConv = convCache[convKey];
+      if ((!storedConv || storedConv.length === 0) && options.threadTs) {
+        storedConv = convCache[slackTranscript.legacyConversationKey({ userId: userId, threadTs: options.threadTs })];
+      }
+      var { sanitizeStoredTurns } = require('../services/anthropicService');
+      recentConv = sanitizeStoredTurns(storedConv || []).slice(-12);
+    }
 
     // Resolve ordinal/numbered references to the previous bot reply.
     // "1. persa" after a numbered lead list → "Unimed è persa" so the
@@ -125,15 +141,31 @@ async function route(userId, message, options) {
     }
 
     var intent = await classifyIntent(classifierMessage);
+
+    // Dentro una conversazione già avviata, un messaggio breve è quasi sempre
+    // un seguito ("e per l'altro?", "riassumi", "sì quello"): l'assistente
+    // generale ha tutti i tool E la storia, gli agenti specializzati no.
+    if (intent !== INTENTS.GENERAL && recentConv.length >= 2 && (message || '').length < 80) {
+      logger.info('[ROUTER] Follow-up breve in conversazione → GENERAL invece di ' + intent);
+      intent = INTENTS.GENERAL;
+    }
     logger.info('[ROUTER] User:', userId, '| Intent:', intent);
 
     // 2. Build context with intent hint for lazy loading
     var ctx = await buildContext({ userId: userId, message: message, options: options, intent: intent });
     ctx = preflight(message, ctx);
 
-    // Inject conversation history into context for agents
+    // Inject conversation history + Slack-specific flags into context for agents
     if (recentConv.length > 0) {
       ctx.conversationHistory = recentConv;
+    }
+    ctx.allowSilence = !!options.allowSilence;
+    ctx.isCC = !!options.isCC;
+    ctx.sentiment = options.sentiment || null;
+    if (options.preflightInstruction) {
+      ctx.preflightInstruction = ctx.preflightInstruction
+        ? ctx.preflightInstruction + '\n' + options.preflightInstruction
+        : options.preflightInstruction;
     }
 
     // 3. Select and call agent
@@ -178,7 +210,7 @@ async function route(userId, message, options) {
         if (!cc[convKey]) cc[convKey] = [];
         cc[convKey].push({ role: 'user', content: message });
         cc[convKey].push({ role: 'assistant', content: reply });
-        if (cc[convKey].length > 20) cc[convKey] = cc[convKey].slice(-20);
+        if (cc[convKey].length > 30) cc[convKey] = cc[convKey].slice(-30);
         db2.saveConversation(convKey, cc[convKey]);
       } catch(e) { logger.warn('[ROUTER] persist conversazione fallita:', e.message); }
     }
