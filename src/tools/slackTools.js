@@ -135,6 +135,45 @@ var definitions = [
     },
   },
   {
+    name: 'send_campaign',
+    description: 'Manda lo stesso messaggio in DM a più persone e GESTISCE DA SOLO la conferma di lettura: aspetta la risposta attesa (es. "LETTO"), sollecita chi non risponde a intervalli, e riferisce a chi ha lanciato la campagna a ogni giro e alla fine. ' +
+      'Usalo quando l\'utente chiede "manda a tutti e chiedi conferma", "sollecita chi non risponde", "ricordaglielo tra un\'ora", "se non rispondono avvisami". Una sola chiamata per tutti i destinatari. Solo admin, manager, finance.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message:             { type: 'string', description: 'Testo del messaggio (già approvato dall\'utente)' },
+        target_user_ids:     { type: 'array', items: { type: 'string' }, description: 'Slack user ID dei destinatari' },
+        target_user_names:   { type: 'array', items: { type: 'string' }, description: 'Oppure i nomi' },
+        expected_reply:      { type: 'string', description: 'Parola/frase attesa come conferma (es. "LETTO"). Vuoto = qualsiasi risposta vale' },
+        check_after_minutes: { type: 'integer', description: 'Minuti fra un controllo e il successivo (default 60)' },
+        max_pushes:          { type: 'integer', description: 'Numero massimo di solleciti per persona (default 2); dopo, Giuno avvisa chi ha lanciato la campagna' },
+        push_message:        { type: 'string', description: 'Testo del sollecito (opzionale)' },
+        title:               { type: 'string', description: 'Titolo breve della campagna (opzionale)' },
+      },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'campaign_status',
+    description: 'Stato delle campagne di messaggi con conferma (chi ha risposto, chi è in attesa, solleciti fatti). Senza campaign_id: tutte quelle attive dell\'utente.',
+    input_schema: { type: 'object', properties: { campaign_id: { type: 'string' } } },
+  },
+  {
+    name: 'cancel_campaign',
+    description: 'Annulla una campagna di messaggi: niente più solleciti.',
+    input_schema: { type: 'object', properties: { campaign_id: { type: 'string' } }, required: ['campaign_id'] },
+  },
+  {
+    name: 'team_member_joined',
+    description: 'Registra una persona NUOVA nel roster del team (nome, alias, mansione) così Giuno la riconosce nei messaggi, negli appunti delle call e nei giri di daily/planner. Usa quando l\'utente dice "X è entrato nel team", "aggiungi X al team". Solo admin e manager.',
+    input_schema: { type: 'object', properties: { name: { type: 'string', description: 'Nome come appare su Slack' }, slack_user_id: { type: 'string' }, role: { type: 'string', description: 'Mansione (es. "Video content")' }, aliases: { type: 'array', items: { type: 'string' } } }, required: ['name'] },
+  },
+  {
+    name: 'team_member_left',
+    description: 'Segna una persona come USCITA dal team (disattivata nel roster: niente più daily, planner, briefing, né menzioni come collega). Usa quando l\'utente dice "X è andato via / ha lasciato". Solo admin e manager. Non dire mai "segnato" senza aver chiamato questo tool.',
+    input_schema: { type: 'object', properties: { name: { type: 'string' }, slack_user_id: { type: 'string' } } },
+  },
+  {
     name: 'send_google_link',
     description: 'Manda in DM a un collega il SUO link personale per collegare Google a Giuno (calendario, mail, Drive). ' +
       'Il link è generato dal sistema per quel collega: non scrivere MAI URL OAuth a mano e non inoltrare il link di un altro. ' +
@@ -509,6 +548,72 @@ async function execute(toolName, input, userId, userRole) {
     if (failed.length) out.failed = failed;
     if (sent.length === 1) { out.target = sent[0].target; out.ts = sent[0].ts; }
     return out;
+  }
+
+  if (toolName === 'send_campaign') {
+    if (['admin', 'finance', 'manager'].indexOf(userRole || 'member') === -1) return { error: 'Solo admin, finance o manager possono lanciare una campagna.' };
+    var cmpRecipients = _dmRecipients(input);
+    if (!cmpRecipients.length) return { error: 'Nessun destinatario: passa target_user_ids o target_user_names.' };
+    var cmpUsers = [];
+    try { cmpUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
+    var resolved = [], missing = [];
+    cmpRecipients.forEach(function(r) {
+      if (!r.id) { var m = _findUserByName(cmpUsers, r.name); if (m) { r.id = m.id; r.name = m.name; } }
+      else if (!r.name) { var b = cmpUsers.find(function(u) { return u.id === r.id; }); if (b) r.name = b.name; }
+      if (r.id) resolved.push(r); else missing.push(r.name);
+    });
+    if (!resolved.length) return { error: 'Destinatari non trovati: ' + missing.join(', ') };
+    var me = cmpUsers.find(function(u) { return u.id === userId; });
+    try {
+      var campaigns = require('../agents/messageCampaigns');
+      var started = await campaigns.startCampaign({
+        createdBy: userId, createdByName: me ? me.name.split(' ')[0] : null, message: input.message, recipients: resolved,
+        expectedReply: input.expected_reply || null, checkAfterMinutes: input.check_after_minutes, maxPushes: input.max_pushes, pushMessage: input.push_message, title: input.title,
+      });
+      var c = started.campaign;
+      return {
+        success: true, campaign_id: c.id, sent_to: c.recipients.map(function(r) { return r.name || r.user_id; }),
+        failed: started.failed.length ? started.failed : undefined, missing: missing.length ? missing : undefined,
+        message: 'Campagna avviata: messaggio inviato a ' + c.recipients.length + ' person' + (c.recipients.length === 1 ? 'a' : 'e') + '. ' +
+          (c.expected_reply ? 'Aspetto "' + c.expected_reply + '"' : 'Aspetto una risposta') + '; primo controllo tra ' + c.check_interval_min + ' minuti, massimo ' + c.max_pushes + ' solleciti, poi avviso chi ha lanciato la campagna. Nessun timer da parte dell\'utente.',
+      };
+    } catch(e) { return { error: 'Campagna non avviata: ' + e.message }; }
+  }
+
+  if (toolName === 'campaign_status') {
+    var campaignsDb = require('../services/db/campaigns');
+    var campaignsAgent = require('../agents/messageCampaigns');
+    if (input.campaign_id) {
+      var one = await campaignsDb.getCampaign(input.campaign_id);
+      return one ? { text: campaignsAgent.formatStatus(one), campaign: { id: one.id, status: one.status, recipients: one.recipients } } : { error: 'Campagna non trovata.' };
+    }
+    var mine = await campaignsDb.listCampaigns({ status: 'active', createdBy: userId });
+    if (!mine.length) return { count: 0, message: 'Nessuna campagna attiva lanciata da te.' };
+    return { count: mine.length, text: mine.map(campaignsAgent.formatStatus).join('\n\n') };
+  }
+
+  if (toolName === 'cancel_campaign') {
+    return await require('../agents/messageCampaigns').cancelCampaign(input.campaign_id, userId);
+  }
+
+  if (toolName === 'team_member_joined' || toolName === 'team_member_left') {
+    if (['admin', 'manager'].indexOf(userRole || 'member') === -1) return { error: 'Solo admin e manager possono modificare il roster del team.' };
+    var tmUsers = [];
+    try { tmUsers = await getUtenti(); } catch(e) { /* ok */ }
+    var tmUser = input.slack_user_id ? tmUsers.find(function(u) { return u.id === input.slack_user_id; }) || { id: input.slack_user_id, name: input.name } : _findUserByName(tmUsers, input.name);
+    if (toolName === 'team_member_left') {
+      var member = (db.findTeamMemberByName && db.findTeamMemberByName(input.name || '')) || (tmUser && db.findTeamMemberById ? db.findTeamMemberById(tmUser.id) : null);
+      var leftId = (member && member.slack_user_id) || (tmUser && tmUser.id);
+      if (!leftId) return { error: 'Non trovo "' + input.name + '" nel roster né su Slack.' };
+      var okLeft = await db.deactivateTeamMember(leftId);
+      return okLeft ? { success: true, message: (member ? member.canonical_name : input.name) + ' segnato come uscito dal team: niente più daily, planner e briefing.' } : { error: 'Disattivazione fallita.' };
+    }
+    if (!tmUser || !tmUser.id) return { error: 'Non trovo "' + input.name + '" fra gli utenti Slack: serve un account Slack attivo (o passa slack_user_id).' };
+    var full = tmUser.name || input.name;
+    var first = String(full).split(/\s+/)[0];
+    var aliasList = (Array.isArray(input.aliases) ? input.aliases : []).concat(first && first.toLowerCase() !== String(full).toLowerCase() ? [first] : []);
+    var savedMember = await db.upsertTeamMember({ slack_user_id: tmUser.id, canonical_name: full, aliases: aliasList, role: input.role || null, active: true });
+    return savedMember ? { success: true, message: full + ' aggiunto al roster' + (input.role ? ' come ' + input.role : '') + '. Riceverà daily e planner; il ruolo di accesso resta "member" finché un admin non lo cambia.' } : { error: 'Salvataggio roster fallito.' };
   }
 
   if (toolName === 'send_google_link') {

@@ -335,7 +335,28 @@ tabella `project_actions`):
 - Brief del lunedì: sezione "Fermi da 14+ giorni" (scheda con cose aperte,
   canale muto, zero ore).
 
-## 11. Da fare
+## 11. Campagne con conferma di lettura e roster automatico (fase 6)
+
+**Campagne** (`src/agents/messageCampaigns.js`, tabella `message_campaigns`,
+tool `send_campaign` / `campaign_status` / `cancel_campaign`). "Manda ai 7,
+chiedi LETTO, sollecita chi non risponde, al terzo giro avvisami" ora è una
+sola chiamata: Giuno manda i DM, registra la risposta attesa (o una reaction
+sul messaggio), ogni `check_interval_min` sollecita chi manca fino a
+`max_pushes`, poi marca "senza risposta" e riferisce a chi ha lanciato la
+campagna a ogni giro e alla chiusura. Se la risposta è solo la conferma,
+Giuno mette la spunta e non scomoda il modello; se contiene altro, la
+registra e risponde normalmente. Cron `campaign_check` ogni 10 minuti;
+`/giuno admin campagne [check|annulla <id>]`.
+
+**Roster** (`src/jobs/teamRosterSyncJob.js`, cron `team_roster_sync` 7:20).
+Il roster era fermo a giugno e Giuno dichiarava di aggiornarlo senza tool.
+Ora: users.list → chi manca viene aggiunto (nome, alias, mansione dal
+profilo Slack), chi è disattivato su Slack viene spento, ospiti e bot fuori,
+riepilogo agli admin. Tool `team_member_joined` / `team_member_left` per
+dirlo a Giuno in chat; il prompt vieta "segnato" senza tool. Il `team_join`
+inserisce subito il nuovo collega nel roster. `/giuno admin team sync [dry]`.
+
+## 12. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

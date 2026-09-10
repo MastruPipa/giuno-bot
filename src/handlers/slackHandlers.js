@@ -376,6 +376,16 @@ app.message(async function(args) {
   // Slack rimanda l'evento se l'ack tarda: senza dedup rispondevamo due volte.
   if (!dedup(message.ts)) return;
 
+  // Risposta a una campagna con conferma di lettura ("LETTO"): si registra e,
+  // se il messaggio era solo la conferma, basta una spunta senza modello.
+  try {
+    var campaignHit = await require('../agents/messageCampaigns').registerReply(message.user, message.text || '');
+    if (campaignHit) {
+      try { await app.client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'white_check_mark' }); } catch(e) { /* ignore */ }
+      if (campaignHit.consumed) return;
+    }
+  } catch(e) { logger.debug('[CAMPAIGN] registerReply:', e.message); }
+
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
@@ -911,7 +921,12 @@ app.event('team_join', async function(args) {
   var user = args.event.user;
   if (!user || user.is_bot) return;
   var name = (user.real_name || user.name || '').split(' ')[0] || 'nuovo membro';
-  var mansione = MANSIONI_TEAM[name.toLowerCase()] || null;
+  var mansione = MANSIONI_TEAM[name.toLowerCase()] || (user.profile && user.profile.title) || null;
+  // Nel roster subito: senza questo Giuno non riconosce il nuovo collega.
+  try {
+    var fullName = (user.real_name || user.name || '').trim();
+    if (fullName && db.upsertTeamMember) await db.upsertTeamMember({ slack_user_id: user.id, canonical_name: fullName, aliases: name && name.toLowerCase() !== fullName.toLowerCase() ? [name] : [], role: mansione, active: true });
+  } catch(e) { logger.warn('[ONBOARDING] roster:', e.message); }
   try {
     var oauthUrl = generaLinkOAuth(user.id);
     var link = '<' + oauthUrl + '|Collega il tuo Google>';
@@ -1229,6 +1244,9 @@ app.event('reaction_added', async function(args) {
   var event = args.event;
   if (!event.item || event.item.type !== 'message') return;
 
+  // Reaction sul messaggio di una campagna = letto.
+  try { await require('../agents/messageCampaigns').registerReaction(event.user, event.item.ts); } catch(e) { /* ignore */ }
+
   // Classify reaction as positive, negative, or neutral
   var positiveReactions = ['+1', 'white_check_mark', 'heavy_check_mark', 'ok', 'thumbsup', 'clap', 'raised_hands', 'fire', '100', 'star', 'heart'];
   var negativeReactions = ['-1', 'thumbsdown', 'x', 'no_entry', 'disappointed', 'angry', 'rage', 'face_with_rolling_eyes', 'confused'];
@@ -1381,6 +1399,19 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'campagne') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager.', response_type: 'ephemeral' }); return; }
+    try {
+      var campaignsDbAdm = require('../services/db/campaigns');
+      var campaignsAdm = require('../agents/messageCampaigns');
+      if (args[1] === 'check') { var nChecked = await campaignsAdm.runChecks(); await respond({ text: 'Controllo eseguito su ' + nChecked + ' campagne scadute.', response_type: 'ephemeral' }); return; }
+      if (args[1] === 'annulla' && args[2]) { var cres = await campaignsAdm.cancelCampaign(args[2], command.user_id); await respond({ text: cres.error || cres.message, response_type: 'ephemeral' }); return; }
+      var activeCmp = await campaignsDbAdm.listCampaigns({ status: 'active' });
+      await respond({ text: activeCmp.length ? activeCmp.map(campaignsAdm.formatStatus).join('\n\n') + '\n\n`/giuno admin campagne check` · `/giuno admin campagne annulla <id>`' : 'Nessuna campagna attiva.', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'progetti') {
     if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager possono gestire i progetti.', response_type: 'ephemeral' }); return; }
     var dedup = require('../jobs/projectDedupJob');
@@ -1522,6 +1553,15 @@ async function handleAdmin(command, respond) {
       return;
     }
 
+    if (teamSub === 'sync') {
+      try {
+        var rosterSync = require('../jobs/teamRosterSyncJob');
+        var syncRes = await rosterSync.syncRosterFromSlack({ apply: args[2] !== 'dry' });
+        await respond({ text: rosterSync.formatReport(syncRes.diff, syncRes.applied), response_type: 'ephemeral' });
+      } catch(e) { await respond({ text: 'Errore sync: ' + e.message, response_type: 'ephemeral' }); }
+      return;
+    }
+
     if (teamSub === 'refresh') {
       try {
         await db.loadTeamRoster();
@@ -1573,6 +1613,7 @@ async function handleAdmin(command, respond) {
     await respond({
       text: '*Comandi team:*\n' +
         '• `admin team list` — mostra roster\n' +
+        '• `admin team sync [dry]` — allinea il roster agli utenti Slack (nuovi, disattivati)\n' +
         '• `admin team refresh` — ricarica da DB\n' +
         '• `admin team set @utente nome="Peppe" aliases="giuseppe,peppino" role="Logistica" progetti="OffKatania" clienti=""`\n' +
         '• `admin team remove @utente` — disattiva',

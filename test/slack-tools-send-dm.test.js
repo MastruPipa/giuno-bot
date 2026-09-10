@@ -80,3 +80,34 @@ test('send_google_link: solo ruoli alti, link personale del destinatario in DM',
     assert.match(posted[0].text, /Ciao Samuele! Antonio mi ha chiesto/);
   } finally { gauth.getUserTokens = origTokens; }
 });
+
+test('send_campaign: avvia la campagna e riferisce controllo e solleciti', async function() {
+  posted = [];
+  var denied = await slackTools.execute('send_campaign', { message: 'ciao', target_user_names: ['Paolo'] }, 'U2', 'member');
+  assert.match(denied.error, /Solo admin/);
+  var out = await slackTools.execute('send_campaign', { message: 'Rispondete LETTO', target_user_names: ['Paolo', 'Samuele'], expected_reply: 'LETTO', check_after_minutes: 60, max_pushes: 2 }, 'U1', 'admin');
+  assert.equal(out.success, true);
+  assert.deepEqual(out.sent_to, ['Paolo Spartano', 'Samuele Licciardello']);
+  assert.match(out.message, /primo controllo tra 60 minuti, massimo 2 solleciti/);
+  assert.equal(posted.length, 2);
+});
+
+test('team_member_joined / team_member_left passano dal roster', async function() {
+  var db = require('../supabase');
+  var ups = [], deact = [];
+  var origUp = db.upsertTeamMember, origDe = db.deactivateTeamMember, origFind = db.findTeamMemberByName;
+  db.upsertTeamMember = async function(r) { ups.push(r); return r; };
+  db.deactivateTeamMember = async function(id) { deact.push(id); return true; };
+  db.findTeamMemberByName = function(n) { return /nicol/i.test(n) ? { slack_user_id: 'U_NIC', canonical_name: 'Nicolò Paolucci' } : null; };
+  try {
+    var j = await slackTools.execute('team_member_joined', { name: 'Samuele', role: 'Video content' }, 'U1', 'admin');
+    assert.equal(j.success, true);
+    assert.equal(ups[0].slack_user_id, 'U3');
+    assert.equal(ups[0].role, 'Video content');
+    var l = await slackTools.execute('team_member_left', { name: 'Nicolò' }, 'U1', 'manager');
+    assert.match(l.message, /Nicolò Paolucci segnato come uscito/);
+    assert.deepEqual(deact, ['U_NIC']);
+    var no = await slackTools.execute('team_member_left', { name: 'Nicolò' }, 'U1', 'member');
+    assert.match(no.error, /Solo admin/);
+  } finally { db.upsertTeamMember = origUp; db.deactivateTeamMember = origDe; db.findTeamMemberByName = origFind; }
+});

@@ -1278,6 +1278,16 @@ function scheduleCrons() {
     var { checkAndNotify } = require('../jobs/projectDedupJob');
     checkAndNotify().catch(function(e) { logger.error('[DEDUP-CRON] Errore:', e.message); });
   }, { timezone: 'Europe/Rome', name: 'project_dedup_check', lockTtl: 15 });
+  // Campagne con conferma di lettura: solleciti e report
+  cron.schedule('*/10 * * * *', function() {
+    var { runChecks } = require('../agents/messageCampaigns');
+    runChecks().catch(function(e) { logger.error('[CAMPAIGN-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'campaign_check', lockTtl: 5 });
+  // Roster team allineato agli utenti Slack
+  cron.schedule('20 7 * * 1-5', function() {
+    var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');
+    syncRosterFromSlack({ apply: true, notify: true }).catch(function(e) { logger.error('[ROSTER-SYNC-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'team_roster_sync', lockTtl: 10 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');
