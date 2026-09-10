@@ -336,6 +336,11 @@ async function resolveOtherProject(name, userId, activeProjects) {
   if (!existing) {
     var found = await db.searchProjects({ name: clean, limit: 10 });
     existing = (found || []).find(function(p) { return norm(p.name) === key; }) || null;
+    if (existing && existing.status === 'merged' && existing.merged_into) {
+      // Duplicato unito: si usa il canonico.
+      var canonical = await db.getProject(existing.merged_into);
+      if (canonical) existing = canonical;
+    }
     if (existing && existing.status && existing.status !== 'active') {
       // Progetto esistente ma chiuso/archiviato: lo riapriamo, è stato scelto apposta.
       try { await db.updateProject(existing.id, { status: 'active' }); existing.status = 'active'; } catch(e) { /* best effort */ }

@@ -156,3 +156,77 @@ module.exports = {
   getProjectTimeLogs: getProjectTimeLogs,
   getProjectSignals: getProjectSignals,
 };
+
+// ─── Azioni dalle call (project_actions) ─────────────────────────────────────
+// "Corrado → inviare documenti Caritas entro il 10/09" estratto dagli appunti
+// Gemini: una riga per azione, con assegnatario risolto sul roster quando si
+// può. Dedup per (file sorgente, descrizione compatta).
+
+var ACTIONS_FILE = 'project_actions.json';
+function _readActions() { return _c().readJSON(ACTIONS_FILE, []); }
+function _compactText(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9àèéìòù]+/g, '').substring(0, 80); }
+
+async function addProjectAction(row) {
+  row.id = row.id || ('act_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7));
+  row.status = row.status || 'open';
+  row.created_at = row.created_at || new Date().toISOString();
+  row.description_key = _compactText(row.description);
+  var c = _c();
+  if (!c.useSupabase) {
+    var acts = _readActions();
+    if (acts.some(function(a) { return a.source_file_id === row.source_file_id && a.description_key === row.description_key; })) return null;
+    acts.push(row);
+    c.writeJSON(ACTIONS_FILE, acts);
+    return row;
+  }
+  try {
+    var ex = await c.getClient().from('project_actions').select('id').eq('source_file_id', row.source_file_id || '').eq('description_key', row.description_key).limit(1);
+    if (ex.data && ex.data.length > 0) return null;
+    var res = await c.getClient().from('project_actions').insert(row);
+    if (res.error) throw res.error;
+    return row;
+  } catch(e) { c.logErr('addProjectAction', e); return null; }
+}
+
+async function listProjectActions(filter) {
+  filter = filter || {};
+  var c = _c();
+  var rows;
+  if (!c.useSupabase) rows = _readActions();
+  else {
+    try {
+      var q = c.getClient().from('project_actions').select('*').order('created_at', { ascending: false }).limit(filter.limit || 300);
+      if (filter.status) q = q.eq('status', filter.status);
+      if (filter.assignee) q = q.eq('assignee_slack_id', filter.assignee);
+      var res = await q;
+      if (res.error) throw res.error;
+      rows = res.data || [];
+    } catch(e) { c.logErr('listProjectActions', e); rows = []; }
+  }
+  return rows.filter(function(a) {
+    if (filter.status && a.status !== filter.status) return false;
+    if (filter.assignee && a.assignee_slack_id !== filter.assignee) return false;
+    if (filter.notNotified && a.notified_at) return false;
+    if (filter.createdAfter && !(a.created_at >= filter.createdAfter)) return false;
+    if (filter.dueBefore && !(a.due_date && a.due_date <= filter.dueBefore)) return false;
+    return true;
+  });
+}
+
+async function updateProjectAction(id, fields) {
+  fields.updated_at = new Date().toISOString();
+  var c = _c();
+  if (!c.useSupabase) {
+    var acts = _readActions().map(function(a) { return a.id === id ? Object.assign({}, a, fields) : a; });
+    c.writeJSON(ACTIONS_FILE, acts);
+    return;
+  }
+  try {
+    var res = await c.getClient().from('project_actions').update(fields).eq('id', id);
+    if (res.error) throw res.error;
+  } catch(e) { c.logErr('updateProjectAction', e); }
+}
+
+module.exports.addProjectAction = addProjectAction;
+module.exports.listProjectActions = listProjectActions;
+module.exports.updateProjectAction = updateProjectAction;
