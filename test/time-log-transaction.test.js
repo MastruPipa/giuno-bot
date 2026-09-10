@@ -15,7 +15,8 @@ test('PostgreSQL: canonical snapshots, rollback, replay, estimates and access', 
         id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
         slack_user_id text NOT NULL, project_id text REFERENCES projects(id),
         log_date date NOT NULL, log_type text NOT NULL CHECK(log_type IN ('daily','weekly')),
-        hours numeric(4,2) NOT NULL CHECK(hours >= 0.5), notes text, validation jsonb,
+        hours numeric(4,2) NOT NULL, notes text, validation jsonb,
+        CONSTRAINT time_logs_check CHECK(hours >= 0.5 AND ((log_type='daily' AND hours<=24) OR (log_type='weekly' AND hours<=60))),
         created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now(),
         UNIQUE(slack_user_id,project_id,log_date,log_type));`);
     await pg.exec(fs.readFileSync(path.join(__dirname,'../docs/time-log-writes.sql'),'utf8'));

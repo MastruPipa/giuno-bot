@@ -1,6 +1,7 @@
 -- Apply before deploying the unified writer. Existing rows are preserved.
 BEGIN;
 -- The previous daily minimum rejected legitimate 15-minute activities.
+ALTER TABLE public.time_logs DROP CONSTRAINT IF EXISTS time_logs_check;
 ALTER TABLE public.time_logs DROP CONSTRAINT IF EXISTS time_logs_hours_check;
 ALTER TABLE public.time_logs ADD CONSTRAINT time_logs_hours_check CHECK (
   hours > 0 AND ((log_type = 'daily' AND hours <= 24) OR
