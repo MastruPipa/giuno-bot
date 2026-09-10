@@ -373,6 +373,9 @@ app.message(async function(args) {
 
   // ── DM ─────────────────────────────────────────────────────────────────────
 
+  // Slack rimanda l'evento se l'ack tarda: senza dedup rispondevamo due volte.
+  if (!dedup(message.ts)) return;
+
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
@@ -608,7 +611,7 @@ app.message(async function(args) {
     try { await app.client.reactions.remove({ channel: message.channel, timestamp: message.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
 
     var formatted = formatPerSlack(reply);
-    if (!formatted) return;
+    if (!formatted) { logger.warn('[DM] risposta vuota per', message.user, '(non postato nulla)'); return; }
     var posted = await app.client.chat.postMessage({ channel: message.channel, text: formatted, thread_ts: threadTs || undefined });
     if (posted && posted.ts) botMessages.set(posted.ts, { userId: message.user, text: formatted, channel: message.channel, timestamp: Date.now() });
   } catch(err) { metricsService.increment('request_failed_total'); metricsService.increment('request_app_message_failed_total'); await app.client.chat.postMessage({ channel: message.channel, text: toUserErrorMessage(err) }); }

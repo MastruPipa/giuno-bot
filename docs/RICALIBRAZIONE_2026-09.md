@@ -216,7 +216,48 @@ accanto a quelli interni. L'API esegue i tool dentro la stessa chiamata.
   chiave da mettere su Railway.
 - `/giuno admin higgsfield disconnect` scollega (butta i token, tiene il client).
 
-## 8. Da fare
+## 8. Incidente del 10/9: "Giuno mi ignora" e link Google "il sito va in down"
+
+Due cause distinte, entrambe verificate sui dati (conversazioni in DB, DM
+Slack, probe HTTP sul dominio Railway).
+
+**Risposte vuote in DM.** Ogni volta che Antonio diceva "manda" (stesso
+messaggio lungo a 7 persone) il modello emetteva 7 `send_dm` con il testo
+completo in una sola risposta: oltre i 4096 token di `max_tokens`, risposta
+troncata a metà `tool_use`, nessun testo, e askGiuno tornava `''` che il
+DM handler scartava in silenzio. Sei turni di fila salvati con assistant vuoto.
+Correzioni:
+- `max_tokens` 4096 → 16000 (`GIUNO_MAX_TOKENS`); si paga solo l'output reale.
+- Troncamento con tool completi → i tool vengono eseguiti e il modello
+  continua con una nota; troncamento/risposta senza testo → un retry con
+  istruzione di sintesi; se ancora vuota, in DM/mention arriva un fallback
+  leggibile ("Mi sono incartato…"), mai il silenzio.
+- `send_dm` accetta `target_user_ids`/`target_user_names`: un solo tool call
+  per lo stesso testo a più persone (prompt aggiornato). La conferma per dati
+  sensibili ora funziona via `confirmed=true` (prima usava un action_id che
+  `confirm_action` non conosceva).
+- Dedup sugli eventi DM (Slack rimandava l'evento → doppio "Eccomi!").
+
+**Link Google.** `https://giuno-bot-production.up.railway.app/healthz` risponde
+502 "Application failed to respond" mentre il bot su Slack è vivo: il dominio
+pubblico Railway non arriva alla porta su cui il processo ascolta (dal 29/6 il
+server binda `$PORT`; nessun token Google è più stato salvato dopo aprile).
+Quindi il callback OAuth è rotto per tutti, e in più il modello, non avendo un
+tool, ha "inventato" il link per Samuele. Correzioni:
+- Il server HTTP ascolta su `PORT` e, su Railway, anche sulla 3000
+  (`resolveListenPorts`), così il dominio funziona qualunque porta punti.
+- Auto-verifica un minuto dopo il boot: se `<origine di OAUTH_REDIRECT_URI>/healthz`
+  non risponde 200, log di errore e DM agli admin con l'istruzione precisa
+  (Railway → Settings → Networking → porta del dominio, oppure `PORT`).
+- Tool `send_google_link` (admin/finance/manager): genera il link personale
+  del collega e glielo manda in DM; il prompt vieta gli URL OAuth scritti a mano.
+
+**Da fare su Railway (Antonio):** dopo il deploy leggere nei log la riga
+"OAuth + Dashboard server su porta …" e, se il DM di avviso arriva, allineare
+la porta del dominio pubblico. Poi Samuele (e Gloria) possono collegare Google
+con "collega Google" in DM o tramite `send_google_link`.
+
+## 9. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

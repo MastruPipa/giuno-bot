@@ -15,7 +15,23 @@ var { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI, salvaTokenUten
 // Railway (e molti PaaS) iniettano la porta da usare via $PORT. Bindiamo lì
 // così l'healthcheck di Railway raggiunge il server; OAUTH_PORT resta come
 // override esplicito per dev locale.
-var OAUTH_PORT = process.env.PORT || process.env.OAUTH_PORT || 3000;
+// Porte in ascolto. Railway inietta PORT e l'healthcheck la usa, ma il
+// dominio pubblico ha una "target port" sua: se resta sulla 3000 di quando il
+// bot è nato, /oauth/callback risponde 502 anche con il bot vivo (successo a
+// settembre 2026: link Google "il sito va in down"). Quindi su Railway si
+// ascolta anche sulla 3000, e al boot si verifica che il dominio risponda.
+function resolveListenPorts(env) {
+  env = env || process.env;
+  var ports = [];
+  function add(p) { var n = parseInt(p, 10); if (n > 0 && ports.indexOf(n) === -1) ports.push(n); }
+  add(env.PORT);
+  add(env.OAUTH_PORT);
+  if (ports.length === 0) add(3000);
+  if (env.PORT && !env.OAUTH_PORT && (env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID)) add(3000);
+  return ports;
+}
+var OAUTH_PORT = resolveListenPorts(process.env)[0];
+var _extraServers = [];
 var OAUTH_ADMIN_TOKEN = process.env.OAUTH_ADMIN_TOKEN || '';
 
 // Stats reference — set by app.js after slackHandlers loads
@@ -53,7 +69,7 @@ function isAuthorizedAdminRequest(req, parsed) {
 
 // ─── HTTP server ───────────────────────────────────────────────────────────────
 
-var oauthServer = http.createServer(async function(req, res) {
+async function handleRequest(req, res) {
   var parsed = url.parse(req.url, true);
 
   // Liveness probe per l'healthcheck di Railway: NON protetto, risposta
@@ -247,20 +263,89 @@ var oauthServer = http.createServer(async function(req, res) {
     res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><body><h2>Errore</h2><p>' + e.message + '</p></body></html>');
   }
-});
+}
+
+var oauthServer = http.createServer(handleRequest);
+
+// ─── Auto-verifica del dominio pubblico ──────────────────────────────────────
+// Un minuto dopo il boot chiama <origine di OAUTH_REDIRECT_URI>/healthz: se non
+// risponde 200, il collegamento Google e la dashboard sono rotti anche se il
+// bot su Slack funziona. Log + DM agli admin, una volta per avvio.
+
+var PUBLIC_SELFCHECK_DELAY_MS = 60000;
+
+function publicOrigin(redirectUri) {
+  try {
+    var u = new URL(redirectUri || OAUTH_REDIRECT_URI || '');
+    if (/^(localhost|127\.0\.0\.1)$/.test(u.hostname)) return null;
+    return u.origin;
+  } catch(_) { return null; }
+}
+
+async function checkPublicReachability(opts) {
+  opts = opts || {};
+  var origin = publicOrigin(opts.redirectUri);
+  if (!origin) return { skipped: true };
+  var fetchFn = opts.fetch || fetch;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, opts.timeoutMs || 10000);
+  try {
+    var res = await fetchFn(origin + '/healthz', { signal: ctrl.signal });
+    return { ok: res.status === 200, status: res.status, origin: origin };
+  } catch(e) {
+    return { ok: false, error: e.message, origin: origin };
+  } finally { clearTimeout(timer); }
+}
+
+function publicUnreachableMessage(result, ports) {
+  return 'Il dominio pubblico di Giuno (' + result.origin + ') non risponde (' + (result.status || result.error) + '): ' +
+    'il collegamento Google (link OAuth) e la dashboard non funzionano finché non si sistema. ' +
+    'Su Railway apri il servizio → Settings → Networking → Public Networking e imposta la porta del dominio su una di quelle in ascolto (' +
+    ports.join(', ') + '), oppure imposta la variabile PORT=' + ports[ports.length - 1] + '. Il bot su Slack intanto funziona.';
+}
+
+function schedulePublicSelfCheck() {
+  if (!publicOrigin()) return;
+  var t = setTimeout(async function() {
+    var result = await checkPublicReachability();
+    if (result.skipped) return;
+    if (result.ok) { logger.info('[HTTP] dominio pubblico raggiungibile:', result.origin); return; }
+    var msg = publicUnreachableMessage(result, resolveListenPorts(process.env));
+    logger.error('[HTTP] ' + msg);
+    try {
+      var admins = (await require('../../rbac').getAllRoles()).filter(function(r) { return r.role === 'admin'; });
+      var { app } = require('../services/slackService');
+      for (var i = 0; i < admins.length; i++) {
+        await app.client.chat.postMessage({ channel: admins[i].slack_user_id, text: '⚠️ ' + msg });
+      }
+    } catch(e) { logger.warn('[HTTP] avviso admin fallito:', e.message); }
+  }, PUBLIC_SELFCHECK_DELAY_MS);
+  t.unref();
+}
 
 function startOAuthServer() {
-  oauthServer.listen(OAUTH_PORT, function() {
-    logger.info('OAuth + Dashboard server su porta ' + OAUTH_PORT);
-    logger.info('Dashboard: http://localhost:' + OAUTH_PORT + '/dashboard');
-    if (OAUTH_ADMIN_TOKEN) logger.info('Dashboard/metrics protetti da OAUTH_ADMIN_TOKEN');
-    else if (isProductionEnv()) logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: /dashboard e /metrics rispondono 401 finché non lo imposti.');
-    else logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: dashboard/metrics APERTI (ambiente non di produzione).');
+  var ports = resolveListenPorts(process.env);
+  ports.forEach(function(port, i) {
+    var srv = i === 0 ? oauthServer : http.createServer(handleRequest);
+    if (i > 0) _extraServers.push(srv);
+    srv.on('error', function(e) { logger.error('[HTTP] porta ' + port + ' non disponibile:', e.message); });
+    srv.listen(port, function() {
+      logger.info('OAuth + Dashboard server su porta ' + port + (i > 0 ? ' (porta aggiuntiva per il dominio pubblico)' : ''));
+    });
   });
+  logger.info('Dashboard: http://localhost:' + OAUTH_PORT + '/dashboard');
+  if (OAUTH_ADMIN_TOKEN) logger.info('Dashboard/metrics protetti da OAUTH_ADMIN_TOKEN');
+  else if (isProductionEnv()) logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: /dashboard e /metrics rispondono 401 finché non lo imposti.');
+  else logger.warn('[ADMIN] OAUTH_ADMIN_TOKEN assente: dashboard/metrics APERTI (ambiente non di produzione).');
+  schedulePublicSelfCheck();
 }
 
 module.exports = {
   oauthServer: oauthServer,
+  handleRequest: handleRequest,
+  resolveListenPorts: resolveListenPorts,
+  checkPublicReachability: checkPublicReachability,
+  publicUnreachableMessage: publicUnreachableMessage,
   startOAuthServer: startOAuthServer,
   setStats: setStats,
   OAUTH_PORT: OAUTH_PORT,
