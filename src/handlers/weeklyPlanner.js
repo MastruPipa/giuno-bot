@@ -334,36 +334,10 @@ async function closePlannerWindow() {
 
 // ─── Registrazione action/view handlers ──────────────────────────────────────
 
-// Risolve il nome scritto nella riga "Altro" a un progetto: riuso se esiste
-// (attivo, stesso nome normalizzato), altrimenti creazione. Ritorna
-// { project, created } oppure { error } con il messaggio per il campo.
-async function resolveOtherProject(name, userId, activeProjects) {
-  var clean = String(name || '').replace(/\s+/g, ' ').trim();
-  if (clean.length < 2) return { error: 'Scrivi il nome del progetto (almeno 2 caratteri).' };
-  var key = norm(clean);
-  var existing = (activeProjects || []).find(function(p) { return norm(p.name) === key; });
-  if (!existing) {
-    var found = await db.searchProjects({ name: clean, limit: 10 });
-    existing = (found || []).find(function(p) { return norm(p.name) === key; }) || null;
-    if (existing && existing.status === 'merged' && existing.merged_into) {
-      // Duplicato unito: si usa il canonico.
-      var canonical = await db.getProject(existing.merged_into);
-      if (canonical) existing = canonical;
-    }
-    if (existing && existing.status && existing.status !== 'active') {
-      // Progetto esistente ma chiuso/archiviato: lo riapriamo, è stato scelto apposta.
-      try { await db.updateProject(existing.id, { status: 'active' }); existing.status = 'active'; } catch(e) { /* best effort */ }
-    }
-  }
-  if (existing) return { project: existing, created: false };
-  var project = await db.createProject({
-    name: clean, status: 'active', owner_slack_id: userId,
-    tags: ['tipo:progetto', 'fonte:planner'],
-    description: 'Creato dal Weekly Planner da <@' + userId + '>',
-  });
-  if (!project || !project.id) return { error: 'Non sono riuscito a creare il progetto: riprova o scegli una voce in lista.' };
-  return { project: project, created: true };
-}
+// Riga "Altro": il testo scritto si aggancia a una commessa esistente (per
+// nome o perché la nomina), MAI ne crea una nuova: vedi
+// services/otherProjectResolver.js.
+var resolveOtherProject = require('../services/otherProjectResolver').resolveOtherProject;
 
 function register(appInstance) {
   var a = appInstance || app;
@@ -421,9 +395,9 @@ function register(appInstance) {
     var projectsById = {};
     projects.forEach(function(p) { projectsById[p.id] = p; });
 
-    // Righe "Altro": il progetto scritto a mano viene riusato se esiste già
-    // (stesso nome, a meno di maiuscole/spazi) oppure creato adesso, prima
-    // della validazione — così la riga passa come un progetto qualsiasi.
+    // Righe "Altro": il testo scritto a mano si aggancia a una commessa
+    // esistente (stesso nome, o cliente/commessa nominati) prima della
+    // validazione; se non si aggancia la riga non passa. Niente commesse nuove.
     var otherErrors = {};
     var created = [];
     for (var oi = 0; oi < rows.length; oi++) {
@@ -433,6 +407,7 @@ function register(appInstance) {
       if (resolved.error) { otherErrors['wp_other_' + orow.index] = resolved.error; continue; }
       orow.project_id = resolved.project.id;
       projectsById[resolved.project.id] = resolved.project;
+      if (resolved.via === 'testo') logger.info('[PLANNER] "Altro" agganciato a ' + resolved.project.name + ' da "' + resolved.text + '" (' + userId + ')');
       if (resolved.created) created.push(resolved.project.name);
     }
     if (Object.keys(otherErrors).length > 0) {

@@ -858,7 +858,40 @@ generale ma non ha senso enumerarle tutte nel progetto".
    parte, così si vede cosa ha fatto ciascuno e a quale pezzo di lavoro
    serviva.
 
-## 28. Da fare
+## 28. "Altro" non crea più commesse dal testo libero
+
+Antonio (12/9, screenshot di giun.os): "ancora molti progetti sono
+spezzettati. Tantissimi sono come questo": righe come "Vini Gambino -
+riunione con cliente + fix premi + ricerca visiva shooting" o "Tutte le
+pubblicazioni e le caption dei contenuti che ancora non le hanno" comparivano
+come commesse.
+
+Causa: la voce "Altro (non in lista)" del planner creava un progetto
+manuale (`prj_`, tag `fonte:planner`) con qualunque testo la persona
+scrivesse, e le persone ci scrivevano il task, non la commessa. Ogni riga
+diventava un progetto attivo a sé, con le sue ore.
+
+1. **Il testo libero si aggancia, mai crea** (`src/services/otherProjectResolver.js`):
+   stesso nome di una commessa esistente; oppure il cliente o la commessa
+   nominati nel testo, con le stesse regole del daily più le parole in
+   altro ordine ("Vini Gambino" → "Gambino Vini"); oppure un'attività
+   trasversale ("riunione di management"). Se non si aggancia la riga non
+   passa: "scegli una voce in lista o scrivi il nome del cliente; le
+   commesse nuove le creano gli admin". Con due commesse dello stesso
+   cliente nominato non si sceglie.
+2. **Pulizia di quelle già nate** (`projectDedupJob.plannerProposals`):
+   `/giuno admin progetti dedup` propone per ogni riga nata dal planner
+   l'unione nella commessa che nomina (le ore seguono), e `apply` le
+   applica; le righe irriconoscibili restano elencate a parte per un
+   `merge` a mano o una chiusura. Le righe del planner non entrano più nei
+   gruppi per somiglianza: i loro nomi lunghi avrebbero fuso commesse
+   diverse.
+
+Da fare dopo il merge: `/giuno admin progetti dedup` in anteprima, poi
+`apply`; per le righe irriconoscibili `/giuno admin progetti merge <riga> ->
+<commessa>` oppure `/giuno admin progetti stato <riga> concluso`.
+
+## 29. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

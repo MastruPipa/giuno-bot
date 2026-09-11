@@ -121,6 +121,32 @@ function proposeMerges(projects, stats) {
   });
 }
 
+// Righe nate dal testo libero "Altro" del planner (tag fonte:planner):
+// "Vini Gambino - riunione con cliente + fix premi" non è una commessa, è
+// un task scritto nella riga sbagliata. Se il testo nomina una commessa
+// vera (stesse regole del daily + parole in altro ordine) si propone il
+// merge lì; altrimenti resta in lista per un merge a mano.
+function isPlannerProject(p) {
+  return source(p) === 'manual' && ((p.tags || []).indexOf('fonte:planner') !== -1 || /^Creato dal Weekly Planner/i.test(String(p.description || '')));
+}
+function plannerProposals(projects) {
+  var matcher = require('../services/projectMatcher');
+  var resolver = require('../services/otherProjectResolver');
+  var list = (projects || []).filter(function(p) { return p && p.id && p.status !== 'merged'; });
+  var real = list.filter(function(p) { return !isPlannerProject(p) && source(p) !== 'cat'; });
+  var catalog = real.map(matcher.catalogEntry);
+  var byId = {};
+  real.forEach(function(p) { byId[p.id] = p; });
+  var proposals = [], unresolved = [];
+  list.filter(isPlannerProject).forEach(function(p) {
+    var hit = matcher.resolveTask(p.name, catalog) || resolver.tokenMatch(p.name, catalog);
+    var canonical = hit && byId[hit.id];
+    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: nomina ' + canonical.name] });
+    else unresolved.push(p);
+  });
+  return { proposals: proposals, unresolved: unresolved };
+}
+
 // Righe "progetto" nate da canali di servizio o nomi generici.
 function findNoiseProjects(projects) {
   return (projects || []).filter(function(p) {
@@ -212,9 +238,12 @@ async function runDedup(opts) {
   var db = deps.db || require('../../supabase');
   var projects = opts.projects || await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
   var stats = opts.stats || await loadStats(deps);
-  var proposals = proposeMerges(projects, stats);
+  // Le righe del planner si trattano a parte: non entrano nei gruppi per
+  // somiglianza (i loro nomi lunghi farebbero fondere commesse diverse).
+  var planner = plannerProposals(projects);
+  var proposals = proposeMerges(projects.filter(function(p) { return !isPlannerProject(p); }), stats).concat(planner.proposals);
   var noise = findNoiseProjects(projects);
-  var report = { proposals: proposals, noise: noise, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };
+  var report = { proposals: proposals, noise: noise, plannerUnresolved: planner.unresolved, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };
   if (opts.apply) {
     for (var i = 0; i < proposals.length; i++) {
       var p = proposals[i];
@@ -237,6 +266,10 @@ function formatReport(r, applied) {
     lines.push('• *' + p.canonical.name + '* ← ' + p.duplicates.map(function(d) { return d.name + ' (' + source(d) + ')'; }).join(', ') + ' _[' + p.reasons.join(', ') + ']_');
   });
   if (r.noise.length) lines.push('Rumore da archiviare: ' + r.noise.map(function(n) { return n.name; }).join(', '));
+  if (r.plannerUnresolved && r.plannerUnresolved.length) {
+    lines.push('*Righe nate dal planner senza una commessa riconoscibile* (' + r.plannerUnresolved.length + '): uniscile a mano con `merge`, o segnale concluse');
+    r.plannerUnresolved.slice(0, 15).forEach(function(p) { lines.push('  • ' + String(p.name).substring(0, 80)); });
+  }
   if (!applied && (r.proposals.length || r.noise.length)) lines.push('`/giuno admin progetti dedup apply` per applicare · `/giuno admin progetti merge <duplicato> -> <canonico>` per un merge manuale');
   return lines.join('\n');
 }
@@ -271,6 +304,6 @@ async function checkAndNotify(deps) {
 module.exports = {
   compact: compact, tokens: tokens, source: source,
   isDuplicatePair: isDuplicatePair, findDuplicateGroups: findDuplicateGroups, chooseCanonical: chooseCanonical,
-  proposeMerges: proposeMerges, findNoiseProjects: findNoiseProjects, mergedCanonicalFields: mergedCanonicalFields,
+  proposeMerges: proposeMerges, findNoiseProjects: findNoiseProjects, isPlannerProject: isPlannerProject, plannerProposals: plannerProposals, mergedCanonicalFields: mergedCanonicalFields,
   applyMerge: applyMerge, archiveNoise: archiveNoise, runDedup: runDedup, formatReport: formatReport, checkAndNotify: checkAndNotify,
 };
