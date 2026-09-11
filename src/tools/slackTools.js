@@ -19,7 +19,7 @@ function getSearchToken() {
 // Lazy-loaded to avoid circular deps at module load time
 function getApp() { return require('../services/slackService').app; }
 function getAnthropic() { return require('../services/anthropicService').client; }
-function getUtenti() { return require('../services/slackService').getUtenti(); }
+function getUtenti(opts) { return require('../services/slackService').getUtenti(opts); }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

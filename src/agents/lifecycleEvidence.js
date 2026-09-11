@@ -32,7 +32,7 @@ function _client() { return require('../services/db/client'); }
 
 function iso(d) { return new Date(d).toISOString().slice(0, 10); }
 function addDays(dateStr, n) { var d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return iso(d); }
-function isDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && isFinite(Date.parse(s)); }
+function isDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && isFinite(Date.parse(s)) && new Date(s).toISOString().slice(0, 10) === s; }
 function isHttps(u) { return typeof u === 'string' && /^https:\/\//.test(u); }
 function norm(s) { return String(s || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
 
@@ -119,6 +119,15 @@ function assess(project, evidences, ctx) {
   if (closedPhase && !adminDecision && project.status !== 'completed') {
     return { state: 'concluso?', primary: primary, hints: hints, reason: 'la scheda dice "' + hints.fase + '"' };
   }
+  // Sospensione decisa da una persona: il refresh non la ribalta mai da solo.
+  // Solo evidenze NUOVE (osservate dopo la decisione) fanno riproporre la domanda.
+  var ex = ctx.existing;
+  if (project.status === 'on_hold') {
+    var decidedOn = ex && ex.state === 'on_hold' && isDate(ex.observed_on) ? ex.observed_on : null;
+    var fresh = primary.filter(function(e) { return e.kind !== 'admin' && (!decidedOn || e.observed_on > decidedOn); });
+    if (fresh.length) return { state: 'operativo?', primary: primary, hints: hints, reason: 'sospeso' + (decidedOn ? ' dal ' + decidedOn : '') + ', ma trovo evidenze nuove: ' + fresh[0].detail };
+    return { state: 'invariato', primary: primary, hints: hints, reason: 'sospeso da una persona' + (decidedOn ? ' il ' + decidedOn : '') };
+  }
   if (primary.length) {
     var best = primary[0];
     return { state: 'operativo', primary: primary, hints: hints, reason: best.detail,
@@ -128,8 +137,9 @@ function assess(project, evidences, ctx) {
   }
   if (stoppedPhase && project.status !== 'on_hold') return { state: 'sospeso?', primary: primary, hints: hints, reason: 'la scheda dice "' + hints.fase + '"' };
   if (hours) return { state: 'operativo?', primary: primary, hints: hints, reason: hours.detail + ' negli ultimi ' + HOURS_WINDOW_DAYS + ' giorni, ma nessuna fonte documentale' };
-  var ex = ctx.existing;
-  if (project.status === 'active' && ex && ex.state === 'active' && isDate(ex.valid_until) && ex.valid_until < today) {
+  // Evidenza scaduta: vale anche se la sync ha già riportato il progetto a
+  // planning (gira prima del refresh); il PM va comunque interpellato.
+  if (ex && ex.state === 'active' && isDate(ex.valid_until) && ex.valid_until < today) {
     return { state: 'sospeso?', primary: primary, hints: hints, reason: 'l\'ultima evidenza (' + (ex.kind || 'n/d') + ') è scaduta il ' + ex.valid_until + ' e non ne trovo di nuove' };
   }
   if (imported && project.status !== 'active') return { state: 'acquisito', primary: primary, hints: hints, reason: 'nessuna evidenza operativa' };
@@ -218,8 +228,11 @@ async function refreshLifecycle(opts) {
       if (changed) {
         if (p.status !== 'active') report.activated++; else report.extended++;
         if (opts.apply) {
-          try { await db.updateProject(p.id, { status: 'active', lifecycle_evidence: a.evidence }); item.applied = true; }
-          catch(e) { logger.warn('[LIFECYCLE] scrittura ' + p.name + ' fallita:', e.message); }
+          try {
+            var written = await db.updateProject(p.id, { status: 'active', lifecycle_evidence: a.evidence });
+            if (!written) throw new Error('updateProject ha restituito null');
+            item.applied = true;
+          } catch(e) { item.error = e.message; logger.warn('[LIFECYCLE] scrittura ' + p.name + ' fallita:', e.message); }
         }
       } else item.state = 'operativo (invariato)';
     } else if (/\?$/.test(a.state)) {
@@ -305,7 +318,7 @@ function formatReport(r, applied) {
     var its = r.items.filter(function(it) { return it.state === k; });
     if (!its.length) return;
     lines.push('*' + groups[k] + '* (' + its.length + ')');
-    its.slice(0, 15).forEach(function(it) { lines.push('• ' + it.project + (it.valid_until ? ' → fino al ' + it.valid_until : '') + ' — _' + it.reason + '_'); });
+    its.slice(0, 15).forEach(function(it) { lines.push('• ' + it.project + (it.valid_until ? ' → fino al ' + it.valid_until : '') + ' — _' + it.reason + '_' + (it.error ? ' ⚠️ non scritto: ' + it.error : '')); });
     if (its.length > 15) lines.push('_… e altri ' + (its.length - 15) + '_');
   });
   lines.push('`/giuno admin progetti stato <nome> operativo|sospeso|concluso` decide a mano; `progetti evidenze apply` scrive le attivazioni.');
