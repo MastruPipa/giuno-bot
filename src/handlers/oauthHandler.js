@@ -75,7 +75,9 @@ async function handleRequest(req, res) {
   if (parsed.pathname === '/giunos' || parsed.pathname.startsWith('/giunos/')) {
     var giunos = require('../giunos/handler').createHandler({
       getClient: function() { return require('../services/db/client').getClient(); },
-      authorize: isAuthorizedAdminRequest
+      authorize: function(req, parsed) {
+        return require('../giunos/auth').authorize(req, parsed, process.env.GIUNOS_ACCESS_KEY, isAuthorizedAdminRequest);
+      }
     });
     if (await giunos(req, res, parsed)) return;
   }
