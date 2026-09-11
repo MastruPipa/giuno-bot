@@ -4,7 +4,7 @@ const path=require('node:path');
 const {periodBounds,buildSnapshot}=require('./model');
 const {loadRaw}=require('./data');
 const assets={'/giunos':'index.html','/giunos/':'index.html','/giunos/app.js':'app.js','/giunos/style.css':'style.css'};
-const security={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
+const security={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self' https://framerusercontent.com; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
 function send(res,status,body,type='application/json') {res.writeHead(status,{...security,'Content-Type':type+'; charset=utf-8'});res.end(type==='application/json'?JSON.stringify(body):body);}
 function createHandler({getClient,authorize,load=loadRaw,clock=()=>new Date()}) {
   return async function(req,res,parsed) {
