@@ -65,6 +65,34 @@ function dealToProjectRow(deal) {
   };
 }
 
+// Il cliente della commessa: l'azienda collegata al deal (riferimento a
+// companies). Una chiamata per azienda, con cache per corsa; se manca o
+// fallisce, client_name resta null e la commessa vive col solo nome.
+function companyRefOf(values) {
+  var v = values || {};
+  var keys = Object.keys(v);
+  for (var i = 0; i < keys.length; i++) {
+    var val = v[keys[i]];
+    var list = Array.isArray(val) ? val : [val];
+    for (var j = 0; j < list.length; j++) {
+      var x = list[j];
+      if (x && typeof x === 'object' && x.object === 'companies' && x.record_id) return x.record_id;
+    }
+  }
+  return null;
+}
+async function companyNameOf(deal, cache, deps) {
+  var id = companyRefOf(deal.values);
+  if (!id) return null;
+  if (cache[id] !== undefined) return cache[id];
+  try {
+    var rec = await (deps && deps.attio ? deps.attio : attio).getRecord('companies', id);
+    var name = rec && rec.values ? firstOf(rec.values.name) : null;
+    cache[id] = name ? String(name).replace(/\\/g, '').trim().substring(0, 200) : null;
+  } catch(e) { logger.debug('[PROJECT-SYNC] azienda ' + id + ' non letta:', e.message); cache[id] = null; }
+  return cache[id];
+}
+
 async function syncActiveProjectsFromAttio() {
   if (!attio.isConfigured()) {
     logger.info('[PROJECT-SYNC] Attio non configurato, skip.');
@@ -79,9 +107,12 @@ async function syncActiveProjectsFromAttio() {
   var activeIds = [];
   var synced = 0;
   var wonDropped = 0;
+  var companyCache = {};
   for (var i = 0; i < deals.length; i++) {
     var deal = deals[i];
     var row = dealToProjectRow(deal);
+    var client = await companyNameOf(deal, companyCache);
+    if (client) row.client_name = client;
     activeIds.push(row.id);
     var res = await db.upsertSyncedProject(row);
     if (!res) throw new Error('Sincronizzazione progetto fallita: ' + row.id);
@@ -97,4 +128,7 @@ module.exports = {
   syncActiveProjectsFromAttio: syncActiveProjectsFromAttio,
   ACTIVE_STAGES: ACTIVE_STAGES,
   isActiveStage: isActiveStage,
+  dealToProjectRow: dealToProjectRow,
+  companyRefOf: companyRefOf,
+  companyNameOf: companyNameOf,
 };

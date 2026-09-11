@@ -231,3 +231,15 @@ test('registro posizioni: documenti, messaggi e file Figma portano [progetto: X]
   assert.match(prompt, /SESSIONI DI LAVORO[\s\S]*#offkatania \(1 messaggi\) \[progetto: offkatania\]; Drive "Registro cassa" \(1 modifiche\) \[progetto: offkatania\]/);
   assert.match(prompt, /Figma "Landing" \(1 versioni\) \[progetto: Elios\]/);
 });
+
+test('calendario: riunioni senza cliente vanno alle attività trasversali, con il tag nel prompt e nelle sessioni', async function() {
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'Daily team', hours: 0, minutes: 15 }], domani: [], blocchi: null, confidence: 'alta' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var dayContext = { users: [{ id: 'U1', name: 'Paolo', email: 'paolo@k.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, figmaByEmail: {}, figmaByName: {}, figmaEvents: { byEmail: {}, byName: {} },
+    adminEvents: [{ title: 'Daily meeting team', start: '2026-09-10T09:30:00+02:00', minutes: 15, attendees: ['paolo@k.it'] }, { title: 'Meeting KatiaMP - The new dawn', start: '2026-09-10T11:00:00+02:00', minutes: 30, attendees: ['paolo@k.it'] }] };
+  await est.estimateDaily('U1', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null });
+  assert.match(prompt, /- Daily meeting team — 15 min, 1 partecipanti \[progetto: Daily e riunioni di team\]/);
+  assert.match(prompt, /- Meeting KatiaMP - The new dawn — 30 min, 1 partecipanti\n/);
+  assert.match(prompt, /riunione "Daily meeting team" \[progetto: Daily e riunioni di team\]/);
+});

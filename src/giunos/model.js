@@ -107,7 +107,7 @@ function buildSnapshot(raw,period,now=new Date()) {
     const openActions=projectActions.filter(a=>a.status==='open'||a.status==='acknowledged');
     const overdueActions=openActions.filter(a=>validDate(a.due_date)&&a.due_date<today);
     const dossierTeam=(Array.isArray(evidence.team)?evidence.team:[]).map(x=>typeof x==='string'?{name:x,role:null}:{name:String(x.nome||x.chi||''),role:x.ruolo||null}).filter(x=>x.name);
-    const lifecycle=p.status==='completed'?'concluso':p.status==='on_hold'?'sospeso':p.status==='archived'||p.status==='cancelled'?'archiviato':isActiveProject(p,today)?'operativo':p.status==='planning'||p.status==='active'?'da verificare':p.status;
+    const lifecycle=String(p.id).startsWith('cat_')?'interno':p.status==='completed'?'concluso':p.status==='on_hold'?'sospeso':p.status==='archived'||p.status==='cancelled'?'archiviato':isActiveProject(p,today)?'operativo':p.status==='planning'||p.status==='active'?'da verificare':p.status;
     return {id:p.id,name:p.name,client:p.client_name,status:p.status,lifecycle,owner:p.owner_slack_id,
       evidence:p.lifecycle_evidence&&p.lifecycle_evidence.valid_until?{kind:p.lifecycle_evidence.kind||null,validUntil:p.lifecycle_evidence.valid_until,detail:p.lifecycle_evidence.detail||null}:null,
       wholeBudget:wholeBudget?{hours:Number(wholeBudget.hours),source:wholeBudget.source_url,start:wholeBudget.period_start,end:wholeBudget.period_end,used:wholeUsed}:null,
@@ -136,6 +136,8 @@ function buildSnapshot(raw,period,now=new Date()) {
     mine.forEach(l=>{const key=period.kind==='week'?l.date:periodBounds('week',l.date).start;const bucket=buckets.get(key);if(bucket){bucket.hours=round((bucket.hours||0)+l.hours);bucket.projects[l.project]=round((bucket.projects[l.project]||0)+l.hours);}});
     return {id,name:member?.canonical_name||id,role:member?.role||null,hours:hours(mine),
       projects:[...new Set(mine.map(l=>l.project))].map(pid=>{const ph=hours(mine.filter(l=>l.project===pid));const tot=hours(mine).total;return {id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,status:(raw.projects||[]).find(p=>p.id===pid)?.status||'unknown',hours:ph,share:tot&&ph.total!==null?Math.round(ph.total/tot*100):null,budget:budgetFor(budgets,pid,id,period.start,period.end)};}).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0)),
+      internal:[...new Set(mine.filter(l=>String(l.project).startsWith('cat_')).map(l=>l.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,hours:hours(mine.filter(l=>l.project===pid)).total})),
+      internalShare:(()=>{const tot=hours(mine).total;const int=hours(mine.filter(l=>String(l.project).startsWith('cat_'))).total;return tot?Math.round((int||0)/tot*100):null;})(),
       closed:raw.project_actions===null?null:closed.length,medianDays:median,closureSample:durations.length,
       categories:categoryHours(mine,raw.standup_entries),
       projectCategories:Object.fromEntries([...new Set(mine.map(l=>l.project))].map(pid=>[pid,categoryHours(mine.filter(l=>l.project===pid),raw.standup_entries)])),
@@ -154,6 +156,18 @@ function buildSnapshot(raw,period,now=new Date()) {
   projects.filter(p=>p.phase==='in attesa cliente').forEach(p=>alerts.push({project:p.id,kind:'waiting',title:p.name+' · attesa cliente',detail:'Stato ricostruito dal dossier di progetto'}));
   projects.filter(p=>!p.sold&&p.hours.total>0).forEach(p=>alerts.push({project:p.id,kind:'nosold',title:p.name+' · ore senza venduto',detail:round(p.hours.total)+' h nel periodo, nessun budget ore sulla commessa'}));
   const candidates=catalogue.filter(p=>p.lifecycle==='da verificare');
-  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
+  // Cliente → commesse: il cliente è client_name (o il nome stesso), le commesse operative sotto.
+  const clientKey=p=>String(p.client||p.name||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()||p.id;
+  const clientsMap=new Map();
+  projects.forEach(p=>{const k=clientKey(p);if(!clientsMap.has(k))clientsMap.set(k,{key:k,name:p.client||p.name,projects:[]});clientsMap.get(k).projects.push(p.id);});
+  const clients=[...clientsMap.values()].map(c=>{const ids=new Set(c.projects);const cl=logs.filter(l=>ids.has(l.project));const ps=projects.filter(p=>ids.has(p.id));
+    return {...c,hours:hours(cl),soldVerified:round(ps.filter(p=>p.sold&&p.sold.verified).reduce((s,p)=>s+p.sold.hours,0)),soldProposed:round(ps.filter(p=>p.sold&&!p.sold.verified).reduce((s,p)=>s+p.sold.hours,0)),
+      blocks:ps.reduce((s,p)=>s+p.blocks.length,0),overdue:ps.reduce((s,p)=>s+p.overdueActions+p.milestones.filter(m=>m.overdue).length,0)};})
+    .sort((a,b)=>((b.hours.total||0)-(a.hours.total||0))||a.name.localeCompare(b.name));
+  // Interno: le attività trasversali (cat_*), sempre visibili, senza venduto.
+  const internal=catalogue.filter(p=>p.lifecycle==='interno').map(p=>({id:p.id,name:p.name,hours:p.hours,categories:p.categories,team:p.team})).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0));
+  const internalHours=hours(logs.filter(l=>String(l.project).startsWith('cat_')));
+  const clientHours=hours(logs.filter(l=>!String(l.project).startsWith('cat_')));
+  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
 module.exports={CATEGORY_RULES,category,categoryHours,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

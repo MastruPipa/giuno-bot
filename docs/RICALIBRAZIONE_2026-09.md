@@ -670,7 +670,43 @@ Restano da fare: tempi di chiusura per tipologia con una base dati vera
 dei contratti della #135), un andamento per progetto oltre a quello per
 persona.
 
-## 23. Da fare
+## 23. Cliente → commesse, e il gruppo Interno
+
+Antonio (11/9): "i progetti non sono raggruppati bene". Prima un progetto era
+una riga qualsiasi: un deal Attio vinto, un canale Slack attivo, una riga
+manuale; nessuna gerarchia, ordine per id. Il modello adesso è quello con cui
+ragiona lo studio: **Cliente → Commesse**, più il cliente **Interno** per le
+attività trasversali.
+
+1. **Cliente della commessa.** La sync Attio legge l'azienda collegata al deal
+   (`companyNameOf`, una chiamata per azienda con cache) e la salva in
+   `client_name`. Con il cliente valorizzato la sync dei canali salta i canali
+   dei clienti che hanno già commesse (regola già esistente, prima cieca).
+2. **Deduplica.** Due deal dello stesso cliente sono due commesse, non
+   doppioni. Un canale si unisce a un deal per "stesso cliente" solo se quel
+   cliente ha una sola commessa; con più commesse resta al livello cliente e
+   l'attribuzione passa dal registro posizioni (ambiguo → nessuna).
+3. **Interno** (`src/services/transversalRules.js`): sei commesse fisse con
+   `client_name = 'Interno'`, id `cat_*`: Daily e riunioni di team,
+   Management e direzione, Team building e cultura, Formazione,
+   Amministrazione e flussi interni, Commerciale e prospect. Gli id storici
+   restano (le ore già registrate non si perdono; il seed rinomina).
+4. **Aggancio deterministico.** `resolveTask`: prima un cliente del catalogo
+   (una riunione interna su Elios resta su Elios), poi le regole trasversali
+   ("daily", "management", "team building", "corso", "fatture",
+   "preventivo"…; "daily con il cliente" e "SAL" non sono interni), poi il
+   modello. Funziona anche con catalogo vuoto. Le stesse regole marcano le
+   riunioni in calendario senza cliente nel titolo, quindi entrano nelle
+   sessioni ricostruite col progetto giusto.
+5. **Dashboard.** Tabella "Clienti e commesse": intestazione per cliente con
+   ore, venduto verificato e proposto, blocchi e scadenze aggregate, poi le
+   sue commesse; ordine per ore nel periodo. Sezione "Interno · attività
+   trasversali" con ore e persone, e card "Tempo interno" (quota sul totale).
+   Persone: colonna "Interno" per persona, e nella vista Persone una matrice
+   persona × attività trasversale. La tipologia "Riunioni e coordinamento"
+   resta sull'altro asse: somma le riunioni interne e quelle sui clienti.
+
+## 24. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

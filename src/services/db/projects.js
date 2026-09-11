@@ -112,11 +112,11 @@ async function archiveStaleSyncedProjects(prefix, activeIds) {
 // Slot fissi "mondo agency" (Prospect, Flussi interni, Formazione/Admin):
 // righe progetto idempotenti così possono essere selezionate nel planner/
 // check-in e accumulare ore come qualsiasi progetto. id con prefisso 'cat_'.
-var CATEGORY_SLOTS = [
-  { id: 'cat_prospect',         name: 'Prospect' },
-  { id: 'cat_flussi_interni',   name: 'Flussi interni' },
-  { id: 'cat_formazione_admin', name: 'Formazione/Admin' },
-];
+// Commesse del cliente "Interno" (attività trasversali): i nomi e le regole
+// di aggancio vivono in src/services/transversalRules.js. Gli id storici
+// (cat_prospect, cat_flussi_interni, cat_formazione_admin) restano per non
+// perdere le ore già registrate; il seed aggiorna solo nome e cliente.
+var CATEGORY_SLOTS = require('../transversalRules').BUCKETS.map(function(b) { return { id: b.id, name: b.name }; });
 
 async function seedCategorySlots() {
   if (!c.useSupabase) return 0;
@@ -127,8 +127,9 @@ async function seedCategorySlots() {
       var res = await c.getClient().from('projects').upsert({
         id: slot.id,
         name: slot.name,
+        client_name: require('../transversalRules').INTERNAL_CLIENT,
         status: 'active',
-        tags: ['categoria', 'tipo:categoria'],
+        tags: ['categoria', 'tipo:categoria', 'interno'],
         updated_at: new Date().toISOString(),
       }, { onConflict: 'id' }).select('id').single();
       if (!res.error) seeded++;

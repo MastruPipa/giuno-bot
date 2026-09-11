@@ -365,6 +365,9 @@ async function collectEvidence(userId, dateStr, deps) {
   evidence.channels.forEach(function(m) { m.project = m.project || projectOf('slack_channel', m.channel_id); });
   evidence.figma.forEach(function(d) { d.project_hint = projectOf('figma_file', d.file_key) || projectOf('figma_project', d.figma_project_id) || null; });
   evidence.locationRows = ctx.locationRows || [];
+  // Riunioni senza cliente nel titolo (daily, management, team building…) → commessa interna
+  var transversal = require('../services/transversalRules');
+  evidence.calendar.forEach(function(e) { if (!e.project) { var tv = transversal.matchTransversal(e.title); if (tv) e.project = tv.name; } });
 
   // 2g. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
@@ -374,7 +377,7 @@ async function collectEvidence(userId, dateStr, deps) {
   unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('drive_folder', e.folder) })); });
   unionBy(myEmail && fEv.byEmail[myEmail], myName && fEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('figma_file', e.file_key) || projectOf('figma_project', e.figma_project_id) })); });
   chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null, project: m.project || null }); });
-  evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes }); });
+  evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes, project: e.project || null }); });
   evidence.sessions = sessions.buildSessions(events);
   if (evidence.sessions.length) evidence.sources.push('sessioni di lavoro');
 
@@ -468,7 +471,7 @@ function buildPrompt(evidence) {
   }
   if (evidence.calendar.length) {
     parts.push('CALENDARIO DI OGGI:\n' + evidence.calendar.map(function(e) {
-      return '- ' + (e.title || '(senza titolo)') + (e.minutes ? ' — ' + e.minutes + ' min' : '') + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '');
+      return '- ' + (e.title || '(senza titolo)') + (e.minutes ? ' — ' + e.minutes + ' min' : '') + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '') + (e.project ? ' [progetto: ' + e.project + ']' : '');
     }).join('\n'));
   }
   if (evidence.drive && evidence.drive.length) {
