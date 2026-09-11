@@ -32,7 +32,8 @@ async function getCatalog() {
       .map(function(p) {
         // Gli alias (nomi dei duplicati uniti) contano come il nome.
         var norms = [norm(p.name)].concat((Array.isArray(p.aliases) ? p.aliases : []).map(norm)).filter(function(n) { return n && n.length >= 4; });
-        return { id: String(p.id), name: String(p.name), norm: norm(p.name), norms: norms };
+        var client = norm(p.client_name);
+        return { id: String(p.id), name: String(p.name), norm: norm(p.name), norms: norms, client: client && client.length >= 4 && client !== norm(p.name) ? client : null };
       });
     if (list.length > 0) {
       _catalog = list;
@@ -157,6 +158,17 @@ function resolveTask(text, catalog) {
   var external = (catalog || []).filter(function(p) { return !/^cat_/.test(String(p.id)); });
   var hit = matchTaskAgainstCatalog(text, external);
   if (hit) return hit;
+  // Il task nomina solo il cliente ("daily interno Acme"): con una sola
+  // commessa di quel cliente va lì; con più commesse resta al modello,
+  // ma NON diventa interno.
+  var t = ' ' + norm(text) + ' ';
+  var clientHits = external.filter(function(p) { return p.client && t.indexOf(' ' + p.client + ' ') !== -1; });
+  if (clientHits.length) {
+    var ids = {};
+    clientHits.forEach(function(p) { ids[p.id] = p; });
+    var distinct = Object.keys(ids);
+    return distinct.length === 1 ? ids[distinct[0]] : null;
+  }
   var tv = require('./transversalRules').matchTransversal(text);
   if (tv) return tv;
   return matchTaskAgainstCatalog(text, catalog);

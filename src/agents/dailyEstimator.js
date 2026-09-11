@@ -365,9 +365,12 @@ async function collectEvidence(userId, dateStr, deps) {
   evidence.channels.forEach(function(m) { m.project = m.project || projectOf('slack_channel', m.channel_id); });
   evidence.figma.forEach(function(d) { d.project_hint = projectOf('figma_file', d.file_key) || projectOf('figma_project', d.figma_project_id) || null; });
   evidence.locationRows = ctx.locationRows || [];
-  // Riunioni senza cliente nel titolo (daily, management, team building…) → commessa interna
-  var transversal = require('../services/transversalRules');
-  evidence.calendar.forEach(function(e) { if (!e.project) { var tv = transversal.matchTransversal(e.title); if (tv) e.project = tv.name; } });
+  // Riunioni: prima il cliente/commessa nel titolo ("Riunione con Antonio per Elios" → Elios),
+  // poi le attività trasversali (daily, management, team building…); altrimenti nessun tag.
+  var matcherSvc = require('../services/projectMatcher');
+  var catalogForCal = deps.catalog || ctx.catalog || [];
+  if (!deps.catalog && !ctx.catalog) { try { catalogForCal = await matcherSvc.getCatalog(); ctx.catalog = catalogForCal; } catch(_) {} }
+  evidence.calendar.forEach(function(e) { if (!e.project) { var r = matcherSvc.resolveTask(e.title, catalogForCal); if (r) e.project = r.name; } });
 
   // 2g. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
