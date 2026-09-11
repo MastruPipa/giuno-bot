@@ -119,12 +119,11 @@ async function enrichTasksWithProjects(tasks, options) {
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
   try {
     var catalog = await getCatalog();
-    if (catalog.length === 0) return tasks;
 
     var unmatched = [];
     tasks.forEach(function(t, i) {
       if (!t || !t.task || t.project_id) return;
-      var hit = matchTaskAgainstCatalog(t.task, catalog);
+      var hit = resolveTask(t.task, catalog);
       if (hit) {
         t.project_id = hit.id;
         t.project_name = hit.name;
@@ -133,7 +132,7 @@ async function enrichTasksWithProjects(tasks, options) {
       }
     });
 
-    if (options.useLlm !== false && unmatched.length > 0) {
+    if (catalog.length > 0 && options.useLlm !== false && unmatched.length > 0) {
       var llmHits = await llmMatch(unmatched.map(function(u) { return u.text; }), catalog);
       unmatched.forEach(function(u, pos) {
         var p = llmHits[String(pos)];
@@ -149,6 +148,20 @@ async function enrichTasksWithProjects(tasks, options) {
   return tasks;
 }
 
+// Ordine di aggancio di un task: prima un cliente/progetto del catalogo
+// (una riunione interna su Elios resta su Elios), poi le attività
+// trasversali con regole deterministiche (daily, management, formazione…).
+// Le commesse interne stanno anche nel catalogo (cat_*) ma vincono solo se
+// nessun cliente combacia.
+function resolveTask(text, catalog) {
+  var external = (catalog || []).filter(function(p) { return !/^cat_/.test(String(p.id)); });
+  var hit = matchTaskAgainstCatalog(text, external);
+  if (hit) return hit;
+  var tv = require('./transversalRules').matchTransversal(text);
+  if (tv) return tv;
+  return matchTaskAgainstCatalog(text, catalog);
+}
+
 // Arricchisce lo structured di un daily ({oggi: fatto, domani: piano}).
 // "ieri" resta per i dati storici pre-daily-unico.
 async function enrichStructured(structured, options) {
@@ -160,6 +173,7 @@ async function enrichStructured(structured, options) {
 }
 
 module.exports = {
+  resolveTask: resolveTask,
   enrichTasksWithProjects: enrichTasksWithProjects,
   enrichStructured: enrichStructured,
   matchTaskAgainstCatalog: matchTaskAgainstCatalog,

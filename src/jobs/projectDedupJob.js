@@ -38,7 +38,9 @@ function isDuplicatePair(a, b) {
   var ca = compact(a.name), cb = compact(b.name);
   if (ca && ca === cb) return 'stesso nome';
   var cca = compact(a.client_name), ccb = compact(b.client_name);
-  if (cca && cca === ccb) return 'stesso cliente';
+  // Due deal Attio dello stesso cliente sono due commesse diverse, non doppioni.
+  var bothDeals = source(a) === 'attio' && source(b) === 'attio';
+  if (cca && cca === ccb && !bothDeals) return 'stesso cliente';
   if (cca && cca === cb) return 'cliente = nome';
   if (ccb && ccb === ca) return 'cliente = nome';
   var ta = tokens(a.name), tb = tokens(b.name);
@@ -62,10 +64,17 @@ function findDuplicateGroups(projects) {
   var parent = list.map(function(_, i) { return i; });
   var reasons = {};
   function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+  // Quante commesse Attio ha ogni cliente: un canale si unisce a un deal per
+  // "stesso cliente" solo se il cliente ha UNA commessa; con più commesse il
+  // canale resta al livello cliente (lo gestisce il registro posizioni) e
+  // l'unione transitiva non può fondere due commesse diverse.
+  var dealsByClient = {};
+  list.forEach(function(p) { if (source(p) === 'attio' && compact(p.client_name)) dealsByClient[compact(p.client_name)] = (dealsByClient[compact(p.client_name)] || 0) + 1; });
   for (var i = 0; i < list.length; i++) {
     for (var j = i + 1; j < list.length; j++) {
       var why = isDuplicatePair(list[i], list[j]);
       if (!why) continue;
+      if (why === 'stesso cliente' && (dealsByClient[compact(list[i].client_name)] || 0) > 1) continue;
       var ri = find(i), rj = find(j);
       if (ri !== rj) parent[rj] = ri;
       reasons[list[i].id + '|' + list[j].id] = why;

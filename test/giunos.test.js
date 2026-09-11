@@ -132,3 +132,21 @@ test('revisione criteri: ciclo di vita, candidati separati dallo storico, blocch
  assert.deepEqual(s.coverage,{people:2,peopleWithHours:2,peopleOnlyEstimates:1});
  assert.match(s.warnings.join(' '),/1 progetti acquisiti attendono/);
 });
+test('cliente → commesse e gruppo Interno: raggruppamento, ordine per ore, quota interna per persona',()=>{
+ const projects=[
+  {id:'attio_1',name:'Sito Elios',client_name:'Elios Srl',status:'active',lifecycle_evidence:{state:'active',source_url:'https://d/k',observed_on:'2026-09-01',valid_until:'2026-11-30'},tags:['attio-sync','sales:won']},
+  {id:'attio_2',name:'Social Elios',client_name:'Elios Srl',status:'active',lifecycle_evidence:{state:'active',source_url:'https://d/k',observed_on:'2026-09-01',valid_until:'2026-11-30'},tags:['attio-sync','sales:won']},
+  {id:'prj_3',name:'Mandorle',client_name:'Mandorle',status:'active'},
+  {id:'cat_riunioni_team',name:'Daily e riunioni di team',client_name:'Interno',status:'active'},
+  {id:'cat_formazione_admin',name:'Formazione',client_name:'Interno',status:'active'},
+ ];
+ const logs=[log({project_id:'attio_1',hours:2}),log({project_id:'attio_2',hours:1}),log({project_id:'prj_3',hours:5}),log({project_id:'cat_riunioni_team',hours:1}),log({project_id:'cat_formazione_admin',hours:1,slack_user_id:'v'})];
+ const s=buildSnapshot(raw({projects,time_logs:logs,team_members:[{slack_user_id:'u',canonical_name:'U'},{slack_user_id:'v',canonical_name:'V'}]}),period,now);
+ assert.deepEqual(s.clients.map(c=>[c.name,c.projects.length,c.hours.total]),[['Mandorle',1,5],['Elios Srl',2,3]]);
+ assert.deepEqual(s.internal.map(i=>[i.id,i.hours.total]),[['cat_riunioni_team',1],['cat_formazione_admin',1]]);
+ assert.equal(s.internalHours.total,2);assert.equal(s.clientHours.total,8);assert.equal(s.internalShare,20);
+ assert.ok(!s.projects.some(p=>p.id.startsWith('cat_')),'le attività interne non stanno tra le commesse');
+ assert.ok(!s.historicalProjects.some(p=>p.id.startsWith('cat_')));
+ const u=s.people.find(p=>p.id==='u');assert.equal(u.internalShare,11);assert.deepEqual(u.internal,[{id:'cat_riunioni_team',name:'Daily e riunioni di team',hours:1}]);
+ assert.equal(s.people.find(p=>p.id==='v').internalShare,100);
+});
