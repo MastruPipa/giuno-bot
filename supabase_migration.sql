@@ -415,3 +415,18 @@ CREATE TABLE IF NOT EXISTS daily_estimate_calibration (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (slack_user_id, date)
 );
+
+-- ─── Posizioni di progetto: canali Slack, cartelle Drive, progetti/file Figma ───
+CREATE TABLE IF NOT EXISTS project_locations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  kind TEXT NOT NULL CHECK (kind IN ('slack_channel','drive_folder','figma_project','figma_file')),
+  ref TEXT NOT NULL,
+  name TEXT,
+  source TEXT NOT NULL DEFAULT 'inferred',
+  confidence TEXT NOT NULL DEFAULT 'media',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (project_id, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS project_locations_ref ON project_locations(kind, ref);

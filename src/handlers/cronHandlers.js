@@ -1303,6 +1303,11 @@ function scheduleCrons() {
     var { refreshLifecycle } = require('../agents/lifecycleEvidence');
     return refreshLifecycle({ apply: true, notify: true });
   }, { timezone: 'Europe/Rome', name: 'lifecycle_refresh', lockTtl: 20 });
+  // Registro posizioni di progetto (canali, cartelle Drive, progetti Figma)
+  cron.schedule('50 6 * * 1-5', function() {
+    var { rebuild } = require('../services/projectLocations');
+    return rebuild({ apply: true });
+  }, { timezone: 'Europe/Rome', name: 'project_locations_sync', lockTtl: 15 });
   // Ore orfane del daily (task senza progetto) riprovate col catalogo aggiornato
   cron.schedule('30 23 * * 1-5', function() {
     var { attributeOrphans } = require('../agents/hoursAttribution');

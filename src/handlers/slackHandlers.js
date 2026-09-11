@@ -1514,6 +1514,27 @@ async function handleAdmin(command, respond) {
         await respond({ text: stRes.error ? '⚠️ ' + stRes.error : '✅ ' + stRes.message, response_type: 'ephemeral' });
         return;
       }
+      if (args[1] === 'posizioni') {
+        var locSvc = require('../services/projectLocations');
+        if (args[2] === 'rebuild') {
+          var locApply = args[3] === 'apply';
+          await respond({ text: 'Ricostruisco le posizioni da channel map, documenti su Drive e progetti Figma...', response_type: 'ephemeral' });
+          var locRep = await locSvc.rebuild({ apply: locApply });
+          await respond({ text: locSvc.formatReport(locRep, locApply), response_type: 'ephemeral' });
+          return;
+        }
+        var locRows = await locSvc.loadRegistry({ force: true });
+        await respond({ text: locSvc.formatRows(locRows, args.slice(2).join(' ') || null), response_type: 'ephemeral' });
+        return;
+      }
+      if (args[1] === 'posizione') {
+        var locSvc2 = require('../services/projectLocations');
+        var locParts = args.slice(2).join(' ').split('=');
+        if (locParts.length !== 2 || !locParts[0].trim() || !locParts[1].trim()) { await respond({ text: 'Uso: `/giuno admin progetti posizione <nome> = <#canale | link cartella Drive | link progetto/file Figma>`', response_type: 'ephemeral' }); return; }
+        var locRes = await locSvc2.setManual(locParts[0].trim(), locParts[1].trim());
+        await respond({ text: locRes.error ? '⚠️ ' + locRes.error : '✅ ' + locRes.message, response_type: 'ephemeral' });
+        return;
+      }
       if (args[1] === 'merge') {
         var spec = args.slice(2).join(' ');
         var parts = spec.split(/\s*(?:->|=>|→)\s*/);
@@ -1529,7 +1550,7 @@ async function handleAdmin(command, respond) {
       var activeList = (await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 })).filter(function(p) { return !/^cat_/.test(p.id) && !p.merged_into; });
       var listLines = activeList.sort(function(a, b) { return String(a.name).localeCompare(String(b.name)); })
         .map(function(p) { return '• ' + p.name + (p.status !== 'active' ? ' [' + p.status + ']' : '') + ' _(' + dedup.source(p) + (p.client_name && dedup.compact(p.client_name) !== dedup.compact(p.name) ? ', ' + p.client_name : '') + (p.aliases && p.aliases.length ? ', alias: ' + p.aliases.join('/') : '') + ')_'; });
-      await respond({ text: '*Progetti aperti (' + activeList.length + ', ' + activeList.filter(function(p) { return p.status === 'active'; }).length + ' attivi con evidenza):*\n' + listLines.join('\n') + '\n\n`/giuno admin progetti dedup [apply]` · `merge <duplicato> -> <canonico>` · `evidenze [apply]` · `stato <nome> operativo|sospeso|concluso`', response_type: 'ephemeral' });
+      await respond({ text: '*Progetti aperti (' + activeList.length + ', ' + activeList.filter(function(p) { return p.status === 'active'; }).length + ' attivi con evidenza):*\n' + listLines.join('\n') + '\n\n`/giuno admin progetti dedup [apply]` · `merge <duplicato> -> <canonico>` · `evidenze [apply]` · `stato <nome> operativo|sospeso|concluso` · `posizioni [rebuild [apply]|<nome>]` · `posizione <nome> = <#canale|link>`', response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
@@ -1755,7 +1776,7 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b|evidenze [apply]|stato <nome> operativo|sospeso|concluso]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b|evidenze [apply]|stato <nome> …|posizioni [rebuild [apply]]|posizione <nome> = <link>]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

@@ -595,7 +595,30 @@ il rapporto usato, così si può misurare se le stime migliorano nel tempo.
 Fuori scope, per dopo: Drive Activity API (serve un nuovo scope OAuth),
 registro cartelle/canali/file per progetto, commit GitHub.
 
-## 21. Da fare
+## 21. Registro delle posizioni di progetto
+
+Un artefatto va attribuito alla commessa per POSIZIONE, non per somiglianza
+del nome: il file sta nella cartella del progetto, il messaggio è nel suo
+canale, il file Figma è nel suo progetto Figma. `src/services/projectLocations.js`
+tiene il registro in `project_locations` (kind: slack_channel, drive_folder,
+figma_project, figma_file; source: channel_map, document, figma, admin).
+
+Ricostruzione (cron `project_locations_sync` 6:50 feriali,
+`/giuno admin progetti posizioni rebuild [apply]`): i canali dalla channel
+map (`chan_<id>` → alta, per nome → media); la cartella Drive che contiene
+il kick-off o il brief di un progetto (i recap no: stanno in "Appunti di
+Gemini", che non è mai una cartella di progetto); i progetti Figma con nome
+simile a progetto o cliente. Le righe impostate a mano
+(`/giuno admin progetti posizione <nome> = <#canale | link cartella | link
+progetto o file Figma>`) vincono e non vengono mai sovrascritte.
+
+Uso nel daily stimato: documenti Drive (per cartella), messaggi (per canale)
+e file Figma (per file o progetto) portano `[progetto: X]` nel prompt e
+nelle sessioni di lavoro; il modello copia X nel campo `project` del task e
+Giuno lo aggancia al catalogo per nome esatto prima del matcher. Senza
+tabella il registro vive in memoria con i soli canali, e i comandi lo dicono.
+
+## 22. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
