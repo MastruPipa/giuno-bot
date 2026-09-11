@@ -22,19 +22,20 @@ var LLM_TIMEOUT_MS = 15000;
 var _catalog = null;
 var _catalogAt = 0;
 
+// Voce di catalogo da una riga projects: nome, alias (nomi dei duplicati
+// uniti, contano come il nome) e cliente normalizzati.
+function catalogEntry(p) {
+  var norms = [norm(p.name)].concat((Array.isArray(p.aliases) ? p.aliases : []).map(norm)).filter(function(n) { return n && n.length >= 4; });
+  var client = norm(p.client_name);
+  return { id: String(p.id), name: String(p.name), norm: norm(p.name), norms: norms, client: client && client.length >= 4 && client !== norm(p.name) ? client : null };
+}
+
 async function getCatalog() {
   var now = Date.now();
   if (_catalog && (now - _catalogAt) < 300000) return _catalog;
   try {
     var projects = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 200 });
-    var list = (projects || [])
-      .filter(function(p) { return p && p.id && p.name; })
-      .map(function(p) {
-        // Gli alias (nomi dei duplicati uniti) contano come il nome.
-        var norms = [norm(p.name)].concat((Array.isArray(p.aliases) ? p.aliases : []).map(norm)).filter(function(n) { return n && n.length >= 4; });
-        var client = norm(p.client_name);
-        return { id: String(p.id), name: String(p.name), norm: norm(p.name), norms: norms, client: client && client.length >= 4 && client !== norm(p.name) ? client : null };
-      });
+    var list = (projects || []).filter(function(p) { return p && p.id && p.name; }).map(catalogEntry);
     if (list.length > 0) {
       _catalog = list;
       _catalogAt = now;
@@ -191,6 +192,7 @@ async function enrichStructured(structured, options) {
 }
 
 module.exports = {
+  catalogEntry: catalogEntry,
   resolveTask: resolveTask,
   enrichTasksWithProjects: enrichTasksWithProjects,
   enrichStructured: enrichStructured,

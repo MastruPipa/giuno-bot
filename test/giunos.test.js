@@ -163,3 +163,51 @@ test('pianificazione in dashboard: ore pianificate separate dalle registrate, pe
  const {normalizePlans}=require('../src/giunos/model');
  assert.equal(normalizePlans([log({log_type:'weekly',log_date:'2026-09-07',hours:3,updated_at:'a'}),log({log_type:'weekly',log_date:'2026-09-07',hours:4,updated_at:'b'})])[0].hours,4,'ultima correzione');
 });
+test('attività in dashboard: ore per attività solo se il daily torna con il consuntivo, microtask per persona, tendina e schede',()=>{
+ const {activityRows,projectActivities}=require('../src/giunos/model');
+ const acts=[
+  {id:'act_ped9',project_id:'p',name:'PED settembre 2026',kind:'ricorrente',period_start:'2026-09-01',period_end:'2026-09-30',status:'open'},
+  {id:'act_old',project_id:'p',name:'Shooting agosto',kind:'consegna',period_start:'2026-08-01',period_end:'2026-08-20',status:'done'},
+  {id:'act_tpl',project_id:'p',name:'PED',recurrence:'mensile',status:'open'},
+  {id:'act_late',project_id:'p',name:'Landing',kind:'consegna',period_start:'2026-08-15',period_end:'2026-09-05',status:'open'},
+ ];
+ const entries=[
+  {slack_user_id:'u',date:'2026-09-08',source:'modal',oggi_tasks:[{task:'caption video',hours:1,minutes:30,project_id:'p',activity_id:'act_ped9',activity_name:'PED settembre 2026'},{task:'call cliente',hours:0,minutes:30,project_id:'p'}]},
+  {slack_user_id:'v',date:'2026-09-09',source:'modal',oggi_tasks:[{task:'reel vendemmia',hours:3,project_id:'p',activity_id:'act_ped9'}]},
+ ];
+ const logs=[log({hours:2}),log({slack_user_id:'v',log_date:'2026-09-09',hours:2}),log({slack_user_id:'w',log_date:'2026-09-09',hours:1})];
+ const rows=activityRows(normalizeLogs(logs),entries);
+ assert.deepEqual(rows.map(r=>[r.person,r.activity,r.hours]),[['u','act_ped9',1.5],['u','__none__',0.5],['v','__none__',2],['w','__none__',1]],'v non torna col consuntivo (3h dichiarate, 2 registrate) → senza attività; w non ha daily');
+ const pa=projectActivities('p',rows,acts,period,'2026-09-10');
+ assert.deepEqual(pa.activities.map(a=>[a.id,a.hours.total,a.people,a.tasks.length,a.status,a.overdue]),[['act_ped9',1.5,['u'],1,'open',false],['act_late',null,[],0,'open',true]],'il modello ricorrente e la consegna di agosto fuori periodo non compaiono; la landing aperta oltre la fine è segnalata');
+ assert.equal(pa.unassigned.total,3.5);assert.equal(pa.unassignedTasks,1);
+ const s=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',client_name:'Gambino Vini',status:'active'}],time_logs:logs,standup_entries:entries,project_activities:acts,team_members:[{slack_user_id:'u',canonical_name:'Giusy'},{slack_user_id:'v',canonical_name:'V'},{slack_user_id:'w',canonical_name:'W'}]}),period,now);
+ assert.equal(s.projects[0].activities[0].name,'PED settembre 2026');assert.equal(s.projects[0].hours.total,5,'il consuntivo della commessa non cambia');
+ const u=s.people.find(x=>x.id==='u');
+ assert.deepEqual(u.activities.map(g=>[g.project,g.activities.map(a=>[a.name,a.hours.total,a.tasks[0].task]),g.unassignedTasks.map(t=>t.task)]),[['p',[['PED settembre 2026',1.5,'caption video']],['call cliente']]]);
+ assert.deepEqual(s.people.find(x=>x.id==='w').activities,[],'senza microtask niente pannello');
+ // review Codex: guardando agosto, il PED di settembre (aperto) non compare; le attività senza date sì
+ const aug=periodBounds('month','2026-08-10');
+ const paAug=projectActivities('p',[],acts.concat([{id:'act_free',project_id:'p',name:'Continuativa',status:'open'}]),aug,'2026-09-10');
+ assert.deepEqual(paAug.activities.map(a=>a.id).sort(),['act_free','act_late','act_old'],'settembre escluso, agosto chiuso e landing (15/8→5/9) inclusi, senza date inclusa');
+ // review Codex: dopo un merge i task e le attività del duplicato seguono la commessa canonica
+ const merged=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',status:'active'},{id:'dup',name:'Gambino',status:'merged',merged_into:'p'}],
+  time_logs:[log({project_id:'dup',hours:2})],standup_entries:[{slack_user_id:'u',date:'2026-09-08',source:'modal',oggi_tasks:[{task:'caption video',hours:2,project_id:'dup',activity_id:'act_dup'}]}],
+  project_activities:[{id:'act_dup',project_id:'dup',name:'PED settembre',status:'open',period_start:'2026-09-01',period_end:'2026-09-30'}],team_members:[{slack_user_id:'u',canonical_name:'Giusy'}]}),period,now);
+ assert.deepEqual(merged.projects[0].activities.map(a=>[a.id,a.name,a.hours.total]),[['act_dup','PED settembre',2]]);assert.equal(merged.projects[0].unassigned.total,null);
+ assert.deepEqual(merged.projects[0].categories,[{name:'Video e foto',hours:2}],'anche le categorie leggono i task tramite l\'alias');
+ // senza tabella project_activities: le attività nominate nei daily compaiono comunque, per nome
+ const s2=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',status:'active'}],time_logs:logs,standup_entries:entries,project_activities:null}),period,now);
+ assert.deepEqual(s2.projects[0].activities.map(a=>[a.id,a.name,a.status]),[['act_ped9','PED settembre 2026','sconosciuta']]);
+ // frontend: tendina nella tabella, pannelli nelle schede, testo esterno sempre escapato
+ const vm=require('node:vm'),fs=require('node:fs');
+ const elements=new Map();const element=()=>({innerHTML:'',textContent:'',hidden:false,disabled:false,value:'',classList:{toggle(){}},setAttribute(){},removeAttribute(){},addEventListener(){}});
+ const doc={querySelector(q){if(!elements.has(q))elements.set(q,element());return elements.get(q);},querySelectorAll(){return [];}};
+ const context={document:doc,window:{addEventListener(){}},location:{hash:'#projects'},URL,URLSearchParams,Intl,Date,console,CSS:{escape:x=>x},fetch:async()=>({status:200,ok:true,json:async()=>s})};
+ vm.createContext(context);vm.runInContext(fs.readFileSync(require.resolve('../src/giunos/public/app.js'),'utf8'),context);
+ const evil=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',status:'active'}],time_logs:logs,standup_entries:[{slack_user_id:'u',date:'2026-09-08',source:'modal',oggi_tasks:[{task:'<img src=x onerror=alert(1)>',hours:2,project_id:'p',activity_id:'a1',activity_name:'<script>alert(1)</script>'}]}],project_activities:null,team_members:[{slack_user_id:'u',canonical_name:'Giusy'}]}),period,now);
+ for(const [snap,route,expect] of [[s,'projects','2 attività'],[s,'project/p','Senza attività'],[s,'person/u','call cliente'],[evil,'project/p','&lt;script&gt;'],[evil,'person/u','&lt;img src=x']]){
+  context.snapshot=snap;context.location.hash='#'+route;vm.runInContext("data=snapshot;period='month';render()",context);
+  const html=elements.get('#app').innerHTML;assert(html.includes(expect),route+' → '+expect);assert(!html.includes('<script>')&&!html.includes('<img src=x')&&!html.includes('NaN'));
+ }
+});

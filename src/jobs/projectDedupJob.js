@@ -121,6 +121,40 @@ function proposeMerges(projects, stats) {
   });
 }
 
+// Righe nate dal testo libero "Altro" del planner (tag fonte:planner):
+// "Vini Gambino - riunione con cliente + fix premi" non è una commessa, è
+// un task scritto nella riga sbagliata. Se il testo nomina una commessa
+// vera (stesse regole del daily + parole in altro ordine) si propone il
+// merge lì; altrimenti resta in lista per un merge a mano.
+function isPlannerProject(p) {
+  return source(p) === 'manual' && ((p.tags || []).indexOf('fonte:planner') !== -1 || /^Creato dal Weekly Planner/i.test(String(p.description || '')));
+}
+// redirect: { id del duplicato → canonico } dalle proposte ordinarie, così
+// una riga che nomina il canale "Tarocco" finisce sul deal in cui quel
+// canale sta per essere unito, non sul canale (che dopo l'apply è già
+// merged e lascerebbe le ore su un progetto intermedio).
+function plannerProposals(projects, redirect) {
+  var matcher = require('../services/projectMatcher');
+  var resolver = require('../services/otherProjectResolver');
+  redirect = redirect || {};
+  var list = (projects || []).filter(function(p) { return p && p.id && p.status !== 'merged'; });
+  var real = list.filter(function(p) { return !isPlannerProject(p) && source(p) !== 'cat'; });
+  var catalog = real.map(matcher.catalogEntry);
+  var byId = {};
+  real.forEach(function(p) { byId[p.id] = p; });
+  var proposals = [], unresolved = [];
+  list.filter(isPlannerProject).forEach(function(p) {
+    var hit = matcher.resolveTask(p.name, catalog) || resolver.tokenMatch(p.name, catalog);
+    var targetId = hit && hit.id;
+    var hops = 0;
+    while (targetId && redirect[targetId] && hops < 10) { targetId = redirect[targetId]; hops++; }
+    var canonical = targetId && byId[targetId];
+    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: nomina ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
+    else unresolved.push(p);
+  });
+  return { proposals: proposals, unresolved: unresolved };
+}
+
 // Righe "progetto" nate da canali di servizio o nomi generici.
 function findNoiseProjects(projects) {
   return (projects || []).filter(function(p) {
@@ -155,7 +189,10 @@ async function applyMerge(dup, canonical, deps) {
   if (!c.useSupabase) return { moved: {}, skipped: 'no supabase' };
   var sb = c.getClient();
   var moved = {};
-  var tables = ['time_logs', 'resource_allocations', 'project_documents', 'project_actions'];
+  // Anche le attività (livello commessa → attività → microtask) seguono la
+  // commessa canonica; i task nei daily restano con l'id del duplicato e la
+  // dashboard li legge tramite merged_into.
+  var tables = ['time_logs', 'resource_allocations', 'project_documents', 'project_actions', 'project_activities'];
   for (var i = 0; i < tables.length; i++) {
     try {
       var res = await sb.from(tables[i]).update({ project_id: canonical.id }).eq('project_id', dup.id).select('id');
@@ -209,9 +246,15 @@ async function runDedup(opts) {
   var db = deps.db || require('../../supabase');
   var projects = opts.projects || await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
   var stats = opts.stats || await loadStats(deps);
-  var proposals = proposeMerges(projects, stats);
+  // Le righe del planner si trattano a parte: non entrano nei gruppi per
+  // somiglianza (i loro nomi lunghi farebbero fondere commesse diverse).
+  var ordinary = proposeMerges(projects.filter(function(p) { return !isPlannerProject(p); }), stats);
+  var redirect = {};
+  ordinary.forEach(function(p) { if (!p.ambiguous) p.duplicates.forEach(function(d) { redirect[d.id] = p.canonical.id; }); });
+  var planner = plannerProposals(projects, redirect);
+  var proposals = ordinary.concat(planner.proposals);
   var noise = findNoiseProjects(projects);
-  var report = { proposals: proposals, noise: noise, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };
+  var report = { proposals: proposals, noise: noise, plannerUnresolved: planner.unresolved, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };
   if (opts.apply) {
     for (var i = 0; i < proposals.length; i++) {
       var p = proposals[i];
@@ -234,6 +277,10 @@ function formatReport(r, applied) {
     lines.push('• *' + p.canonical.name + '* ← ' + p.duplicates.map(function(d) { return d.name + ' (' + source(d) + ')'; }).join(', ') + ' _[' + p.reasons.join(', ') + ']_');
   });
   if (r.noise.length) lines.push('Rumore da archiviare: ' + r.noise.map(function(n) { return n.name; }).join(', '));
+  if (r.plannerUnresolved && r.plannerUnresolved.length) {
+    lines.push('*Righe nate dal planner senza una commessa riconoscibile* (' + r.plannerUnresolved.length + '): uniscile a mano con `merge`, o segnale concluse');
+    r.plannerUnresolved.slice(0, 15).forEach(function(p) { lines.push('  • ' + String(p.name).substring(0, 80)); });
+  }
   if (!applied && (r.proposals.length || r.noise.length)) lines.push('`/giuno admin progetti dedup apply` per applicare · `/giuno admin progetti merge <duplicato> -> <canonico>` per un merge manuale');
   return lines.join('\n');
 }
@@ -243,8 +290,9 @@ function formatReport(r, applied) {
 async function checkAndNotify(deps) {
   deps = deps || {};
   var report = await runDedup({ deps: deps });
-  if (!report.proposals.length && !report.noise.length) return 0;
-  var key = report.proposals.map(function(p) { return p.projects.map(function(x) { return x.id; }).sort().join('+'); }).concat(report.noise.map(function(n) { return n.id; })).sort().join('|');
+  var unresolved = report.plannerUnresolved || [];
+  if (!report.proposals.length && !report.noise.length && !unresolved.length) return 0;
+  var key = report.proposals.map(function(p) { return p.projects.map(function(x) { return x.id; }).sort().join('+'); }).concat(report.noise.map(function(n) { return n.id; })).concat(unresolved.map(function(n) { return 'planner:' + n.id; })).sort().join('|');
   var gate = deps.gate || require('../utils/proactiveGate');
   var supabase = deps.supabase !== undefined ? deps.supabase : require('../services/db/client').getClient();
   var app = deps.app || require('../services/slackService').app;
@@ -268,6 +316,6 @@ async function checkAndNotify(deps) {
 module.exports = {
   compact: compact, tokens: tokens, source: source,
   isDuplicatePair: isDuplicatePair, findDuplicateGroups: findDuplicateGroups, chooseCanonical: chooseCanonical,
-  proposeMerges: proposeMerges, findNoiseProjects: findNoiseProjects, mergedCanonicalFields: mergedCanonicalFields,
+  proposeMerges: proposeMerges, findNoiseProjects: findNoiseProjects, isPlannerProject: isPlannerProject, plannerProposals: plannerProposals, mergedCanonicalFields: mergedCanonicalFields,
   applyMerge: applyMerge, archiveNoise: archiveNoise, runDedup: runDedup, formatReport: formatReport, checkAndNotify: checkAndNotify,
 };

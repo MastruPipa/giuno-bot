@@ -44,3 +44,7 @@ Passaggi successivi: verifica di lettura su ambiente Giuno, riconciliazione budg
 ## Criteri rivisti l'11 settembre 2026
 
 Vedi `docs/RICALIBRAZIONE_2026-09.md` §22: venduto sulla commessa (verificato o proposta marcata) al posto del venduto per periodo di calendario; tassonomia delle attività da agenzia con distribuzione per progetto e per team; blocchi, milestone, prossimi passi e azioni nella scheda progetto; segnali in ordine di gravità; ciclo di vita esplicito con gli acquisiti in attesa di evidenza separati dallo storico; copertura delle persone.
+
+## Attività (12 settembre 2026)
+
+Livello cliente → commessa → attività → microtask (`docs/RICALIBRAZIONE_2026-09.md` §25 e §27). L'adattatore legge `project_activities` se esiste; le ore per attività vengono dalle microtask dei daily e valgono solo se il daily torna con il consuntivo. Tabella commesse: pulsante "N attività" apre le righe a tendina. Scheda commessa: pannello "Attività" con microtask per persona. Scheda persona: pannello "Attività e microtask".

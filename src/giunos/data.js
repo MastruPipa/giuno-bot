@@ -8,7 +8,8 @@ const columns={
   project_dossiers:'project_id,dossier,updated_at',
   project_documents:'project_id,file_name,drive_link',
   project_actions:'id,project_id,description,status,assignee_slack_id,due_date,done_at,created_at',
-  giunos_budgets:'project_id,slack_user_id,period_start,period_end,hours,verified,source_url,scope'
+  giunos_budgets:'project_id,slack_user_id,period_start,period_end,hours,verified,source_url,scope',
+  project_activities:'id,project_id,name,kind,period_start,period_end,recurrence,template_id,status,owner_slack_id'
 };
 async function readTable(client,table) {
   const rows=[];
@@ -29,7 +30,7 @@ async function loadRaw(client) {
   const raw={mode:'live',warnings:[]};
   await Promise.all(Object.keys(columns).map(async table=>{
     try {raw[table]=await readTable(client,table);}
-    catch(e){ if(['projects','time_logs','team_members'].includes(table)) throw e; raw[table]=null;raw.warnings.push({table,message:table==='giunos_budgets'?'Budget venduti non ancora collegati.':'Una fonte di dettaglio non è disponibile.'}); }
+    catch(e){ if(['projects','time_logs','team_members'].includes(table)) throw e; raw[table]=null;if(table==='project_activities')return;raw.warnings.push({table,message:table==='giunos_budgets'?'Budget venduti non ancora collegati.':'Una fonte di dettaglio non è disponibile.'}); }
   }));
   return raw;
 }

@@ -13,3 +13,5 @@ header{min-height:92px;padding:20px 5%;display:flex;align-items:center;gap:48px;
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 
 tr.client td{background:rgba(51,22,0,.04);border-top:2px solid var(--line)}tr.commessa td:first-child{padding-left:28px}
+tr.activity td{padding-top:12px;padding-bottom:12px;font-size:14px;color:var(--muted);background:rgba(51,22,0,.02)}tr.activity td:first-child{padding-left:52px;color:var(--ink)}tr.activity[hidden]{display:none}.toggle{display:block;margin-top:8px;border:0;background:none;padding:0;color:var(--muted);font-size:14px}.toggle:hover{text-decoration:underline}
+.activity-item{padding:14px 0;border-bottom:1px solid var(--line)}.activity-item summary{display:flex;justify-content:space-between;gap:24px;color:var(--ink);list-style:none}.activity-item summary::-webkit-details-marker{display:none}.activity-item summary span::before{content:'▸ ';color:var(--muted)}.activity-item[open] summary span::before{content:'▾ '}.tasks li{font-size:14px}.person-project h3{margin:22px 0 4px;font-size:16px}
