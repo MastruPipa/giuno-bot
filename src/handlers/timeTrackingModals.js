@@ -28,7 +28,7 @@ var _projCacheAt = 0;
 async function getActiveProjectsCached() {
   var now = Date.now();
   if (_projCache && (now - _projCacheAt) < 300000) return _projCache;
-  var list = await db.searchProjects({ status: 'active', limit: 100 });
+  var list = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 200 });
   if (list && list.length > 0) {
     _projCache = list;
     _projCacheAt = now;

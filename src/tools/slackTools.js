@@ -564,7 +564,8 @@ async function execute(toolName, input, userId, userRole) {
     }
     var allUsers = [];
     if (recipients.some(function(r) { return !r.id || !r.name; })) {
-      try { allUsers = await getUtenti(); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
+      // Un destinatario nominato esplicitamente può essere anche chi è uscito dal team.
+      try { allUsers = await getUtenti({ includeInactive: true }); } catch(e) { logger.warn('[SLACK-TOOLS] users.list fallita:', e.message); }
     }
     var sent = [], failed = [], skippedDup = [];
     for (var ri = 0; ri < recipients.length; ri++) {
@@ -1180,10 +1181,7 @@ async function execute(toolName, input, userId, userRole) {
       var userIds = input.user_ids;
       if (!userIds || userIds.length === 0) {
         // Get all team members
-        var teamRes = await app.client.users.list();
-        userIds = (teamRes.members || [])
-          .filter(function(u) { return !u.is_bot && !u.deleted && u.id !== 'USLACKBOT'; })
-          .map(function(u) { return u.id; });
+        userIds = (await getUtenti()).map(function(u) { return u.id; });
       }
       var presenceResults = [];
       for (var pi = 0; pi < Math.min(userIds.length, 20); pi++) {

@@ -26,7 +26,7 @@ async function getCatalog() {
   var now = Date.now();
   if (_catalog && (now - _catalogAt) < 300000) return _catalog;
   try {
-    var projects = await db.searchProjects({ status: 'active', limit: 100 });
+    var projects = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 200 });
     var list = (projects || [])
       .filter(function(p) { return p && p.id && p.name; })
       .map(function(p) {

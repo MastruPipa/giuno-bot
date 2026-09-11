@@ -198,7 +198,7 @@ async function runDedup(opts) {
   opts = opts || {};
   var deps = opts.deps || {};
   var db = deps.db || require('../../supabase');
-  var projects = opts.projects || await db.searchProjects({ status: 'active', limit: 300 });
+  var projects = opts.projects || await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
   var stats = opts.stats || await loadStats(deps);
   var proposals = proposeMerges(projects, stats);
   var noise = findNoiseProjects(projects);

@@ -492,7 +492,54 @@ alimentano il lato dati; nessuno decide da solo, tutti propongono agli admin.
 Da fare a mano: applicare la DDL di `giunos_budgets`, poi `/giuno admin
 copertura` e seguire la lista.
 
-## 18. Da fare
+## 18. Evidenze operative dei progetti (ciclo di vita, dopo la PR #136)
+
+La PR #136 di Codex ha reso i progetti importati (deal Attio Won, canali
+Slack) dei candidati: status `planning`, contati tra gli attivi dalla
+dashboard solo con `projects.lifecycle_evidence` = { state:'active',
+source_url https, observed_on, valid_until } valida oggi. Nessuno la
+compilava, e la sync (boot + ogni 2 ore) riporta a `planning` chi non ce
+l'ha. Effetto: catalogo vuoto per la dashboard e, peggio, per il bot (matcher
+del daily, dossier, planner, modale ore, dedup, follow-up, budget), che
+leggeva solo `status='active'`.
+
+Due interventi:
+
+1. **Stati aperti ovunque nel bot.** `searchProjects` accetta `statuses:[…]`;
+   il catalogo del matcher, la modale ore, i dossier, il dedup, i follow-up,
+   il budget e i comandi admin leggono `active + planning (+ on_hold)`.
+   Registrare ore su un progetto acquisito è possibile e anzi è un indizio.
+   La dashboard continua a mostrare solo gli attivi con evidenza.
+2. **Motore delle evidenze** (`src/agents/lifecycleEvidence.js`, cron
+   `lifecycle_refresh` 7:05 feriali, `/giuno admin progetti evidenze [apply]`).
+   Per ogni progetto aperto raccoglie prove datate con URL:
+   kick-off su Drive (vale 90 giorni), recap di call su quella commessa (30),
+   azioni aperte emerse dalle call con link alla fonte (scadenza + 14),
+   riunioni in calendario col nome del progetto/cliente (giorno + 7),
+   decisione esplicita di PM/admin (60). La più lunga diventa
+   `lifecycle_evidence` e lo status passa ad `active`. Le ore dichiarate nel
+   daily (≥ 2 giorni in 21) sono un indizio, non una prova: Giuno manda al
+   PM (owner) o agli admin un DM con tre bottoni, "È operativo / Sospeso /
+   Concluso", e la risposta diventa l'evidenza con il permalink Slack.
+   Evidenza scaduta senza prove nuove, o scheda che dice "fermo"/"chiuso" →
+   stessa domanda. Sospensioni e chiusure non sono mai automatiche.
+   `/giuno admin progetti stato <nome> operativo|sospeso|concluso` registra
+   la decisione in un DM a chi la prende, e quel permalink è la fonte.
+   Il volume dei messaggi nei canali non conta.
+
+Il report copertura mostra "attivi (con evidenza) · acquisiti da verificare".
+
+Cosa manca ancora, per punti del brief: (1) collegamento commessa ↔ Attio ↔
+contratto ↔ documenti: fatto per documenti e azioni; il contratto arriva con
+la PR #135 di Codex (`project_contract_sources`); (2) stati distinti: fatto;
+(3) fonte, data, validità: fatto; (4) venduto/utilizzato sullo stesso
+periodo: il budget proposto (§17) e il confronto nel dossier usano il
+periodo del budget; il venduto verificato senza assunzione 8h/giornata è
+la #135; (5) attività e consegne: le azioni hanno già `description_key`
+anti-duplicato, le consegne vengono dalla scheda; manca un registro
+"consegne" con stato e data proprio, da fare dopo la #135.
+
+## 19. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

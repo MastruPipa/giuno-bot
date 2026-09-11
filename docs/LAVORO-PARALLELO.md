@@ -57,8 +57,8 @@ Aggiornare a inizio e fine sessione. Una riga per sessione attiva.
 
 | Agente | Area | Ramo / PR | Da | Stato |
 |---|---|---|---|---|
-| Claude | D/E (budget ore per progetto, attribuzione ore, backfill dossier) + report copertura | `claude/hopeful-dijkstra-uq0ulb` / #132 | 10/9 | in attesa di merge |
-| Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136 mergiate; dashboard in corso | 10/9 | in corso |
+| Claude | D/E (evidenze operative dei progetti, stati aperti nel bot) + esclusione usciti dal team | `claude/hopeful-dijkstra-uq0ulb` / nuova PR | 11/9 | in attesa di merge |
+| Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136, #137 mergiate; #135 (contratti) in bozza | 10/9 | in corso |
 
 ## 4. Prossimi lavori concordati (chi li prende lo scrive qui)
 

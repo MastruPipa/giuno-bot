@@ -11,10 +11,11 @@ function fakeSupabase(tables) {
     ['select', 'gte', 'eq', 'contains', 'lte'].forEach(function(m) { q[m] = function() { return q; }; });
     q.select = function(_, o) { q._head = !!(o && o.head); return q; };
     q.eq = function(k, v) { q._f.push([k, v]); return q; };
+    q.not = function(k, op, v) { q._f.push([k, '__not_null__']); return q; };
     q.limit = function() { return q; };
     q.then = function(res) {
       if (rows === undefined) return res({ error: new Error('missing table') });
-      var data = rows.filter(function(r) { return q._f.every(function(f) { return r[f[0]] === undefined || r[f[0]] === f[1]; }); });
+      var data = rows.filter(function(r) { return q._f.every(function(f) { return f[1] === '__not_null__' ? r[f[0]] != null : (r[f[0]] === undefined || r[f[0]] === f[1]); }); });
       return res(q._head ? { count: data.length } : { data: data });
     };
     return q;

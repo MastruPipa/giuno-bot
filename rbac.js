@@ -174,12 +174,19 @@ async function setUserRole(slackUserId, role, displayName, assignedBy) {
   }
 }
 
-async function getAllRoles() {
+// Chi è uscito dal team (roster active=false) resta in user_roles ma non
+// entra nei giri collettivi: escluso salvo opts.includeInactive.
+async function getAllRoles(opts) {
+  opts = opts || {};
   var supabase = getSupabase();
   if (!supabase) return [];
   try {
     var res = await supabase.from('user_roles').select('*').order('display_name');
-    return res.data || [];
+    var rows = res.data || [];
+    if (opts.includeInactive) return rows;
+    var isInactive = function() { return false; };
+    try { var teamDb = require('./src/services/db/team'); if (teamDb.isTeamMemberInactive) isInactive = teamDb.isTeamMemberInactive; } catch(_) {}
+    return rows.filter(function(r) { return !isInactive(r.slack_user_id); });
   } catch(e) {
     logger.error('[RBAC] getAllRoles fallita:', e.message);
     return [];

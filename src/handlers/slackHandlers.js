@@ -670,7 +670,7 @@ app.command('/giuno', async function(args) {
       var dossiersDbCmd = require('../services/db/dossiers');
       if (!prjName) {
         var dRows = await dossiersDbCmd.listDossiers();
-        var actives = await db.searchProjects({ status: 'active', limit: 200 });
+        var actives = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 300 });
         var nameById = {};
         (actives || []).forEach(function(p) { nameById[p.id] = p.name; });
         var lines = dRows.filter(function(r) { return nameById[r.project_id] && r.dossier && Object.keys(r.dossier).length; })
@@ -1087,6 +1087,20 @@ app.action('open_dm_from_home', async function(args) {
   });
 });
 
+// Bottoni sullo stato operativo di un progetto (evidenza = permalink del messaggio).
+['lifecycle_active', 'lifecycle_hold', 'lifecycle_done'].forEach(function(actionId) {
+  app.action(actionId, async function(args) {
+    await args.ack();
+    var userId = args.body.user.id;
+    var channel = (args.body.channel && args.body.channel.id) || userId;
+    var value = (args.action && args.action.value) || (args.body.actions && args.body.actions[0] && args.body.actions[0].value) || '';
+    try {
+      var reply = await require('../agents/lifecycleEvidence').handleLifecycleButton(actionId, value, userId, args.body);
+      await app.client.chat.postMessage({ channel: channel, text: reply, thread_ts: args.body.message && args.body.message.ts });
+    } catch(e) { logger.error('[LIFECYCLE] bottone fallito:', e.message); }
+  });
+});
+
 // "Confermo così" sulla proposta di daily ricostruita da Giuno.
 app.action('daily_estimate_confirm', async function(args) {
   await args.ack();
@@ -1367,12 +1381,13 @@ async function handleAdmin(command, respond) {
 
   if (sub === 'roles') {
     if (callerRole !== 'admin') { await respond({ text: 'Solo Antonio e Corrado possono vedere i ruoli.', response_type: 'ephemeral' }); return; }
-    var roles = await getAllRoles();
+    var roles = await getAllRoles({ includeInactive: true });
     if (roles.length === 0) { await respond({ text: 'Nessun ruolo configurato.', response_type: 'ephemeral' }); return; }
+    var inactiveFn = db.isTeamMemberInactive || function() { return false; };
     var msg = '*Ruoli team:*\n';
     var order = { admin: 1, finance: 2, manager: 3, member: 4, restricted: 5 };
     roles.sort(function(a, b) { return (order[a.role] || 9) - (order[b.role] || 9); });
-    roles.forEach(function(r) { msg += '*' + r.role.toUpperCase() + '* — ' + (r.display_name || r.slack_user_id) + ' (<@' + r.slack_user_id + '>)\n'; });
+    roles.forEach(function(r) { msg += '*' + r.role.toUpperCase() + '* — ' + (r.display_name || r.slack_user_id) + ' (<@' + r.slack_user_id + '>)' + (inactiveFn(r.slack_user_id) ? ' _(uscito dal team: escluso dai giri)_' : '') + '\n'; });
     await respond({ text: msg, response_type: 'ephemeral' });
     return;
   }
@@ -1475,11 +1490,35 @@ async function handleAdmin(command, respond) {
         await respond({ text: dedup.formatReport(dedupRep, applyDedup), response_type: 'ephemeral' });
         return;
       }
+      if (args[1] === 'evidenze') {
+        var lc = require('../agents/lifecycleEvidence');
+        var lcApply = args[2] === 'apply';
+        await respond({ text: 'Ricostruisco le evidenze operative da kick-off, recap, azioni, calendario e ore dichiarate...', response_type: 'ephemeral' });
+        var lcRep = await lc.refreshLifecycle({ apply: lcApply, notify: args.indexOf('notify') !== -1 });
+        await respond({ text: lc.formatReport(lcRep, lcApply), response_type: 'ephemeral' });
+        return;
+      }
+      if (args[1] === 'stato') {
+        var lc2 = require('../agents/lifecycleEvidence');
+        var stWord = (args[args.length - 1] || '').toLowerCase();
+        var stMap = { operativo: 'active', attivo: 'active', sospeso: 'hold', fermo: 'hold', concluso: 'done', chiuso: 'done' };
+        var stName = args.slice(2, -1).join(' ');
+        if (!stMap[stWord] || !stName) { await respond({ text: 'Uso: `/giuno admin progetti stato <nome> operativo|sospeso|concluso`', response_type: 'ephemeral' }); return; }
+        var stPrj = await require('../agents/projectDossier').findProject(stName);
+        if (!stPrj) { await respond({ text: 'Progetto "' + stName + '" non trovato.', response_type: 'ephemeral' }); return; }
+        // La decisione viene registrata in un DM a chi la prende: il permalink è l'evidenza.
+        var stMsg = await app.client.chat.postMessage({ channel: command.user_id, text: 'Decisione registrata: *' + stPrj.name + '* → ' + stWord + ' (da <@' + command.user_id + '>, ' + new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) + ').' });
+        var stLink = null;
+        try { stLink = (await app.client.chat.getPermalink({ channel: stMsg.channel, message_ts: stMsg.ts })).permalink; } catch(_) {}
+        var stRes = await lc2.recordDecision(stPrj.id, stMap[stWord], { source_url: stLink, by: command.user_id });
+        await respond({ text: stRes.error ? '⚠️ ' + stRes.error : '✅ ' + stRes.message, response_type: 'ephemeral' });
+        return;
+      }
       if (args[1] === 'merge') {
         var spec = args.slice(2).join(' ');
         var parts = spec.split(/\s*(?:->|=>|→)\s*/);
         if (parts.length !== 2 || !parts[0] || !parts[1]) { await respond({ text: 'Uso: `/giuno admin progetti merge <duplicato> -> <canonico>`', response_type: 'ephemeral' }); return; }
-        var allActive = await db.searchProjects({ status: 'active', limit: 300 });
+        var allActive = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
         function pick(name) { var n = dedup.compact(name); return allActive.find(function(p) { return dedup.compact(p.name) === n; }) || allActive.find(function(p) { return dedup.compact(p.name).indexOf(n) !== -1; }) || null; }
         var dupP = pick(parts[0]), canP = pick(parts[1]);
         if (!dupP || !canP || dupP.id === canP.id) { await respond({ text: 'Non trovo i due progetti (o sono lo stesso): "' + parts[0] + '" → "' + parts[1] + '".', response_type: 'ephemeral' }); return; }
@@ -1487,10 +1526,10 @@ async function handleAdmin(command, respond) {
         await respond({ text: 'Unito *' + dupP.name + '* in *' + canP.name + '*: ' + JSON.stringify(mres.moved) + '. Il dossier di ' + canP.name + ' verrà ricostruito.', response_type: 'ephemeral' });
         return;
       }
-      var activeList = (await db.searchProjects({ status: 'active', limit: 300 })).filter(function(p) { return !/^cat_/.test(p.id); });
+      var activeList = (await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 })).filter(function(p) { return !/^cat_/.test(p.id) && !p.merged_into; });
       var listLines = activeList.sort(function(a, b) { return String(a.name).localeCompare(String(b.name)); })
-        .map(function(p) { return '• ' + p.name + ' _(' + dedup.source(p) + (p.client_name && dedup.compact(p.client_name) !== dedup.compact(p.name) ? ', ' + p.client_name : '') + (p.aliases && p.aliases.length ? ', alias: ' + p.aliases.join('/') : '') + ')_'; });
-      await respond({ text: '*Progetti attivi (' + activeList.length + '):*\n' + listLines.join('\n') + '\n\n`/giuno admin progetti dedup [apply]` · `/giuno admin progetti merge <duplicato> -> <canonico>`', response_type: 'ephemeral' });
+        .map(function(p) { return '• ' + p.name + (p.status !== 'active' ? ' [' + p.status + ']' : '') + ' _(' + dedup.source(p) + (p.client_name && dedup.compact(p.client_name) !== dedup.compact(p.name) ? ', ' + p.client_name : '') + (p.aliases && p.aliases.length ? ', alias: ' + p.aliases.join('/') : '') + ')_'; });
+      await respond({ text: '*Progetti aperti (' + activeList.length + ', ' + activeList.filter(function(p) { return p.status === 'active'; }).length + ' attivi con evidenza):*\n' + listLines.join('\n') + '\n\n`/giuno admin progetti dedup [apply]` · `merge <duplicato> -> <canonico>` · `evidenze [apply]` · `stato <nome> operativo|sospeso|concluso`', response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
@@ -1716,7 +1755,7 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b|evidenze [apply]|stato <nome> operativo|sospeso|concluso]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

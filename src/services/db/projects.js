@@ -44,12 +44,18 @@ async function updateProject(projectId, updates) {
   } catch(e) { c.logErr('updateProject', e); return null; }
 }
 
+// Stati in cui un progetto è "aperto" per il bot: attivo con evidenza,
+// acquisito in attesa di evidenza (planning, PR #136), sospeso. Le ore si
+// possono registrare su tutti e tre; la dashboard mostra solo gli attivi.
+var OPEN_STATUSES = ['active', 'planning', 'on_hold'];
+
 async function searchProjects(params) {
   if (!c.useSupabase) return [];
   params = params || {};
   try {
     var q = c.getClient().from('projects').select('*');
-    if (params.status) q = q.eq('status', params.status);
+    if (Array.isArray(params.statuses) && params.statuses.length) q = q.in('status', params.statuses);
+    else if (params.status) q = q.eq('status', params.status);
     if (params.client_name) q = q.ilike('client_name', '%' + params.client_name + '%');
     if (params.owner_slack_id) q = q.eq('owner_slack_id', params.owner_slack_id);
     if (params.service_category) q = q.ilike('service_category', '%' + params.service_category + '%');
@@ -258,6 +264,7 @@ async function getTeamWorkload() {
 }
 
 module.exports = {
+  OPEN_STATUSES: OPEN_STATUSES,
   createProject: createProject,
   updateProject: updateProject,
   searchProjects: searchProjects,
