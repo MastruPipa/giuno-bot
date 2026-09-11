@@ -167,6 +167,7 @@ module.exports = {
   getTeamRoster:         team.getTeamRoster,
   findTeamMemberByName:  team.findTeamMemberByName,
   findTeamMemberById:    team.findTeamMemberById,
+  isTeamMemberInactive:  team.isTeamMemberInactive,
   findTeamMembersInText: team.findTeamMembersInText,
   upsertTeamMember:      team.upsertTeamMember,
   deactivateTeamMember:  team.deactivateTeamMember,

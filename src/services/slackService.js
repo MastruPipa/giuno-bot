@@ -56,8 +56,10 @@ async function getUtenti() {
     return app.client.users.list();
   }, { timeoutMs: 5000, retries: 2 });
 
+  var isInactive = function() { return false; };
+  try { var teamDb = require('./db/team'); if (teamDb.isTeamMemberInactive) isInactive = teamDb.isTeamMemberInactive; } catch(_) {}
   return (res.members || [])
-    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted; })
+    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted && !isInactive(u.id); })
     .map(function(u) {
       return {
         id: u.id,

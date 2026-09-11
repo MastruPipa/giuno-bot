@@ -1430,6 +1430,17 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  if (sub === 'retrospettiva' || sub === 'retro') {
+    if (callerRole !== 'admin') { await respond({ text: 'Solo gli admin.', response_type: 'ephemeral' }); return; }
+    var retroDate = args[1] === 'ieri' ? new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) : (/^\d{4}-\d{2}-\d{2}$/.test(args[1] || '') ? args[1] : undefined);
+    await respond({ text: 'Preparo la retrospettiva' + (retroDate ? ' del ' + retroDate : ' di oggi') + '...', response_type: 'ephemeral' });
+    try {
+      var retro = await require('../agents/selfReview').runSelfReview({ date: retroDate, force: true, notify: false });
+      await respond({ text: retro.text || 'Niente da segnalare.', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'pipeline') {
     if (callerRole !== 'admin' && callerRole !== 'manager' && callerRole !== 'finance') { await respond({ text: 'Solo admin, manager e finance.', response_type: 'ephemeral' }); return; }
     try {
@@ -1520,6 +1531,48 @@ async function handleAdmin(command, respond) {
       var scanner = require('../agents/geminiNotesScanner');
       var scanRep = await scanner.scanGeminiNotes({ days: scanDays });
       await respond({ text: scanner.formatReport(scanRep), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'budget') {
+    if (callerRole !== 'admin' && callerRole !== 'finance') { await respond({ text: 'Solo admin e finance possono gestire i budget ore.', response_type: 'ephemeral' }); return; }
+    var budgetAgent = require('../agents/budgetImporter');
+    try {
+      if (args[1] === 'conferma' && args[2]) {
+        var bHours = /^\d+([.,]\d+)?$/.test(args[args.length - 1] || '') ? Number(args[args.length - 1].replace(',', '.')) : null;
+        var bName = args.slice(2, bHours != null ? -1 : undefined).join(' ');
+        var bRes = await budgetAgent.confirmBudget(bName, { hours: bHours, by: command.user_name || command.user_id });
+        await respond({ text: bRes.error || ('✅ ' + bRes.message), response_type: 'ephemeral' });
+        return;
+      }
+      var bApply = args[1] === 'applica';
+      await respond({ text: (bApply ? 'Scrivo' : 'Calcolo') + ' le proposte di budget ore dai preventivi, kick-off e deal...', response_type: 'ephemeral' });
+      var bRep = await budgetAgent.importBudgets({ apply: bApply });
+      await respond({ text: budgetAgent.formatReport(bRep, bApply), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'attribuzione') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager.', response_type: 'ephemeral' }); return; }
+    var attrib = require('../agents/hoursAttribution');
+    var attribDays = parseInt(args[1], 10) || 14;
+    var attribApply = args.indexOf('apply') !== -1;
+    await respond({ text: 'Riprovo ad agganciare ai progetti i task senza progetto degli ultimi ' + attribDays + ' giorni' + (attribApply ? '' : ' (anteprima: aggiungi `apply` per salvare)') + '...', response_type: 'ephemeral' });
+    try {
+      var attribRep = await attrib.attributeOrphans({ days: attribDays, apply: attribApply });
+      await respond({ text: attrib.formatReport(attribRep) + (attribApply ? '' : '\n_Anteprima: niente è stato salvato._'), response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
+  if (sub === 'copertura') {
+    if (callerRole !== 'admin' && callerRole !== 'manager' && callerRole !== 'finance') { await respond({ text: 'Solo admin, manager e finance.', response_type: 'ephemeral' }); return; }
+    try {
+      var coverage = require('../agents/coverageReport');
+      var cov = await coverage.buildCoverage({ days: parseInt(args[1], 10) || 7 });
+      await respond({ text: coverage.formatCoverage(cov), response_type: 'ephemeral' });
     } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
     return;
   }
@@ -1663,7 +1716,7 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove]` — gestisci il roster del team (disambiguazione nomi)\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

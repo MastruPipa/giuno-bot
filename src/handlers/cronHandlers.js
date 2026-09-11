@@ -1256,7 +1256,7 @@ function scheduleCrons() {
   // Appunti Gemini da Drive (kick-off e recap) → KB + dossier di progetto
   cron.schedule('45 9,11,13,15,17 * * 1-5', function() {
     var { scanGeminiNotes } = require('../agents/geminiNotesScanner');
-    return scanGeminiNotes({ days: 3 });
+    return scanGeminiNotes({ days: 3, autoBackfill: true });
   }, { timezone: 'Europe/Rome', name: 'gemini_notes_scan', lockTtl: 25 });
   // Dossier di progetto: rebuild delle schede con fonti nuove o vecchie di 7 giorni
   cron.schedule('30 5,18 * * 1-5', function() {
@@ -1288,11 +1288,26 @@ function scheduleCrons() {
     var { runPipelineReview } = require('../agents/pipelineFollowups');
     return runPipelineReview({ notify: true });
   }, { timezone: 'Europe/Rome', name: 'pipeline_review', lockTtl: 10 });
+  // Retrospettiva serale di Giuno → admin (auto-sviluppo, livello 1)
+  cron.schedule('0 21 * * 1-5', function() {
+    var { runSelfReview } = require('../agents/selfReview');
+    runSelfReview({ notify: true }).catch(function(e) { logger.error('[SELF-REVIEW-CRON] Errore:', e.message); });
+  }, { timezone: 'Europe/Rome', name: 'self_review', lockTtl: 15 });
   // Roster team allineato agli utenti Slack
   cron.schedule('20 7 * * 1-5', function() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');
     return syncRosterFromSlack({ apply: true, notify: true });
   }, { timezone: 'Europe/Rome', name: 'team_roster_sync', lockTtl: 10 });
+  // Ore orfane del daily (task senza progetto) riprovate col catalogo aggiornato
+  cron.schedule('30 23 * * 1-5', function() {
+    var { attributeOrphans } = require('../agents/hoursAttribution');
+    return attributeOrphans({ days: 14, apply: true });
+  }, { timezone: 'Europe/Rome', name: 'hours_attribution', lockTtl: 15 });
+  // Budget ore per progetto: proposte da preventivi/kick-off/deal → giunos_budgets, admin avvisati
+  cron.schedule('40 6 * * 1', function() {
+    var { proposeAndNotify } = require('../agents/budgetImporter');
+    return proposeAndNotify();
+  }, { timezone: 'Europe/Rome', name: 'budget_proposals', lockTtl: 15 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {
     var { checkUpcomingCalls } = require('../agents/preCallBriefing');

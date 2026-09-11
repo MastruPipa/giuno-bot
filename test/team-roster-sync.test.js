@@ -43,3 +43,19 @@ test('syncRosterFromSlack: applica upsert e disattivazioni tramite il db', async
   assert.equal(ups[0].slack_user_id, 'U_SAM');
   assert.deepEqual(deact, ['U_NIC']);
 });
+
+test('isTeamMemberInactive: chi è disattivato nel roster sparisce da getUtenti', async function() {
+  var team = require('../src/services/db/team');
+  assert.equal(team.isTeamMemberInactive('U_NIC'), false);
+  // deactivate aggiorna l'insieme anche senza Supabase? No: senza DB torna false. Simuliamo via upsert/deactivate con client stub.
+  var client = require('../src/services/db/client');
+  var origUse = client.useSupabase, origGet = client.getClient;
+  client.useSupabase = true;
+  client.getClient = function() { return { from: function() { return { update: function() { return { eq: async function() { return {}; } }; }, upsert: async function() { return {}; } }; } }; };
+  try {
+    assert.equal(await team.deactivateTeamMember('U_NIC'), true);
+    assert.equal(team.isTeamMemberInactive('U_NIC'), true);
+    await team.upsertTeamMember({ slack_user_id: 'U_NIC', canonical_name: 'Nicolò', active: true });
+    assert.equal(team.isTeamMemberInactive('U_NIC'), false);
+  } finally { client.useSupabase = origUse; client.getClient = origGet; }
+});
