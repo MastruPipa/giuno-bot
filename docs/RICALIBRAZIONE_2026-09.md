@@ -835,7 +835,30 @@ fatturazione, canali attivi ed email ha trovato. Da fare dopo il merge:
 `/giuno admin progetti evidenze` in anteprima, poi `apply`; se il foglio non
 viene trovato per titolo, impostare `BILANCIO_SHEET_ID` su Railway.
 
-## 27. Da fare
+## 27. Le attività in giun.os: tendina sotto la commessa, microtask nelle schede
+
+Antonio (12/9): "le sotto task andrebbero aperte a tendina nella view
+generale ma non ha senso enumerarle tutte nel progetto".
+
+1. **Dati.** L'adattatore legge anche `project_activities` (facoltativa:
+   senza tabella nessun avviso, le attività nominate nei daily compaiono
+   comunque per nome). Il modello ricava le ore per attività dalle microtask
+   dei daily (`activity_id` nel JSON) con la stessa regola delle categorie:
+   contano solo se il daily torna con il consuntivo della commessa; il resto
+   è "senza attività". Il consuntivo per commessa non cambia mai.
+2. **Tabella clienti e commesse.** Sotto ogni commessa un pulsante "N
+   attività" apre le righe delle attività del periodo: nome, stato (aperta,
+   chiusa, oltre la fine, fino al…), ore, persone e numero di microtask. Le
+   microtask non si elencano qui. In fondo la riga "Senza attività" con le
+   ore che nessuna attività ha preso.
+3. **Scheda commessa.** Pannello "Attività": ogni attività si apre e mostra
+   le microtask con persona, data, testo e ore (le stime marcate).
+4. **Scheda persona.** Pannello "Attività e microtask": commessa →
+   attività → microtask della persona, con le microtask senza attività a
+   parte, così si vede cosa ha fatto ciascuno e a quale pezzo di lavoro
+   serviva.
+
+## 28. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
