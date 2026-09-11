@@ -57,7 +57,7 @@ Aggiornare a inizio e fine sessione. Una riga per sessione attiva.
 
 | Agente | Area | Ramo / PR | Da | Stato |
 |---|---|---|---|---|
-| Claude | G (dashboard giun.os: attività a tendina sotto le commesse, microtask per persona) | `claude/hopeful-dijkstra-uq0ulb` / nuova PR | 12/9 | in attesa di merge |
+| Claude | — | `claude/hopeful-dijkstra-uq0ulb` | 12/9 | #148, #149, #150 mergiate; nessuna PR aperta |
 | Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136, #137 mergiate; #135 (contratti) in bozza | 10/9 | in corso |
 
 ## 4. Prossimi lavori concordati (chi li prende lo scrive qui)
