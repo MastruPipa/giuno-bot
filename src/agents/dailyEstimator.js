@@ -40,6 +40,8 @@ var { withTimeout } = require('../utils/retryPolicy');
 var trackingDates = require('../utils/trackingDates');
 
 var SOURCE_TIMEOUT_MS = 8000;
+var REVISION_TIMEOUT_MS = 4000;
+var REVISIONS_BUDGET_MS = 60000;
 var MODEL_TIMEOUT_MS = 25000;
 
 // ─── Raccolta evidenze ───────────────────────────────────────────────────────
@@ -163,21 +165,38 @@ async function collectDriveActivity(dateStr, scanners, deps) {
     } catch(e) { logger.debug('[DAILY-ESTIMATE] drive ' + scanners[i] + ':', e.message); }
   }
   // Revisioni di oggi per file: ogni salvataggio è un evento con autore e ora
-  // (anche chi non è l'ultimo autore). Senza revisions.list resta la sola modifica finale.
-  for (var r = 0; r < filesForRevisions.length && r < 60; r++) {
-    var fr = filesForRevisions[r];
+  // (anche chi non è l'ultimo autore). Senza revisions.list resta la sola
+  // modifica finale. Limiti: 60 file, 5 richieste in parallelo, 4 s l'una,
+  // tutta la scansione entro REVISIONS_BUDGET_MS: il daily delle 16:00 non
+  // può aspettare Drive.
+  var startMs = Date.parse(b.start), endMs = Date.parse(b.end);
+  var deadline = Date.now() + (deps.revisionsBudgetMs != null ? deps.revisionsBudgetMs : REVISIONS_BUDGET_MS);
+  var queue = filesForRevisions.slice(0, 60);
+  async function scanOne(fr) {
     var revs = [];
-    if (fr.drive.revisions && fr.drive.revisions.list) {
+    if (fr.drive.revisions && fr.drive.revisions.list && Date.now() < deadline) {
       try {
-        var rr = await withTimeout(function() { return fr.drive.revisions.list({ fileId: fr.file.id, fields: 'revisions(id,modifiedTime,lastModifyingUser(emailAddress,displayName))', pageSize: 200 }); }, SOURCE_TIMEOUT_MS, 'estimate.revisions');
-        revs = ((rr.data && rr.data.revisions) || []).filter(function(v) { return v.modifiedTime && v.modifiedTime >= b.start && v.modifiedTime < b.end; });
+        var rr = await withTimeout(function() { return fr.drive.revisions.list({ fileId: fr.file.id, fields: 'revisions(id,modifiedTime,lastModifyingUser(emailAddress,displayName))', pageSize: 200 }); }, REVISION_TIMEOUT_MS, 'estimate.revisions');
+        revs = ((rr.data && rr.data.revisions) || []).filter(function(v) { var t = Date.parse(v.modifiedTime); return isFinite(t) && t >= startMs && t < endMs; });
       } catch(e) { logger.debug('[DAILY-ESTIMATE] revisions ' + fr.file.name + ':', e.message); }
     }
     if (!revs.length && fr.file.modifiedTime) revs = [{ modifiedTime: fr.file.modifiedTime, lastModifyingUser: fr.file.lastModifyingUser }];
     revs.forEach(function(v) { pushEvent(v.lastModifyingUser || {}, { at: v.modifiedTime, kind: 'drive', name: fr.file.name, link: fr.item.link }); });
   }
+  for (var q = 0; q < queue.length; q += 5) {
+    await Promise.all(queue.slice(q, q + 5).map(scanOne));
+  }
   return { byEmail: byEmail, byName: byName, events: events };
 }
+
+// Unione di due bucket (per email e per nome) senza doppioni.
+function unionBy(a, b, keyFn) {
+  var seen = {}, out = [];
+  (a || []).concat(b || []).forEach(function(x) { var k = keyFn(x); if (seen[k]) return; seen[k] = true; out.push(x); });
+  return out;
+}
+function itemKey(x) { return (x.kind || x.type || '') + '|' + (x.name || '') + '|' + (x.modified_at || ''); }
+function eventKey(x) { return (x.kind || '') + '|' + (x.at || '') + '|' + (x.name || x.channel || ''); }
 
 // File Figma modificati oggi e le loro versioni (autore + ora). Serve
 // FIGMA_TOKEN (personal access token) e FIGMA_TEAM_ID; senza, si salta.
@@ -311,7 +330,7 @@ async function collectEvidence(userId, dateStr, deps) {
   }
 
   // 2c. Documenti su Drive creati/modificati oggi dalla persona (output prodotti)
-  var mine = (myEmail && ctx.driveByEmail[myEmail]) || (myName && ctx.driveByName[myName]) || [];
+  var mine = unionBy(myEmail && ctx.driveByEmail[myEmail], myName && ctx.driveByName[myName], itemKey);
   if (mine.length) {
     evidence.drive = mine.slice(0, 15);
     evidence.sources.push('documenti Drive');
@@ -325,7 +344,7 @@ async function collectEvidence(userId, dateStr, deps) {
   }
 
   // 2e. File Figma con versioni salvate oggi dalla persona
-  var fig = (myEmail && ctx.figmaByEmail && ctx.figmaByEmail[myEmail]) || (myName && ctx.figmaByName && ctx.figmaByName[myName]) || [];
+  var fig = unionBy(myEmail && ctx.figmaByEmail && ctx.figmaByEmail[myEmail], myName && ctx.figmaByName && ctx.figmaByName[myName], itemKey);
   if (fig.length) {
     evidence.figma = fig.slice(0, 15);
     evidence.sources.push('file Figma');
@@ -336,8 +355,8 @@ async function collectEvidence(userId, dateStr, deps) {
   var events = [];
   var dEv = ctx.driveEvents || { byEmail: {}, byName: {} };
   var fEv = ctx.figmaEvents || { byEmail: {}, byName: {} };
-  events = events.concat((myEmail && dEv.byEmail[myEmail]) || (myName && dEv.byName[myName]) || []);
-  events = events.concat((myEmail && fEv.byEmail[myEmail]) || (myName && fEv.byName[myName]) || []);
+  events = events.concat(unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey));
+  events = events.concat(unionBy(myEmail && fEv.byEmail[myEmail], myName && fEv.byName[myName], eventKey));
   chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null }); });
   evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes }); });
   evidence.sessions = sessions.buildSessions(events);

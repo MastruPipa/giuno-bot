@@ -181,3 +181,25 @@ test('estimateDaily: sessioni da Drive+Figma+canali nel prompt, storico correzio
   assert.deepEqual(out.estimate.sources, ['documenti Drive', 'messaggi nei canali', 'file Figma', 'sessioni di lavoro'].filter(function(s) { return s !== 'documenti Drive'; }));
   assert.equal(out.estimate.sessions_minutes, 115); assert.deepEqual(out.estimate.calibration, { n: 5, ratio: 1.6 });
 });
+
+test('review Codex: bucket email e nome uniti senza doppioni; revisioni confrontate come istanti e scansione con budget di tempo', async function() {
+  var fakeClient = { messages: { create: async function() { return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'x', hours: 1 }], domani: [], blocchi: null, confidence: 'media' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var same = { at: '2026-09-10T09:30:00+02:00', kind: 'figma', name: 'Landing' };
+  var dayContext = { users: [{ id: 'U1', name: 'Samuele Licciardello', email: 'samuele@k.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} },
+    figmaByEmail: { 'samuele@k.it': [{ name: 'Landing', type: 'figma', modified_at: 'a' }] }, figmaByName: { 'samuele licciardello': [{ name: 'Landing', type: 'figma', modified_at: 'a' }, { name: 'Icone', type: 'figma', modified_at: 'b' }] },
+    figmaEvents: { byEmail: { 'samuele@k.it': [same] }, byName: { 'samuele licciardello': [same, { at: '2026-09-10T10:00:00+02:00', kind: 'figma', name: 'Icone' }] } }, adminEvents: [] };
+  var out = await est.estimateDaily('U1', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null });
+  assert.equal(out.estimate.sessions_minutes, 30, 'una sessione 09:30–10:00 da due bucket uniti, senza doppione');
+  var drives = { U_ADM: { files: { list: async function() { return { data: { files: [{ id: 'f1', name: 'Doc', modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } }] } }; } },
+    revisions: { list: async function() { return { data: { revisions: [
+      { modifiedTime: '2026-09-09T23:30:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } }, { modifiedTime: '2026-09-10T22:30:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } }, { modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } },
+    ] } }; } } } };
+  var r = await est.collectDriveActivity('2026-09-10', ['U_ADM'], { drives: drives });
+  assert.deepEqual(r.events.byEmail['a@k.it'].map(function(e) { return e.at; }), ['2026-09-09T23:30:00Z', '2026-09-10T15:00:00Z'], '23:30Z del 9 è il 10 a Roma; 22:30Z del 10 è l\'11');
+  var slow = { U_ADM: { files: { list: async function() { return { data: { files: [1, 2, 3].map(function(i) { return { id: 'f' + i, name: 'Doc' + i, modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } }; }) } }; } },
+    revisions: { list: async function() { return new Promise(function(res) { setTimeout(function() { res({ data: { revisions: [{ modifiedTime: '2026-09-10T10:00:00Z', lastModifyingUser: { emailAddress: 'a@k.it' } }] } }); }, 30); }); } } } };
+  var r2 = await est.collectDriveActivity('2026-09-10', ['U_ADM'], { drives: slow, revisionsBudgetMs: 0 });
+  assert.equal(r2.events.byEmail['a@k.it'].length, 3, 'budget scaduto: resta la sola modifica finale per file');
+  assert.ok(r2.events.byEmail['a@k.it'].every(function(e) { return e.at === '2026-09-10T15:00:00Z'; }));
+});
