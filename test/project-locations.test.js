@@ -71,3 +71,28 @@ test('loadRegistry: righe salvate + canali derivati, senza doppioni, con nome pr
   assert.match(loc.formatRows(rows, 'Elios'), /\*Elios\*: Elios, #progetto-elios \?/);
   assert.match(loc.formatRows([], null), /Registro vuoto/);
 });
+
+test('review Codex: una posizione contesa da due progetti dedotti non va a nessuno; admin vince; nomi normalizzati allo stesso modo', async function() {
+  var rows = [
+    { project_id: 'a', project_name: 'Caffè 2.0', kind: 'slack_channel', ref: 'C5', source: 'channel_map', confidence: 'media' },
+    { project_id: 'b', project_name: 'Caffe', kind: 'slack_channel', ref: 'C5', source: 'channel_map', confidence: 'media' },
+    { project_id: 'c', project_name: 'Terzo', kind: 'slack_channel', ref: 'C6', source: 'channel_map', confidence: 'media' },
+    { project_id: 'd', project_name: 'Quarto', kind: 'slack_channel', ref: 'C6', source: 'admin', confidence: 'alta' },
+  ];
+  var idx = loc.index(rows);
+  assert.equal(loc.lookup(idx, 'slack_channel', 'C5'), null, 'contesa a pari rango');
+  assert.equal(loc.lookup(idx, 'slack_channel', 'C6').id, 'd', 'admin vince');
+  assert.deepEqual(loc.projectIdForName(rows, 'caffè 2.0'), { id: 'a', name: 'Caffè 2.0' });
+  assert.deepEqual(loc.projectIdForName(rows, 'CAFFE 2 0'), { id: 'a', name: 'Caffè 2.0' });
+  assert.equal(loc.projectIdForName(rows, 'boh'), null);
+  // rebuild: la contesa viene riportata e non scritta; upsert su (kind, ref)
+  var writes = [];
+  var supabase = { from: function() { return { select: function() { return { limit: async function() { return { data: [] }; } }; } , upsert: async function(row, o) { writes.push({ row: row, o: o }); return {}; } }; } };
+  var projects2 = [{ id: 'a', name: 'Elios' }, { id: 'b', name: 'Altro', client_name: 'Elios' }];
+  var cm = { C7: { channel_name: 'elios' } };
+  var r = await loc.rebuild({ apply: true, deps: { supabase: supabase, db: {}, dossiers: { getProjectDocuments: async function() { return []; } }, projects: projects2, channelMap: cm, drive: null, figmaProjects: [] } });
+  assert.equal(r.ambiguous.length, 1); assert.equal(r.written, 0);
+  assert.match(loc.formatReport(r, true), /Contese, non attribuite:\*? #elios \(Elios \/ Altro\)/);
+  var r2 = await loc.rebuild({ apply: true, deps: { supabase: supabase, db: {}, dossiers: { getProjectDocuments: async function() { return []; } }, projects: [projects2[0]], channelMap: cm, drive: null, figmaProjects: [] } });
+  assert.equal(r2.written, 1); assert.equal(writes[0].o.onConflict, 'kind,ref'); assert.equal(writes[0].row.id, 'ploc_slack_channel_C7');
+});

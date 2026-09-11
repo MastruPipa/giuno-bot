@@ -89,7 +89,9 @@ async function dayContext(dateStr, deps) {
   // Registro delle posizioni: cartella → progetto, canale → progetto, file Figma → progetto
   await safeCall('ESTIMATE.day.locations', async function() {
     var loc = require('../services/projectLocations');
-    ctx.locations = deps.locations !== undefined ? deps.locations : loc.index(await loc.loadRegistry());
+    var locRowsAll = deps.locations !== undefined ? null : await loc.loadRegistry();
+    ctx.locationRows = locRowsAll || [];
+    ctx.locations = deps.locations !== undefined ? deps.locations : loc.index(locRowsAll);
   });
   _day = { date: dateStr, at: now, ctx: ctx };
   return ctx;
@@ -362,6 +364,7 @@ async function collectEvidence(userId, dateStr, deps) {
   evidence.drive.forEach(function(d) { d.project = d.project || projectOf('drive_folder', d.folder); });
   evidence.channels.forEach(function(m) { m.project = m.project || projectOf('slack_channel', m.channel_id); });
   evidence.figma.forEach(function(d) { d.project_hint = projectOf('figma_file', d.file_key) || projectOf('figma_project', d.figma_project_id) || null; });
+  evidence.locationRows = ctx.locationRows || [];
 
   // 2g. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
@@ -552,14 +555,14 @@ async function estimateDaily(userId, dateStr, deps) {
     var hints = {};
     (parsed.oggi || []).concat(parsed.domani || []).forEach(function(t) { if (t && t.task && typeof t.project === 'string' && t.project.trim()) hints[String(t.task).trim().substring(0, 300)] = t.project.trim(); });
     if (Object.keys(hints).length) {
-      var matcher = require('../services/projectMatcher');
-      var catalog = await matcher.getCatalog();
-      var byNorm = {};
-      catalog.forEach(function(p) { (p.norms || [p.norm]).forEach(function(n) { if (n) byNorm[n] = p; }); });
+      var locSvc = require('../services/projectLocations');
+      var locRows = deps.locationRows || evidence.locationRows || [];
+      var catalog = await require('../services/projectMatcher').getCatalog();
       (structured.oggi || []).concat(structured.domani || []).forEach(function(t) {
         var h = hints[t.task];
         if (!h || t.project_id) return;
-        var p = byNorm[nameKey(h).replace(/\s+/g, ' ')] || catalog.find(function(c) { return c.norm === nameKey(h); });
+        // Prima il registro (stesso nome che abbiamo scritto nel prompt), poi il catalogo, con la stessa normalizzazione
+        var p = locSvc.projectIdForName(locRows, h) || (function() { var k = locSvc.norm(h); var c = catalog.find(function(x) { return locSvc.norm(x.name) === k; }); return c ? { id: c.id, name: c.name } : null; })();
         if (p) { t.project_id = p.id; t.project_name = p.name; }
       });
     }

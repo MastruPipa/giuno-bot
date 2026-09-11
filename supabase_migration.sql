@@ -427,6 +427,5 @@ CREATE TABLE IF NOT EXISTS project_locations (
   confidence TEXT NOT NULL DEFAULT 'media',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (project_id, kind, ref)
+  UNIQUE (kind, ref)
 );
-CREATE INDEX IF NOT EXISTS project_locations_ref ON project_locations(kind, ref);

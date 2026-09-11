@@ -1529,7 +1529,9 @@ async function handleAdmin(command, respond) {
       }
       if (args[1] === 'posizione') {
         var locSvc2 = require('../services/projectLocations');
-        var locParts = args.slice(2).join(' ').split('=');
+        var locJoined = args.slice(2).join(' ');
+        var locEq = locJoined.indexOf('=');
+        var locParts = locEq === -1 ? [locJoined] : [locJoined.slice(0, locEq), locJoined.slice(locEq + 1)];
         if (locParts.length !== 2 || !locParts[0].trim() || !locParts[1].trim()) { await respond({ text: 'Uso: `/giuno admin progetti posizione <nome> = <#canale | link cartella Drive | link progetto/file Figma>`', response_type: 'ephemeral' }); return; }
         var locRes = await locSvc2.setManual(locParts[0].trim(), locParts[1].trim());
         await respond({ text: locRes.error ? '⚠️ ' + locRes.error : '✅ ' + locRes.message, response_type: 'ephemeral' });

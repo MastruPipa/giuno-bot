@@ -11,9 +11,11 @@
 // Senza tabella il registro vive in memoria per la corsa (canali dalla
 // channel map), e i comandi admin lo dicono.
 //
-// Regole: una posizione impostata da un admin non viene mai sovrascritta o
-// cancellata da una ricostruzione; le cartelle "Appunti di Gemini"/"Meet
-// Recordings" non sono cartelle di progetto.
+// Regole: una posizione (kind, ref) appartiene a UN solo progetto alla volta
+// (vincolo unico in tabella); una posizione impostata da un admin non viene
+// mai sovrascritta da una ricostruzione; se due progetti dedotti contendono
+// la stessa posizione, nessuno dei due la ottiene (ambigua); le cartelle
+// "Appunti di Gemini"/"Meet Recordings" non sono cartelle di progetto.
 
 'use strict';
 
@@ -80,22 +82,37 @@ async function loadRegistry(opts) {
 
 function invalidate() { _cache = { at: 0, rows: null, tableMissing: false }; }
 
-// Indice { kind: { ref: row } } con preferenza alle righe admin/alta.
+// Indice { kind: { ref: row } } con preferenza alle righe admin/alta. Due
+// progetti diversi con lo stesso rango sulla stessa posizione → ambigua
+// (nessuna attribuzione), mai una scelta arbitraria.
 function index(rows) {
   var idx = {};
   KINDS.forEach(function(k) { idx[k] = {}; });
   (rows || []).forEach(function(r) {
     if (!idx[r.kind]) return;
     var cur = idx[r.kind][r.ref];
-    if (!cur || rank(r) > rank(cur)) idx[r.kind][r.ref] = r;
+    if (!cur) { idx[r.kind][r.ref] = r; return; }
+    if (cur.project_id === r.project_id) { if (rank(r) > rank(cur)) idx[r.kind][r.ref] = r; return; }
+    if (rank(r) > rank(cur)) idx[r.kind][r.ref] = Object.assign({}, r, { ambiguous: false });
+    else if (rank(r) === rank(cur)) idx[r.kind][r.ref] = Object.assign({}, cur, { ambiguous: true });
   });
   return idx;
+}
+
+// Nome di progetto (come compare nel prompt, "[progetto: X]") → id, con la
+// stessa normalizzazione da entrambi i lati.
+function projectIdForName(rows, name) {
+  var key = norm(name);
+  if (!key) return null;
+  var hit = (rows || []).find(function(r) { return r.project_name && norm(r.project_name) === key; });
+  return hit ? { id: hit.project_id, name: hit.project_name } : null;
 }
 function rank(r) { return (r.source === 'admin' ? 10 : 0) + (r.confidence === 'alta' ? 2 : 1); }
 
 function lookup(idx, kind, ref) {
   var r = idx && idx[kind] && ref ? idx[kind][ref] : null;
-  return r ? { id: r.project_id, name: r.project_name || null, confidence: r.confidence, source: r.source } : null;
+  if (!r || r.ambiguous) return null;
+  return { id: r.project_id, name: r.project_name || null, confidence: r.confidence, source: r.source };
 }
 
 // ── Ricostruzione ────────────────────────────────────────────────────────────
@@ -155,19 +172,33 @@ async function rebuild(opts) {
   var names = {};
   projects.forEach(function(p) { names[p.id] = p.name; });
   rows.forEach(function(r) { r.project_name = names[r.project_id] || null; });
+  // Una posizione contesa da due progetti dedotti con lo stesso rango non va a nessuno.
+  var byRef = {};
+  rows.forEach(function(r) { (byRef[r.kind + '|' + r.ref] = byRef[r.kind + '|' + r.ref] || []).push(r); });
+  report.ambiguous = [];
+  rows = rows.filter(function(r) {
+    var group = byRef[r.kind + '|' + r.ref];
+    if (group.length === 1) return true;
+    var top = Math.max.apply(null, group.map(rank));
+    var winners = group.filter(function(x) { return rank(x) === top; });
+    var distinct = {};
+    winners.forEach(function(x) { distinct[x.project_id] = true; });
+    if (Object.keys(distinct).length > 1) { if (r === group[0]) report.ambiguous.push({ kind: r.kind, ref: r.ref, name: r.name, projects: Object.keys(distinct).map(function(id) { return names[id] || id; }) }); return false; }
+    return rank(r) === top;
+  });
   report.items = rows;
   if (!opts.apply) return report;
   if (!supabase) { report.error = 'Supabase non configurato'; return report; }
   var existing = await readRows(supabase);
   if (existing.missing) { report.error = 'tabella project_locations assente: applica la migrazione in supabase_migration.sql'; return report; }
   var admin = {};
-  existing.rows.forEach(function(r) { if (r.source === 'admin') admin[r.project_id + '|' + r.kind + '|' + r.ref] = true; });
+  existing.rows.forEach(function(r) { if (r.source === 'admin') admin[r.kind + '|' + r.ref] = true; });
   for (var w = 0; w < rows.length; w++) {
     var r = rows[w];
-    var key = r.project_id + '|' + r.kind + '|' + r.ref;
+    var key = r.kind + '|' + r.ref;
     if (admin[key]) { report.skipped_admin++; continue; }
     try {
-      var up = await supabase.from('project_locations').upsert({ id: 'ploc_' + r.kind + '_' + r.ref + '_' + r.project_id, project_id: r.project_id, kind: r.kind, ref: r.ref, name: r.name || null, source: r.source, confidence: r.confidence, updated_at: new Date().toISOString() }, { onConflict: 'project_id,kind,ref' });
+      var up = await supabase.from('project_locations').upsert({ id: 'ploc_' + r.kind + '_' + r.ref, project_id: r.project_id, kind: r.kind, ref: r.ref, name: r.name || null, source: r.source, confidence: r.confidence, updated_at: new Date().toISOString() }, { onConflict: 'kind,ref' });
       if (up.error) throw up.error;
       report.written++;
     } catch(e) { logger.warn('[LOCATIONS] scrittura ' + key + ' fallita:', e.message); }
@@ -227,7 +258,7 @@ async function setManual(projectName, link, opts) {
   var project = await (deps.findProject || require('../agents/projectDossier').findProject)(projectName);
   if (!project) return { error: 'Progetto "' + projectName + '" non trovato.' };
   if (!supabase) return { error: 'Supabase non configurato.' };
-  var up = await supabase.from('project_locations').upsert({ id: 'ploc_' + loc.kind + '_' + loc.ref + '_' + project.id, project_id: project.id, kind: loc.kind, ref: loc.ref, name: loc.name, source: 'admin', confidence: 'alta', updated_at: new Date().toISOString() }, { onConflict: 'project_id,kind,ref' });
+  var up = await supabase.from('project_locations').upsert({ id: 'ploc_' + loc.kind + '_' + loc.ref, project_id: project.id, kind: loc.kind, ref: loc.ref, name: loc.name, source: 'admin', confidence: 'alta', updated_at: new Date().toISOString() }, { onConflict: 'kind,ref' });
   if (up.error) return { error: /project_locations/.test(up.error.message) || /relation|schema cache/.test(up.error.message) ? 'tabella project_locations assente: applica la migrazione in supabase_migration.sql' : up.error.message };
   invalidate();
   return { success: true, project: project.name, location: loc, message: project.name + ' ← ' + loc.name + ' (' + loc.kind.replace('_', ' ') + ').' };
@@ -249,7 +280,8 @@ function formatRows(rows, projectName) {
 
 function formatReport(r, applied) {
   if (r.error) return '⚠️ ' + r.error;
-  return '*Posizioni ricostruite* su ' + r.projects + ' progetti: ' + r.channels + ' canali, ' + r.folders + ' cartelle Drive, ' + r.figma + ' progetti Figma' + (applied ? ' → ' + r.written + ' righe scritte' + (r.skipped_admin ? ', ' + r.skipped_admin + ' impostate a mano lasciate intatte' : '') : ' (anteprima)') + '\n' + formatRows(r.items);
+  return '*Posizioni ricostruite* su ' + r.projects + ' progetti: ' + r.channels + ' canali, ' + r.folders + ' cartelle Drive, ' + r.figma + ' progetti Figma' + (applied ? ' → ' + r.written + ' righe scritte' + (r.skipped_admin ? ', ' + r.skipped_admin + ' impostate a mano lasciate intatte' : '') : ' (anteprima)') + '\n' + formatRows(r.items) +
+    ((r.ambiguous || []).length ? '\n*Contese, non attribuite:* ' + r.ambiguous.map(function(a) { return a.name + ' (' + a.projects.join(' / ') + ')'; }).join(', ') + ' — decidi con `posizione <nome> = …`' : '');
 }
 
-module.exports = { KINDS: KINDS, loadRegistry: loadRegistry, invalidate: invalidate, index: index, lookup: lookup, rebuild: rebuild, channelRowsFromMap: channelRowsFromMap, parseLocation: parseLocation, setManual: setManual, formatRows: formatRows, formatReport: formatReport, listFigmaProjects: listFigmaProjects };
+module.exports = { KINDS: KINDS, loadRegistry: loadRegistry, invalidate: invalidate, index: index, lookup: lookup, projectIdForName: projectIdForName, norm: norm, rebuild: rebuild, channelRowsFromMap: channelRowsFromMap, parseLocation: parseLocation, setManual: setManual, formatRows: formatRows, formatReport: formatReport, listFigmaProjects: listFigmaProjects };
