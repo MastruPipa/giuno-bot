@@ -735,7 +735,63 @@ visione su giun.os".
    pianificate per progetto e piano della settimana in corso; scheda
    commessa: persone con un piano anche se non hanno ancora ore.
 
-## 25. Da fare
+## 25. Il livello attività: cliente → commessa → attività → microtask
+
+Antonio (12/9): "Gambino è il macro progetto, poi ci sono le sotto task che
+andrebbero aperte a tendina nella view generale ma non ha senso enumerarle
+tutte nel progetto. Ha senso capire le singole task di ogni persona e
+associarle a una task complessiva che a sua volta compone una macro task.
+Quindi un sistema a matrioska. Se Giusy oggi scrive 'caption video gambino',
+in automatico Giuno dovrebbe capire che questa microtask è un'azione che
+serve a completare la task di gruppo più grande 'PED mese settembre'."
+
+Prima c'erano due livelli: la commessa (`projects`) e la riga di ore. Ora:
+
+1. **Quattro livelli.** Cliente (Attio) → commessa (`projects`, con venduto
+   e budget) → attività (`project_activities`, nuova) → microtask (il task
+   del daily in `standup_entries.oggi_tasks`, che riceve `activity_id` e
+   `activity_name` accanto a `project_id`). Il consuntivo per commessa
+   (`time_logs`) NON cambia: le ore per attività si ricavano dalle
+   microtask e devono tornare con il consuntivo, come già le categorie.
+2. **Attività con inizio e fine, o ricorrenti.** Una riga con `recurrence`
+   (`mensile`, `settimanale`) è un modello: "PED" su "Gambino Vini · Social".
+   Ogni mattina (cron `activities_roll`, 6:35) Giuno prima riaggancia le
+   microtask degli ultimi tre giorni, poi apre l'istanza del periodo
+   corrente ("PED settembre 2026", 1→30 settembre, stesso vocabolario del
+   modello) e chiude quelle finite: `done`, mai cancellate, le ore restano
+   lì. Un'istanza chiusa resta la candidata giusta per le microtask datate
+   dentro il suo periodo (il daily del 31 agosto riagganciato a settembre va
+   sul PED di agosto); l'aggancio usa sempre la data del daily, non oggi.
+3. **Aggancio deterministico.** Trovata la commessa (come prima), la
+   microtask cerca tra le attività aperte di quella commessa valide quel
+   giorno. Una sola → quella. Più di una → vince chi ha più parole in
+   comune tra il nome dell'attività e il suo vocabolario; a parità o senza
+   parole in comune la microtask resta sulla commessa senza attività e il
+   PM la vede tra le orfane. Mai un'attribuzione inventata. Il livello è
+   agganciato in `enrichTasksWithProjects`, quindi vale per il daily
+   compilato, per la stima di Giuno e per l'attribuzione notturna.
+4. **Il vocabolario si impara.** Ogni microtask agganciata insegna le sue
+   parole all'attività (senza le parole vuote: "della", "call", "cliente",
+   "revisione"...; massimo 80). Dopo qualche daily "montaggio" e
+   "vendemmia" bastano da sole.
+5. **Comandi.** `/giuno admin attivita` elenca le aperte per commessa;
+   `attivita nuova <commessa> = <nome> [mensile|settimanale] [entro
+   AAAA-MM-GG] [parole: a, b, c]` crea (e riaggancia subito le microtask
+   degli ultimi 14 giorni); `attivita chiudi <commessa> = <nome>`;
+   `attivita orfane [giorni]` mostra le microtask che restano sulla sola
+   commessa, per commessa, con esempi; `attivita rialloca [giorni] apply`;
+   `attivita ricorrenze [apply]`.
+6. **Nel DM della stima** ogni task mostra l'attività tra parentesi.
+
+Da fare PRIMA del merge (il merge pubblica su Railway): applicare la
+migrazione `project_activities` (in fondo a `supabase_migration.sql`); senza
+tabella il codice degrada in silenzio (nessun aggancio, comandi che lo
+dicono). Poi creare le prime attività, ad esempio
+`/giuno admin attivita nuova Gambino = PED mensile parole: caption, post,
+storie, reel, carosello`. La dashboard con le attività a tendina è la PR
+successiva, insieme al registro delle evidenze pesate.
+
+## 26. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

@@ -429,3 +429,31 @@ CREATE TABLE IF NOT EXISTS project_locations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (kind, ref)
 );
+
+-- ─── Attività di progetto (12/9/2026): il livello tra commessa e microtask ───
+-- Cliente → commessa (projects) → attività (qui) → microtask (oggi_tasks del
+-- daily, con activity_id). Le righe con recurrence sono MODELLI ("PED
+-- mensile"): le istanze ("PED settembre 2026") nascono dal cron con
+-- template_id e periodo. Le ore per attività si leggono dai daily e devono
+-- tornare con time_logs, che non cambia.
+CREATE TABLE IF NOT EXISTS project_activities (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'consegna' CHECK (kind IN ('consegna','ricorrente','continuativa')),
+  period_start DATE,
+  period_end DATE,
+  recurrence TEXT CHECK (recurrence IN ('mensile','settimanale')),
+  template_id TEXT REFERENCES project_activities(id),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done','cancelled')),
+  owner_slack_id TEXT,
+  source_url TEXT,
+  vocabulary TEXT[] NOT NULL DEFAULT '{}',
+  created_by TEXT,
+  closed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS project_activities_unique
+  ON project_activities (project_id, lower(name), COALESCE(period_start, DATE '1970-01-01'));
+CREATE INDEX IF NOT EXISTS project_activities_project ON project_activities (project_id, status);

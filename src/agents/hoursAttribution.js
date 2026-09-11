@@ -42,7 +42,7 @@ async function attributeOrphans(opts) {
     if (!orphans.length) continue;
     report.orphans += orphans.length;
     var tasks = orphans.map(function(o) { return e.oggi_tasks[o.index]; });
-    try { await matcher.enrichTasksWithProjects(tasks, { llmFallback: opts.llm !== false }); } catch(err) { logger.debug('[ATTRIB] match fallito:', err.message); }
+    try { await matcher.enrichTasksWithProjects(tasks, { llmFallback: opts.llm !== false, date: e.date }); } catch(err) { logger.debug('[ATTRIB] match fallito:', err.message); }
     var resolvedNow = tasks.filter(function(t) { return t && t.project_id; }).length;
     if (resolvedNow && opts.apply !== false) {
       try {

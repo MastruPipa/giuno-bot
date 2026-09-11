@@ -573,7 +573,7 @@ async function estimateDaily(userId, dateStr, deps) {
       });
     }
   } catch(e) { logger.debug('[DAILY-ESTIMATE] project hints:', e.message); }
-  try { await require('../services/projectMatcher').enrichStructured(structured); } catch(e) { logger.debug('[DAILY-ESTIMATE] project match:', e.message); }
+  try { await require('../services/projectMatcher').enrichStructured(structured, { date: dateStr }); } catch(e) { logger.debug('[DAILY-ESTIMATE] project match:', e.message); }
 
   structured.estimate = {
     sessions_minutes: require('./activitySessions').totalMinutes(evidence.sessions),
@@ -600,7 +600,7 @@ function formatEstimateBody(structured) {
   var lines = [];
   if (structured.oggi && structured.oggi.length) {
     lines.push('*Oggi:*');
-    structured.oggi.forEach(function(t) { lines.push('• ' + t.task + fmtDur(t)); });
+    structured.oggi.forEach(function(t) { lines.push('• ' + t.task + fmtDur(t) + (t.activity_name ? ' _(' + t.activity_name + ')_' : '')); });
   }
   if (structured.domani && structured.domani.length) {
     lines.push('*Domani:*');
