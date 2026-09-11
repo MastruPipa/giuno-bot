@@ -96,9 +96,15 @@ function tableMissing() { return !!_cache.missing; }
 
 // ─── Aggancio della microtask ────────────────────────────────────────────────
 
+// Un'attività chiusa (done) resta la candidata giusta per le microtask
+// datate DENTRO il suo periodo: il PED di agosto, chiuso il 1° settembre,
+// prende ancora i daily del 31 agosto riagganciati dopo.
 function candidatesFor(activities, projectId, dateStr) {
   return (activities || []).filter(function(a) {
-    return a && a.project_id === projectId && (a.status || 'open') === 'open' && !isTemplate(a) && coversDate(a, dateStr);
+    if (!a || a.project_id !== projectId || isTemplate(a)) return false;
+    var st = a.status || 'open';
+    if (st === 'open') return coversDate(a, dateStr);
+    return st === 'done' && !!a.period_end && coversDate(a, dateStr);
   });
 }
 
@@ -194,7 +200,14 @@ async function setStatus(activityId, status, deps) {
   if (!supabase) return false;
   try {
     var upd = { status: status, updated_at: new Date().toISOString() };
-    if (status === 'done') upd.closed_at = new Date().toISOString();
+    if (status === 'done') {
+      upd.closed_at = new Date().toISOString();
+      // Senza fine dichiarata, la chiusura fissa la fine a oggi: le microtask
+      // fino a oggi restano agganciabili, quelle dopo no.
+      var cur = await supabase.from('project_activities').select('period_end').eq('id', activityId).limit(1);
+      if (cur.error) throw cur.error;
+      if (!(cur.data && cur.data[0] && cur.data[0].period_end)) upd.period_end = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' });
+    }
     var res = await supabase.from('project_activities').update(upd).eq('id', activityId);
     if (res.error) throw res.error;
     invalidate();
@@ -269,7 +282,8 @@ async function reattach(opts) {
   var days = opts.days || 14;
   var report = { entries: 0, tasks: 0, attached: 0, learned: 0, orphans: [], byProject: {} };
   if (!supabase) return report;
-  var activities = deps.activities || (await readRows(supabase, ['open'])).rows;
+  // Aperte E chiuse: una microtask di ieri può appartenere all'istanza chiusa stamattina.
+  var activities = deps.activities || (await readRows(supabase, ['open', 'done'])).rows;
   var byId = {};
   activities.forEach(function(a) { byId[a.id] = a; });
   var since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);

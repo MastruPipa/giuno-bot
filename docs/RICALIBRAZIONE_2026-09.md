@@ -755,10 +755,13 @@ Prima c'erano due livelli: la commessa (`projects`) e la riga di ore. Ora:
    microtask e devono tornare con il consuntivo, come già le categorie.
 2. **Attività con inizio e fine, o ricorrenti.** Una riga con `recurrence`
    (`mensile`, `settimanale`) è un modello: "PED" su "Gambino Vini · Social".
-   Ogni mattina (cron `activities_roll`, 6:35) Giuno apre l'istanza del
-   periodo corrente ("PED settembre 2026", 1→30 settembre, stesso
-   vocabolario del modello) e chiude quelle finite: `done`, mai cancellate,
-   le ore restano lì.
+   Ogni mattina (cron `activities_roll`, 6:35) Giuno prima riaggancia le
+   microtask degli ultimi tre giorni, poi apre l'istanza del periodo
+   corrente ("PED settembre 2026", 1→30 settembre, stesso vocabolario del
+   modello) e chiude quelle finite: `done`, mai cancellate, le ore restano
+   lì. Un'istanza chiusa resta la candidata giusta per le microtask datate
+   dentro il suo periodo (il daily del 31 agosto riagganciato a settembre va
+   sul PED di agosto); l'aggancio usa sempre la data del daily, non oggi.
 3. **Aggancio deterministico.** Trovata la commessa (come prima), la
    microtask cerca tra le attività aperte di quella commessa valide quel
    giorno. Una sola → quella. Più di una → vince chi ha più parole in
@@ -780,8 +783,10 @@ Prima c'erano due livelli: la commessa (`projects`) e la riga di ore. Ora:
    `attivita ricorrenze [apply]`.
 6. **Nel DM della stima** ogni task mostra l'attività tra parentesi.
 
-Da fare dopo il merge: applicare la migrazione `project_activities` (in
-fondo a `supabase_migration.sql`), poi creare le prime attività, ad esempio
+Da fare PRIMA del merge (il merge pubblica su Railway): applicare la
+migrazione `project_activities` (in fondo a `supabase_migration.sql`); senza
+tabella il codice degrada in silenzio (nessun aggancio, comandi che lo
+dicono). Poi creare le prime attività, ad esempio
 `/giuno admin attivita nuova Gambino = PED mensile parole: caption, post,
 storie, reel, carosello`. La dashboard con le attività a tendina è la PR
 successiva, insieme al registro delle evidenze pesate.

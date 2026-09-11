@@ -1318,12 +1318,13 @@ function scheduleCrons() {
     var { proposeAndNotify } = require('../agents/budgetImporter');
     return proposeAndNotify();
   }, { timezone: 'Europe/Rome', name: 'budget_proposals', lockTtl: 15 });
-  // Attività di progetto: apre le ricorrenze del periodo (PED del mese), chiude
-  // quelle finite, riaggancia le microtask degli ultimi giorni e impara le parole
+  // Attività di progetto: prima riaggancia le microtask degli ultimi giorni
+  // (con le attività ancora aperte) e impara le parole, poi apre le ricorrenze
+  // del periodo (PED del mese) e chiude quelle finite
   cron.schedule('35 6 * * 1-5', async function() {
     var acts = require('../services/projectActivities');
-    await acts.rollRecurring({ apply: true });
-    return acts.reattach({ days: 3, apply: true });
+    await acts.reattach({ days: 3, apply: true });
+    return acts.rollRecurring({ apply: true });
   }, { timezone: 'Europe/Rome', name: 'activities_roll', lockTtl: 15 });
   // Pre-call briefing — ogni 30 min durante orario lavorativo (skip 8:30 e 9:00-9:15)
   cron.schedule('0,30 9-18 * * 1-5', function() {

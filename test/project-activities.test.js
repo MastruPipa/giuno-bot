@@ -33,6 +33,11 @@ test('resolveActivity: una sola aperta → quella; più di una → vince il voca
   assert.equal(acts.resolveActivity('caption', 'prj_gambino_social', all, '2026-10-02'), null);
   assert.equal(acts.resolveActivity('qualsiasi cosa', 'prj_gambino_sito', all, '2026-09-12').id, 'act_sito');
   assert.equal(acts.resolveActivity('x', null, all, '2026-09-12'), null);
+  // un'istanza chiusa resta la candidata per le date DENTRO il suo periodo, non dopo
+  var aug = { id: 'act_ped8', project_id: 'prj_gambino_social', name: 'PED agosto 2026', status: 'done', period_start: '2026-08-01', period_end: '2026-08-31', template_id: 'act_ped', vocabulary: [] };
+  assert.equal(acts.resolveActivity('caption', 'prj_gambino_social', all.concat([aug]), '2026-08-28').id, 'act_ped8');
+  assert.equal(acts.resolveActivity('caption', 'prj_gambino_social', all.concat([aug]), '2026-09-02').id, 'act_ped9');
+  assert.equal(acts.resolveActivity('caption', 'prj_gambino_social', [aug], '2026-09-02'), null);
 });
 
 test('enrichTasks dal matcher: il task con commessa riceve activity_id/activity_name, gli altri restano intatti', async function() {
@@ -86,6 +91,15 @@ test('rollRecurring: apre l\'istanza del mese corrente dal modello e chiude quel
   assert.deepEqual(ins.row.vocabulary, ['caption', 'post', 'storie', 'reel'], 'eredita il vocabolario');
   assert.equal(sb.tables.project_activities.find(function(a) { return a.id === 'act_ped8'; }).status, 'done');
   assert.equal(applied.opened.length, 1);
+  // il riaggancio legge anche le chiuse: un daily del 31 agosto va sul PED di agosto, non su settembre
+  var late = [{ id: 9, slack_user_id: 'U1', date: '2026-08-31', oggi_tasks: [{ task: 'caption storie', hours: 1, project_id: 'prj_gambino_social' }] }];
+  var rr = await acts.reattach({ days: 30, apply: false, entries: late, deps: { supabase: sb } });
+  assert.equal(rr.attached, 1); assert.equal(late[0].oggi_tasks[0].activity_id, 'act_ped8');
+  // chiudere senza fine dichiarata fissa period_end a oggi
+  var open = { id: 'act_x', project_id: 'prj_gambino_social', name: 'Landing', status: 'open', period_start: null, period_end: null, vocabulary: [] };
+  sb.tables.project_activities.push(open);
+  assert.equal(await acts.setStatus('act_x', 'done', { supabase: sb }), true);
+  assert.equal(open.status, 'done'); assert.match(open.period_end, /^\d{4}-\d{2}-\d{2}$/);
   // seconda corsa: niente da fare
   var again = await acts.rollRecurring({ today: '2026-09-12', apply: true, deps: { supabase: sb } });
   assert.equal(again.opened.length, 0); assert.equal(again.closed.length, 0);

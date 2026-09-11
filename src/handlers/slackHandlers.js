@@ -1571,7 +1571,9 @@ async function handleAdmin(command, respond) {
         if (args[1] === 'chiudi') {
           var openActs = (await acts.loadOpen({ force: true })).filter(function(a) { return a.project_id === actPrj.id && acts.norm(a.name) === acts.norm(actSpec.name); });
           if (!openActs.length) { await respond({ text: 'Nessuna attività aperta "' + actSpec.name + '" su ' + actPrj.name + '.', response_type: 'ephemeral' }); return; }
-          for (var ca = 0; ca < openActs.length; ca++) await acts.setStatus(openActs[ca].id, 'done');
+          var closedOk = 0;
+          for (var ca = 0; ca < openActs.length; ca++) if (await acts.setStatus(openActs[ca].id, 'done')) closedOk++;
+          if (closedOk < openActs.length) { await respond({ text: '⚠️ Chiusura non riuscita per "' + openActs[0].name + '" (' + closedOk + '/' + openActs.length + '): l\'attività resta aperta, riprova tra poco.', response_type: 'ephemeral' }); return; }
           await respond({ text: '✅ Chiusa "' + openActs[0].name + '" su *' + actPrj.name + '*. Le ore restano registrate.', response_type: 'ephemeral' });
           return;
         }
