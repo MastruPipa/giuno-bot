@@ -49,6 +49,17 @@ test('dedup: le righe nate dal planner finiscono nella commessa che nominano; qu
   assert.equal(rep.proposals.filter(function(p) { return /creato dal planner/.test(p.reasons[0]); }).length, 2);
   assert.ok(!rep.proposals.some(function(p) { return p.projects.some(function(x) { return x.id === 'prj_c'; }); }), 'la riga irriconoscibile non viene fusa per somiglianza');
   assert.deepEqual(rep.plannerUnresolved.map(function(p) { return p.id; }), ['prj_c']);
+  // review Codex: se la commessa nominata è un canale che sta per essere unito a un deal, la riga del planner va sul deal
+  var withChan = PROJECTS.concat([{ id: 'chan_t', name: 'Tarocco', client_name: 'Tarocco', status: 'active' }], planner);
+  var rep2 = await dedup.runDedup({ projects: withChan, stats: {}, deps: { client: { useSupabase: false } } });
+  var chanMerge = rep2.proposals.find(function(p) { return p.duplicates.some(function(d) { return d.id === 'chan_t'; }); });
+  assert.ok(chanMerge && chanMerge.canonical.id === 'attio_2', 'il canale Tarocco va nel deal');
+  var plannerA = rep2.proposals.find(function(p) { return p.duplicates[0].id === 'prj_a'; });
+  assert.equal(plannerA.canonical.id, 'attio_2', 'la riga del planner salta il canale e va sul deal'); assert.match(plannerA.reasons[0], /Tarocco → Tarocco - Lieviti e Magia/);
+  // review Codex: le righe irriconoscibili da sole fanno partire l'avviso agli admin, con chiave propria
+  var sent = [];
+  var n = await dedup.checkAndNotify({ db: { searchProjects: async function() { return PROJECTS.concat([planner[2]]); } }, client: { useSupabase: false }, supabase: {}, roles: [{ slack_user_id: 'U_ADM', role: 'admin' }], gate: { itemHash: function(k) { return k; }, notificheEnabled: function() { return true; }, followupAllowed: async function(sb, uid, hash) { sent.push(hash); return { allowed: true, attempts: 0 }; }, recordFollowup: async function() {} }, app: { client: { chat: { postMessage: async function() {} } } } });
+  assert.equal(n, 1); assert.match(sent[0], /planner:prj_c/);
   var txt = dedup.formatReport(rep, false);
   assert.match(txt, /Tarocco - Lieviti e Magia\* ← Tarocco - organizzazione[\s\S]*creato dal planner: nomina Tarocco/);
   assert.match(txt, /senza una commessa riconoscibile\* \(1\)[\s\S]*Tutte le pubblicazioni/);

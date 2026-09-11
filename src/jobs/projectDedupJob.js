@@ -129,9 +129,14 @@ function proposeMerges(projects, stats) {
 function isPlannerProject(p) {
   return source(p) === 'manual' && ((p.tags || []).indexOf('fonte:planner') !== -1 || /^Creato dal Weekly Planner/i.test(String(p.description || '')));
 }
-function plannerProposals(projects) {
+// redirect: { id del duplicato → canonico } dalle proposte ordinarie, così
+// una riga che nomina il canale "Tarocco" finisce sul deal in cui quel
+// canale sta per essere unito, non sul canale (che dopo l'apply è già
+// merged e lascerebbe le ore su un progetto intermedio).
+function plannerProposals(projects, redirect) {
   var matcher = require('../services/projectMatcher');
   var resolver = require('../services/otherProjectResolver');
+  redirect = redirect || {};
   var list = (projects || []).filter(function(p) { return p && p.id && p.status !== 'merged'; });
   var real = list.filter(function(p) { return !isPlannerProject(p) && source(p) !== 'cat'; });
   var catalog = real.map(matcher.catalogEntry);
@@ -140,8 +145,11 @@ function plannerProposals(projects) {
   var proposals = [], unresolved = [];
   list.filter(isPlannerProject).forEach(function(p) {
     var hit = matcher.resolveTask(p.name, catalog) || resolver.tokenMatch(p.name, catalog);
-    var canonical = hit && byId[hit.id];
-    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: nomina ' + canonical.name] });
+    var targetId = hit && hit.id;
+    var hops = 0;
+    while (targetId && redirect[targetId] && hops < 10) { targetId = redirect[targetId]; hops++; }
+    var canonical = targetId && byId[targetId];
+    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: nomina ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
     else unresolved.push(p);
   });
   return { proposals: proposals, unresolved: unresolved };
@@ -240,8 +248,11 @@ async function runDedup(opts) {
   var stats = opts.stats || await loadStats(deps);
   // Le righe del planner si trattano a parte: non entrano nei gruppi per
   // somiglianza (i loro nomi lunghi farebbero fondere commesse diverse).
-  var planner = plannerProposals(projects);
-  var proposals = proposeMerges(projects.filter(function(p) { return !isPlannerProject(p); }), stats).concat(planner.proposals);
+  var ordinary = proposeMerges(projects.filter(function(p) { return !isPlannerProject(p); }), stats);
+  var redirect = {};
+  ordinary.forEach(function(p) { if (!p.ambiguous) p.duplicates.forEach(function(d) { redirect[d.id] = p.canonical.id; }); });
+  var planner = plannerProposals(projects, redirect);
+  var proposals = ordinary.concat(planner.proposals);
   var noise = findNoiseProjects(projects);
   var report = { proposals: proposals, noise: noise, plannerUnresolved: planner.unresolved, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };
   if (opts.apply) {
@@ -279,8 +290,9 @@ function formatReport(r, applied) {
 async function checkAndNotify(deps) {
   deps = deps || {};
   var report = await runDedup({ deps: deps });
-  if (!report.proposals.length && !report.noise.length) return 0;
-  var key = report.proposals.map(function(p) { return p.projects.map(function(x) { return x.id; }).sort().join('+'); }).concat(report.noise.map(function(n) { return n.id; })).sort().join('|');
+  var unresolved = report.plannerUnresolved || [];
+  if (!report.proposals.length && !report.noise.length && !unresolved.length) return 0;
+  var key = report.proposals.map(function(p) { return p.projects.map(function(x) { return x.id; }).sort().join('+'); }).concat(report.noise.map(function(n) { return n.id; })).concat(unresolved.map(function(n) { return 'planner:' + n.id; })).sort().join('|');
   var gate = deps.gate || require('../utils/proactiveGate');
   var supabase = deps.supabase !== undefined ? deps.supabase : require('../services/db/client').getClient();
   var app = deps.app || require('../services/slackService').app;
