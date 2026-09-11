@@ -107,3 +107,29 @@ test('recordDecision/handleLifecycleButton: il permalink Slack diventa evidenza;
   assert.match(await lc.handleLifecycleButton('lifecycle_active', 'attio_1', 'U_X', body, { app: app, db: db, role: 'member' }), /Solo il PM/);
   assert.match(await lc.handleLifecycleButton('lifecycle_hold', 'attio_1', 'U_X', body, { app: app, db: db, role: 'manager' }), /sospeso/);
 });
+
+test('review Codex: sospeso da una persona non si riattiva da solo; evidenze nuove → domanda al PM', function() {
+  var held = prj({ status: 'on_hold', lifecycle_evidence: { state: 'on_hold', kind: 'admin', source_url: 'https://katania.slack.com/archives/D1/p1', observed_on: '2026-09-05', valid_until: '2027-03-04', decided_by: 'U_PM' } });
+  var oldKick = { today: TODAY, existing: held.lifecycle_evidence, docs: [{ doc_role: 'kickoff', drive_link: 'https://d/K', notes: '2026-08-20' }] };
+  var a = lc.assess(held, lc.evidenceFromSources(held, oldKick), oldKick);
+  assert.equal(a.state, 'invariato'); assert.match(a.reason, /sospeso da una persona il 2026-09-05/);
+  var newRecap = { today: TODAY, existing: held.lifecycle_evidence, docs: [{ doc_role: 'recap', drive_link: 'https://d/R', notes: '2026-09-09' }] };
+  var b = lc.assess(held, lc.evidenceFromSources(held, newRecap), newRecap);
+  assert.equal(b.state, 'operativo?'); assert.match(b.reason, /sospeso dal 2026-09-05, ma trovo evidenze nuove/);
+});
+
+test('review Codex: evidenza scaduta → sospeso? anche se la sync ha già riportato a planning; date impossibili rifiutate; update nullo = non applicato', async function() {
+  var expired = { state: 'active', kind: 'recap', source_url: 'https://d/R', observed_on: '2026-07-01', valid_until: '2026-07-31' };
+  var ctx = { today: TODAY, existing: expired };
+  assert.equal(lc.assess(prj({ status: 'planning', lifecycle_evidence: expired }), [], ctx).state, 'sospeso?');
+  var bad = { today: TODAY, docs: [{ doc_role: 'kickoff', drive_link: 'https://d/K', notes: '2026-06-31' }] };
+  assert.equal(lc.evidenceFromSources(prj(), bad).length, 0, '2026-06-31 non esiste');
+  var deps = {
+    db: { searchProjects: async function() { return [prj()]; }, updateProject: async function() { return null; } },
+    dossiers: { getProjectDocuments: async function() { return [{ doc_role: 'kickoff', drive_link: 'https://d/K', notes: '2026-09-01' }]; }, getDossier: async function() { return null; }, listProjectActions: async function() { return []; } },
+    supabase: {}, logsFor: async function() { return []; }, calendarEvents: [], roles: [], today: TODAY,
+  };
+  var r = await lc.refreshLifecycle({ apply: true, deps: deps });
+  assert.equal(r.items[0].applied, false); assert.match(r.items[0].error, /null/);
+  assert.match(lc.formatReport(r, true), /⚠️ non scritto/);
+});
