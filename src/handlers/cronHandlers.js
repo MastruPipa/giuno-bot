@@ -1219,6 +1219,14 @@ function lockedJob(lockName, ttlMinutes, fn) {
 }
 
 function scheduleCrons() {
+  cron.schedule('40 6 * * *', async function() {
+    var client=require('../services/db/client').getClient();
+    if(!client)return;
+    var google=require('googleapis').google;
+    var auth=require('../services/googleAuthService').oAuth2Client;
+    return require('../services/reconciliation/refresh').refreshRegistered({client:client,
+      drive:google.drive({version:'v3',auth:auth}),sheets:google.sheets({version:'v4',auth:auth})});
+  }, {timezone:'Europe/Rome',name:'contract_sources_refresh',lockTtl:30});
   cron.schedule('30 8 * * 1-5', inviaRoutineGiornaliera, { timezone: 'Europe/Rome', name: 'routine_giornaliera', lockTtl: 30 });
   // Daily Standup V2 — replaces old inviaStandupDomande/pubblicaRecapStandup
   var dailyStandup = require('./dailyStandupV2');

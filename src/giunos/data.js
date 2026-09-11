@@ -8,6 +8,7 @@ const columns={
   project_dossiers:'project_id,dossier,updated_at',
   project_documents:'project_id,file_name,drive_link',
   project_actions:'id,project_id,description,status,assignee_slack_id,due_date,done_at,created_at',
+  project_contract_sources:'id,project_id,input,updated_at',
   giunos_budgets:'project_id,slack_user_id,period_start,period_end,hours,verified,source_url,scope'
 };
 async function readTable(client,table) {
