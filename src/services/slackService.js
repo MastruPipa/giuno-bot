@@ -51,7 +51,11 @@ async function slackCall(label, fn, options) {
 
 // ─── User helpers ──────────────────────────────────────────────────────────────
 
-async function getUtenti() {
+// opts.includeInactive: anche chi è uscito dal team (active=false nel roster)
+// ma ha ancora l'account Slack. Serve solo per un destinatario nominato
+// esplicitamente; i giri collettivi (daily, planner, "tutti") lo escludono.
+async function getUtenti(opts) {
+  opts = opts || {};
   var res = await slackCall('SLACK.users.list', function() {
     return app.client.users.list();
   }, { timeoutMs: 5000, retries: 2 });
@@ -59,12 +63,13 @@ async function getUtenti() {
   var isInactive = function() { return false; };
   try { var teamDb = require('./db/team'); if (teamDb.isTeamMemberInactive) isInactive = teamDb.isTeamMemberInactive; } catch(_) {}
   return (res.members || [])
-    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted && !isInactive(u.id); })
+    .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted && (opts.includeInactive || !isInactive(u.id)); })
     .map(function(u) {
       return {
         id: u.id,
         name: u.real_name || u.name,
         email: (u.profile && u.profile.email) || null,
+        inactive: isInactive(u.id) || undefined,
       };
     });
 }

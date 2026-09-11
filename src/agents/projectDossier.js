@@ -294,7 +294,7 @@ function formatDossier(project, row, opts) {
 async function pickCandidates(deps) {
   var db = deps.db || _db();
   var dossiers = deps.dossiers || _dossiers();
-  var projects = (await db.searchProjects({ status: 'active', limit: 200 })).filter(function(p) { return p.id && !/^cat_/.test(p.id); });
+  var projects = (await db.searchProjects({ statuses: ['active', 'planning'], limit: 300 })).filter(function(p) { return p.id && !/^cat_/.test(p.id) && !p.merged_into; });
   var rows = await dossiers.listDossiers();
   var byId = {};
   rows.forEach(function(r) { byId[r.project_id] = r; });
@@ -403,7 +403,7 @@ async function weeklyProjectsBrief(deps) {
   var db = deps.db || _db();
   var dossiers = deps.dossiers || _dossiers();
   var rows = await dossiers.listDossiers();
-  var projects = await db.searchProjects({ status: 'active', limit: 200 });
+  var projects = await db.searchProjects({ statuses: ['active', 'planning'], limit: 300 });
   var byId = {};
   projects.forEach(function(p) { byId[p.id] = p; });
   var entries = rows.filter(function(r) { return r.dossier && Object.keys(r.dossier).length && byId[r.project_id]; })
@@ -455,7 +455,7 @@ async function findProject(name, deps) {
     hit = catalog.find(function(p) { return p.norm && (p.norm.indexOf(n) !== -1 || n.indexOf(p.norm) !== -1); }) || null;
   }
   if (hit) return await db.getProject(hit.id);
-  var found = await db.searchProjects({ name: name, status: 'active', limit: 1 });
+  var found = await db.searchProjects({ name: name, statuses: ['active', 'planning', 'on_hold'], limit: 1 });
   return (found && found[0]) || null;
 }
 

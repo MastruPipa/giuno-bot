@@ -1298,6 +1298,11 @@ function scheduleCrons() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');
     return syncRosterFromSlack({ apply: true, notify: true });
   }, { timezone: 'Europe/Rome', name: 'team_roster_sync', lockTtl: 10 });
+  // Evidenze operative dei progetti: attiva chi ha prove datate, chiede al PM per il resto
+  cron.schedule('5 7 * * 1-5', function() {
+    var { refreshLifecycle } = require('../agents/lifecycleEvidence');
+    return refreshLifecycle({ apply: true, notify: true });
+  }, { timezone: 'Europe/Rome', name: 'lifecycle_refresh', lockTtl: 20 });
   // Ore orfane del daily (task senza progetto) riprovate col catalogo aggiornato
   cron.schedule('30 23 * * 1-5', function() {
     var { attributeOrphans } = require('../agents/hoursAttribution');

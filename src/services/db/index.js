@@ -184,6 +184,7 @@ module.exports = {
   createProject:        projects.createProject,
   updateProject:        projects.updateProject,
   searchProjects:       projects.searchProjects,
+  OPEN_STATUSES:        projects.OPEN_STATUSES,
   upsertSyncedProject:  projects.upsertSyncedProject,
   archiveStaleSyncedProjects: projects.archiveStaleSyncedProjects,
   seedCategorySlots:    projects.seedCategorySlots,

@@ -170,7 +170,7 @@ async function execute(toolName, input, userId, userRole) {
   if (toolName === 'list_project_dossiers') {
     var dossiersDb2 = require('../services/db/dossiers');
     var rows = await dossiersDb2.listDossiers();
-    var active = await db.searchProjects({ status: 'active', limit: 200 });
+    var active = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 300 });
     var names = {};
     (active || []).forEach(function(p) { names[p.id] = p.name; });
     var list = rows.filter(function(r) { return names[r.project_id] && r.dossier && Object.keys(r.dossier).length; })

@@ -170,7 +170,7 @@ async function upcomingProjectDeadlines(opts) {
   var today = opts.today || isoDate(Date.now());
   var until = addDays(today, opts.days || 7);
   var rows = await dossiers.listDossiers();
-  var projects = await db.searchProjects({ status: 'active', limit: 300 });
+  var projects = await db.searchProjects({ statuses: ['active', 'planning'], limit: 400 });
   var byId = {};
   projects.forEach(function(p) { byId[p.id] = p; });
   var out = [];

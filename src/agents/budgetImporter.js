@@ -114,7 +114,7 @@ async function importBudgets(opts) {
   var existing;
   try { existing = await loadExisting(supabase); }
   catch(e) { report.error = 'tabella giunos_budgets assente o non leggibile (' + e.message + '): applica docs/giunos-budgets.sql'; return report; }
-  var projects = (opts.projects || await db.searchProjects({ status: 'active', limit: 300 })).filter(function(p) { return p && p.id && !/^cat_/.test(p.id) && p.status !== 'merged'; });
+  var projects = (opts.projects || await db.searchProjects({ statuses: ['active', 'planning'], limit: 400 })).filter(function(p) { return p && p.id && !/^cat_/.test(p.id) && p.status !== 'merged'; });
   var card = deps.rateCard !== undefined ? deps.rateCard : await _quotes().getRateCard();
   var rate = hourlyRateFromCard(card) || (Number(process.env.GIUNO_DEFAULT_HOURLY_RATE) || null);
   var quotesDb = deps.quotes || _quotes();

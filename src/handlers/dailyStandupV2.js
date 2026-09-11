@@ -160,6 +160,21 @@ function getPendingEstimate(userId, dateStr) {
 }
 function clearPendingEstimate(userId) { delete _pendingEstimates[userId]; }
 
+// Chi ha già un daily VERO oggi, letto dal DB: è la fonte di verità per
+// l'appello. La cache in memoria (sd.risposte) può essere vecchia quando
+// due istanze si sovrappongono durante un deploy (Gianna, 10/9: compilato
+// alle 17:16, contata assente alle 18:00).
+async function respondedFromDb(dateStr) {
+  var out = {};
+  try {
+    var supabase = require('../services/db/client').getClient();
+    if (!supabase) return out;
+    var res = await supabase.from('standup_entries').select('slack_user_id, source').eq('date', dateStr).limit(500);
+    (res.data || []).forEach(function(r) { if (r.source !== 'estimate') out[r.slack_user_id] = { source: r.source, fromDb: true }; });
+  } catch(e) { logger.warn('[DAILY-V2] lettura risposte dal DB fallita:', e.message); }
+  return out;
+}
+
 async function buildEstimateFor(utente, dateStr) {
   var estimator = require('../agents/dailyEstimator');
   var structured = await estimator.estimateDaily(utente.id, dateStr);
@@ -267,12 +282,13 @@ async function pushMissingResponders(pushNumber) {
     var utenti = await getUtenti();
     var standupInAttesa = getStandupInAttesa();
     var pushed = 0;
+    var respondedDb = await respondedFromDb(todayStr);
 
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
       if (isExcludedFromDaily(utente)) continue;
-      if (sd.risposte && sd.risposte[utente.id]) continue; // Already responded
+      if ((sd.risposte && sd.risposte[utente.id]) || respondedDb[utente.id]) continue; // Already responded
 
       try {
         standupInAttesa.add(utente.id);
@@ -595,7 +611,7 @@ async function publishDailySummary() {
       return;
     }
 
-    var risposte = sd.risposte || {};
+    var risposte = Object.assign({}, await respondedFromDb(todayStr), sd.risposte || {});
 
     // Get all team members (excluded users are out of the daily flow entirely)
     var utenti = await getUtenti();
@@ -637,6 +653,11 @@ async function publishDailySummary() {
     if (estimatedUsers.length > 0) {
       publicMsg += '\n_Per ' + estimatedUsers.map(function(u) { return '<@' + u.id + '>'; }).join(', ') +
         ' ho pubblicato una stima: correggetela compilando il daily quando potete._';
+    }
+    var noTrace = missingUsers.filter(function(u) { return estimatedUsers.indexOf(u) === -1; });
+    if (ESTIMATES_ENABLED && noTrace.length > 0) {
+      publicMsg += '\n_Per ' + noTrace.map(function(u) { return '<@' + u.id + '>'; }).join(', ') +
+        ' non ho trovato tracce di giornata (calendario, Drive, canali, email): niente stima._';
     }
 
     try {
@@ -724,6 +745,7 @@ module.exports = {
   sendDailyRequestTo: sendDailyRequestTo,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
+  respondedFromDb: respondedFromDb,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,

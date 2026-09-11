@@ -50,6 +50,8 @@ async function buildCoverage(opts) {
     }
     out.data = {
       projects_active: await count('projects', function(q) { return q.eq('status', 'active'); }),
+      projects_planning: await count('projects', function(q) { return q.eq('status', 'planning'); }),
+      projects_with_evidence: await count('projects', function(q) { return q.eq('status', 'active').not('lifecycle_evidence', 'is', null); }),
       dossiers: await count('project_dossiers'),
       documents: await count('project_documents'),
       actions: await count('project_actions'),
@@ -78,7 +80,7 @@ function formatCoverage(c) {
   var noDaily = c.people.filter(function(p) { return p.daily_real === 0; }).map(function(p) { return p.name.split(' ')[0]; });
   lines.push('*Integrazioni:* Slack search ' + yn(c.env.slack_user_token) + ' · token admin/dashboard ' + yn(c.env.oauth_admin_token) + ' · Attio ' + yn(c.env.attio) + ' · Gemini ' + yn(c.env.gemini) + ' · Higgsfield ' + yn(c.env.higgsfield));
   var d = c.data || {};
-  lines.push('*Dati:* progetti attivi ' + (d.projects_active != null ? d.projects_active : '?') + (d.dedup_groups ? ' (' + d.dedup_groups + ' gruppi di duplicati, ' + d.noise + ' rumore)' : '') + ' · dossier ' + (d.dossiers != null ? d.dossiers : '?') + ' · documenti ' + (d.documents != null ? d.documents : '?') + ' · azioni dalle call ' + (d.actions != null ? d.actions : '?') + ' · recap 30gg ' + (d.recaps_30d != null ? d.recaps_30d : '?') + ' · budget ' + (d.budgets == null ? 'tabella assente' : d.budgets + ' (' + (d.budgets_verified || 0) + ' verificati)'));
+  lines.push('*Dati:* progetti attivi ' + (d.projects_active != null ? d.projects_active : '?') + (d.projects_with_evidence != null ? ' (' + d.projects_with_evidence + ' con evidenza operativa)' : '') + (d.projects_planning ? ' · acquisiti da verificare ' + d.projects_planning : '') + (d.dedup_groups ? ' (' + d.dedup_groups + ' gruppi di duplicati, ' + d.noise + ' rumore)' : '') + ' · dossier ' + (d.dossiers != null ? d.dossiers : '?') + ' · documenti ' + (d.documents != null ? d.documents : '?') + ' · azioni dalle call ' + (d.actions != null ? d.actions : '?') + ' · recap 30gg ' + (d.recaps_30d != null ? d.recaps_30d : '?') + ' · budget ' + (d.budgets == null ? 'tabella assente' : d.budgets + ' (' + (d.budgets_verified || 0) + ' verificati)'));
   var todo = [];
   if (noGoogle.length) todo.push('collegare Google: ' + noGoogle.join(', '));
   if (noDaily.length) todo.push('nessun daily vero: ' + noDaily.join(', '));
@@ -87,6 +89,7 @@ function formatCoverage(c) {
   if (d.dedup_groups) todo.push('`/giuno admin progetti dedup apply`');
   if (d.budgets == null) todo.push('applicare docs/giunos-budgets.sql');
   else if (!d.budgets_verified) todo.push('`/giuno admin budget` e confermare i budget');
+  if (d.projects_planning && !d.projects_with_evidence) todo.push('`/giuno admin progetti evidenze apply` e rispondere ai DM di conferma stato');
   if (d.dossiers === 0) todo.push('`/giuno admin gemini-scan 60` poi `dossier refresh all`');
   if (todo.length) lines.push('*Da sbloccare:*\n' + todo.map(function(t) { return '• ' + t; }).join('\n'));
   return lines.join('\n');
