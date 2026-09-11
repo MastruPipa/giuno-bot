@@ -565,7 +565,37 @@ calendario; Samuele aveva task senza ore.
    minuti. Tetto 8h. Il numero dei messaggi non conta.
 4. In #daily, per chi resta senza stima Giuno dice che non ha trovato tracce.
 
-## 20. Da fare
+## 20. Osservazione passiva: sessioni di lavoro e calibrazione
+
+Le ore del daily stimato non le indovina più il modello. Ogni artefatto ha
+un orario, e `src/agents/activitySessions.js` li mette in fila per persona:
+
+- revisioni di oggi dei file su Drive (`revisions.list`, autore e ora: anche
+  chi ha modificato senza essere l'ultimo autore);
+- versioni dei file Figma modificati oggi nei progetti del team
+  (`FIGMA_TOKEN` e `FIGMA_TEAM_ID` su Railway; senza, la fonte si salta);
+- messaggi e allegati nei canali con Giuno (timestamp);
+- riunioni con inizio e fine (calendario proprio o inviti negli admin).
+
+Le pause sopra 45 minuti spezzano il blocco; una sessione vale almeno 15
+minuti e al massimo 5 ore. Il prompt riceve "SESSIONI DI LAVORO RICOSTRUITE
+DAI TIMESTAMP (totale …)" con gli estremi orari e le tracce di ciascuna; la
+regola è che la somma dei task si avvicini al totale delle sessioni e che
+ogni sessione vada al task indicato dalle sue tracce. Il numero di eventi non
+pesa: contano gli estremi temporali.
+
+Calibrazione (`src/services/estimateCalibration.js`): quando una persona
+conferma o corregge una stima, la coppia ore stimate/ore reali finisce in
+`daily_estimate_calibration` (migrazione in `supabase_migration.sql`). Con
+almeno tre coppie, il prompt riceve "STORICO DELLE STIME PER QUESTA PERSONA:
+… più basse/alte del reale di circa il N%" e il modello corregge le durate
+dedotte, non quelle da calendario. La stima registra `sessions_minutes` e
+il rapporto usato, così si può misurare se le stime migliorano nel tempo.
+
+Fuori scope, per dopo: Drive Activity API (serve un nuovo scope OAuth),
+registro cartelle/canali/file per progetto, commit GitHub.
+
+## 21. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

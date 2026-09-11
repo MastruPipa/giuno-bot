@@ -118,12 +118,66 @@ test('estimateDaily: senza token usa Drive, canali e inviti dal contesto di gior
     driveByName: {},
     adminEvents: [{ title: 'SAL OFFKATANIA', start: '2026-09-10T10:00:00+02:00', minutes: 30, attendees: ['peppe@katania.it'] }],
   };
-  var out = await est.estimateDaily('U_PEPPE', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext });
+  var out = await est.estimateDaily('U_PEPPE', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null });
   assert.ok(out);
   assert.match(prompt, /CALENDARIO DI OGGI:\n- SAL OFFKATANIA — 30 min/);
   assert.match(prompt, /DOCUMENTI SU DRIVE CREATI O MODIFICATI OGGI[\s\S]*Registro cassa OFFKATANIA \(spreadsheet, creato oggi alle 10:30\)/);
   assert.match(prompt, /MESSAGGI E ALLEGATI DI OGGI NEI CANALI[\s\S]*\[#offkatania\] caricato il registro \[allegati: registro.xlsx\]/);
-  assert.deepEqual(out.estimate.sources, ['calendario (inviti)', 'documenti Drive', 'messaggi nei canali']);
+  assert.deepEqual(out.estimate.sources, ['calendario (inviti)', 'documenti Drive', 'messaggi nei canali', 'sessioni di lavoro']);
+  assert.match(prompt, /SESSIONI DI LAVORO RICOSTRUITE DAI TIMESTAMP \(totale 30min\):\n- 10:00–10:30 \(30min\): riunione "SAL OFFKATANIA"/);
+  assert.equal(out.estimate.sessions_minutes, 30);
   assert.equal(out.oggi[1].minutes, 30, 'task a 0 ore → 30 min');
   assert.equal(out.totalOggi, 1);
+});
+
+test('collectDriveActivity: le revisioni di oggi diventano eventi per autore, anche chi non è l\'ultimo', async function() {
+  var drives = { U_ADM: { files: { list: async function() { return { data: { files: [
+    { id: 'f1', name: 'Deck Elios', mimeType: 'application/vnd.google-apps.presentation', modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { emailAddress: 'paolo@k.it', displayName: 'Paolo' } },
+  ] } }; } }, revisions: { list: async function() { return { data: { revisions: [
+    { id: '1', modifiedTime: '2026-09-09T10:00:00Z', lastModifyingUser: { emailAddress: 'paolo@k.it' } },
+    { id: '2', modifiedTime: '2026-09-10T08:10:00Z', lastModifyingUser: { emailAddress: 'gianna@k.it', displayName: 'Gianna' } },
+    { id: '3', modifiedTime: '2026-09-10T08:40:00Z', lastModifyingUser: { emailAddress: 'gianna@k.it' } },
+    { id: '4', modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { emailAddress: 'paolo@k.it' } },
+  ] } }; } } } };
+  var r = await est.collectDriveActivity('2026-09-10', ['U_ADM'], { drives: drives });
+  assert.equal(r.events.byEmail['gianna@k.it'].length, 2, 'Gianna ha modificato ma non è l\'ultimo autore');
+  assert.equal(r.events.byEmail['paolo@k.it'].length, 1);
+  assert.equal(r.byEmail['gianna@k.it'], undefined, 'la lista "documenti" resta per ultimo autore');
+});
+
+test('collectFigmaActivity: file del team modificati oggi e versioni per autore; senza token salta', async function() {
+  assert.deepEqual((await est.collectFigmaActivity('2026-09-10', { env: {} })).files, []);
+  var calls = [];
+  var fetch = async function(url, o) {
+    calls.push(url); assert.equal(o.headers['X-Figma-Token'], 'tok');
+    var body = /teams\/T1\/projects/.test(url) ? { projects: [{ id: 'P1', name: 'Elios' }] }
+      : /projects\/P1\/files/.test(url) ? { files: [{ key: 'K1', name: 'Landing Elios', last_modified: '2026-09-10T14:00:00Z' }, { key: 'K2', name: 'Vecchio', last_modified: '2026-09-01T14:00:00Z' }] }
+      : { versions: [{ created_at: '2026-09-10T09:00:00Z', user: { handle: 'Samuele Licciardello', email: 'samuele@k.it' } }, { created_at: '2026-09-10T09:50:00Z', user: { handle: 'Samuele Licciardello' } }, { created_at: '2026-09-08T09:00:00Z', user: { handle: 'Altro' } }] };
+    return { ok: true, json: async function() { return body; } };
+  };
+  var r = await est.collectFigmaActivity('2026-09-10', { env: { FIGMA_TOKEN: 'tok', FIGMA_TEAM_ID: 'T1' }, fetch: fetch });
+  assert.equal(calls.length, 3, 'niente versioni per il file vecchio');
+  assert.equal(r.files.length, 1);
+  assert.equal(r.byName['samuele licciardello'].length, 1); assert.equal(r.byName['samuele licciardello'][0].link, 'https://www.figma.com/file/K1');
+  assert.equal(r.events.byName['samuele licciardello'].length, 2); assert.equal(r.events.byEmail['samuele@k.it'].length, 1);
+});
+
+test('estimateDaily: sessioni da Drive+Figma+canali nel prompt, storico correzioni', async function() {
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'Landing Elios (Figma)', hours: 2, minutes: 0 }], domani: [], blocchi: null, confidence: 'alta', note: '' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var dayContext = {
+    users: [{ id: 'U_SAM', name: 'Samuele Licciardello', email: 'samuele@k.it' }],
+    slackByUser: { U_SAM: [{ channel: 'elios', text: 'landing aggiornata', files: [], at: '2026-09-10T10:05:00+02:00' }] },
+    driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: { 'samuele@k.it': [{ at: '2026-09-10T09:05:00+02:00', kind: 'drive', name: 'Copy landing' }] }, byName: {} },
+    figmaByEmail: { 'samuele@k.it': [{ name: 'Landing Elios', project: 'Elios', type: 'figma' }] }, figmaByName: {},
+    figmaEvents: { byEmail: { 'samuele@k.it': [{ at: '2026-09-10T09:30:00+02:00', kind: 'figma', name: 'Landing Elios' }, { at: '2026-09-10T10:45:00+02:00', kind: 'figma', name: 'Landing Elios' }, { at: '2026-09-10T15:00:00+02:00', kind: 'figma', name: 'Landing Elios' }] }, byName: {} },
+    adminEvents: [],
+  };
+  var out = await est.estimateDaily('U_SAM', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: { n: 5, ratio: 1.6, bias: 'basso', hint: 'negli ultimi 5 daily corretti le ore stimate erano più basse del reale di circa il 60%: alza le durate dedotte di conseguenza (non quelle da calendario).' } });
+  assert.match(prompt, /FILE FIGMA CON VERSIONI SALVATE OGGI[\s\S]*Landing Elios \(progetto Figma: Elios\)/);
+  assert.match(prompt, /SESSIONI DI LAVORO RICOSTRUITE DAI TIMESTAMP \(totale 1h55min\):\n- 09:05–10:45 \(1h40min\): Drive "Copy landing" \(1 modifiche\); Figma "Landing Elios" \(2 versioni\); #elios \(1 messaggi\)\n- 15:00–15:00 \(15min\): Figma "Landing Elios" \(1 versioni\)/);
+  assert.match(prompt, /STORICO DELLE STIME PER QUESTA PERSONA: negli ultimi 5 daily corretti/);
+  assert.deepEqual(out.estimate.sources, ['documenti Drive', 'messaggi nei canali', 'file Figma', 'sessioni di lavoro'].filter(function(s) { return s !== 'documenti Drive'; }));
+  assert.equal(out.estimate.sessions_minutes, 115); assert.deepEqual(out.estimate.calibration, { n: 5, ratio: 1.6 });
 });

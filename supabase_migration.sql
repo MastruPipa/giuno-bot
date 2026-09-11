@@ -400,3 +400,18 @@ CREATE TABLE IF NOT EXISTS giunos_budgets (
 CREATE UNIQUE INDEX IF NOT EXISTS giunos_budget_scope ON giunos_budgets
   (scope,project_id,COALESCE(slack_user_id,''),period_start,period_end);
 ALTER TABLE giunos_budgets ENABLE ROW LEVEL SECURITY;
+
+-- ─── Calibrazione delle stime del daily (stimato vs reale per persona) ───
+CREATE TABLE IF NOT EXISTS daily_estimate_calibration (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  slack_user_id TEXT NOT NULL,
+  date DATE NOT NULL,
+  estimated_hours NUMERIC NOT NULL,
+  actual_hours NUMERIC NOT NULL,
+  estimated_tasks INT,
+  actual_tasks INT,
+  confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+  sources JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (slack_user_id, date)
+);
