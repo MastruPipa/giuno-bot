@@ -68,11 +68,13 @@ test('frontend renders all routes and periods, escapes external text and rejects
  const context={document:doc,window:{addEventListener(){}},location:{hash:'#overview'},URL,URLSearchParams,Intl,Date,console,fetch:async()=>({status:200,ok:true,json:async()=>buildSnapshot(raw(),period,now)})};
  vm.createContext(context);vm.runInContext(fs.readFileSync(require.resolve('../src/giunos/public/app.js'),'utf8'),context);
  await new Promise(resolve=>setImmediate(resolve));
- const fixture=raw({projects:[{id:'p',name:'<script>alert(1)</script>',client_name:'<img src=x onerror=alert(1)>',status:'active'}],time_logs:[log()],project_dossiers:[{project_id:'p',dossier:{deliverable:[{nome:'Output',stato:'consegnato'}]}}]});
- for(const kind of ['week','month','quarter'])for(const route of ['overview','projects','people','project/p','person/u']){
+ const fixture=raw({projects:[{id:'p',name:'<script>alert(1)</script>',client_name:'<img src=x onerror=alert(1)>',status:'active'},{id:'q',name:'Solo piano',status:'active'}],time_logs:[log(),log({log_type:'weekly',log_date:'2026-09-07',project_id:'q',hours:4,slack_user_id:'w'})],team_members:[{slack_user_id:'u',canonical_name:'Person'},{slack_user_id:'w',canonical_name:'Planner'}],project_dossiers:[{project_id:'p',dossier:{deliverable:[{nome:'Output',stato:'consegnato'}]}}]});
+ for(const kind of ['week','month','quarter'])for(const route of ['overview','projects','people','project/p','person/u','project/q','person/w']){
  context.snapshot=buildSnapshot(fixture,periodBounds(kind,'2026-09-10'),now);context.location.hash='#'+route;
  vm.runInContext(`data=snapshot;period='${kind}';render()`,context);
  const html=elements.get('#app').innerHTML;assert(!html.includes('<script>'));assert(!html.includes('<img src=x'));assert(!html.includes('NaN'));
+ if(route==='project/q'&&kind==='month')assert(html.includes('Planner')&&html.includes('pianificate 4 h'),'chi ha solo un piano compare nella scheda commessa');
+ if(route==='person/w'&&kind==='month')assert(html.includes('Solo piano')&&html.includes('nessuna ora ancora'),'il progetto solo pianificato compare nella scheda persona');
  }
  assert.equal(vm.runInContext("safeSource('javascript:alert(1)','Fonte')",context),'Fonte');
 });
