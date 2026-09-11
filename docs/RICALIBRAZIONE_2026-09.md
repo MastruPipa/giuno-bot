@@ -791,7 +791,51 @@ dicono). Poi creare le prime attività, ad esempio
 storie, reel, carosello`. La dashboard con le attività a tendina è la PR
 successiva, insieme al registro delle evidenze pesate.
 
-## 26. Da fare
+## 26. Il registro delle evidenze pesate: chi è davvero attivo
+
+Antonio (12/9): "come fa Giuno a capire quali sono i progetti attivi? Dovrebbe
+capirlo dal contesto Slack, dalle mail, dai canali attivi, da Attio, dal
+documento 'Contabilità e Bilancio 26'. Non è una singola voce ma sono più
+voci, perché ci possono essere più canali attivi su un singolo progetto o
+progetti chiusi che rimangono su won su Attio. Quindi qui sta la chiave."
+
+Il motore delle evidenze (§18) leggeva poche fonti e le trattava tutte allo
+stesso modo. Ora ogni commessa ha un registro con più voci, ciascuna con
+data e scadenza, divise in due pesi.
+
+1. **Fonti forti, bastano da sole** (attivano la commessa con `source_url`
+   https): kick-off, recap, azione aperta, calendario, decisione del PM,
+   pianificazione con recap, e la nuova **fatturazione**: una riga del
+   cliente in una scheda mensile del foglio "Contabilità e Bilancio <anno>"
+   vale fino a fine mese + 15 giorni; i mesi futuri già pianificati contano
+   da oggi (il contratto c'è). È la fonte più affidabile: quel cliente è
+   sotto contratto quel mese.
+2. **Indizi deboli, contano solo insieme**: ore dichiarate, pianificazione
+   senza recap, messaggi del team nel canale della commessa negli ultimi 14
+   giorni (dal registro delle posizioni, solo conteggio e data: il volume
+   non fa ore), thread email con il cliente negli ultimi 30 giorni (Gmail di
+   un admin, cercato per nome cliente), deal won su Attio. Due indizi di
+   tipo diverso fanno chiedere al PM con i tre bottoni; uno solo non fa
+   nulla. Un deal won da solo non basta più: un deal chiuso mesi fa senza
+   altre voci resta "acquisito, da verificare". Le ore dichiarate da sole
+   continuano a far chiedere (è la persona che dichiara).
+3. **Mai attivazione automatica senza fonte documentale**, mai sospensione
+   automatica: il PM ha l'ultima parola.
+
+Lettura del foglio (`src/agents/billingSheet.js`): Sheets API con il token
+Google di un admin; il foglio si trova per id (`BILANCIO_SHEET_ID`) o per
+titolo su Drive; le schede mensili si riconoscono dal nome (gennaio…
+dicembre) o dall'ordine; l'intestazione "Cl | 1Tantum | Mensilità | fattura
+inviata | Incassato" si legge per nome, con o senza colonna descrizione.
+Se la descrizione nomina un'altra commessa dello stesso cliente ("Gambino
+Sito 1/3"), la riga va solo a quella. Cache di sei ore, sola lettura.
+
+Il report di `/giuno admin progetti evidenze` dice quante righe di
+fatturazione, canali attivi ed email ha trovato. Da fare dopo il merge:
+`/giuno admin progetti evidenze` in anteprima, poi `apply`; se il foglio non
+viene trovato per titolo, impostare `BILANCIO_SHEET_ID` su Railway.
+
+## 27. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

@@ -13,20 +13,29 @@
 //   • pianificazione settimanale con il permalink del recap    → settimana + 7
 //     (stesso criterio del planner: si pianifica su ciò che è operativo, e
 //     pianificare su un acquisito lo rende operativo)
-// Le ore dichiarate nel daily sono un indizio, non una prova: se sono l'unica
-// cosa che c'è, Giuno CHIEDE al PM (o agli admin) con tre bottoni e la
-// risposta diventa l'evidenza (permalink Slack). Il volume dei messaggi nei
-// canali non conta mai. Sospensioni e chiusure sono sempre proposte, mai
-// automatiche: l'ultima parola resta al PM.
+//   • riga nel foglio "Contabilità e Bilancio" del mese (fatturazione) → mese + 15
+//     (la fonte più affidabile: quel cliente è sotto contratto quel mese)
+// Indizi DEBOLI, che da soli non bastano ma insieme fanno chiedere al PM:
+//   • ore dichiarate nel daily, pianificazione senza recap
+//   • messaggi del team nel canale della commessa negli ultimi 14 giorni
+//   • thread email con il cliente negli ultimi 30 giorni
+//   • deal "won" su Attio (resta won anche a lavoro finito: da solo non dice nulla)
+// Con due indizi diversi validi Giuno CHIEDE al PM (o agli admin) con tre
+// bottoni e la risposta diventa l'evidenza (permalink Slack). Il volume dei
+// messaggi non fa mai ore né attiva da solo. Sospensioni e chiusure sono
+// sempre proposte, mai automatiche: l'ultima parola resta al PM.
 
 'use strict';
 
 var logger = require('../utils/logger');
 
-var VALIDITY_DAYS = { kickoff: 90, recap: 30, admin: 60, calendar: 7, action_open: 14, weekly_plan: 13 };
+var VALIDITY_DAYS = { kickoff: 90, recap: 30, admin: 60, calendar: 7, action_open: 14, weekly_plan: 13, billing: 15, channel_activity: 14, email: 30 };
 var HOURS_WINDOW_DAYS = 21;
 var HOURS_MIN_DAYS = 2;
-var PRIMARY = { kickoff: true, recap: true, action_open: true, calendar: true, admin: true, weekly_plan: true };
+var PRIMARY = { kickoff: true, recap: true, action_open: true, calendar: true, admin: true, weekly_plan: true, billing: true };
+var WEAK = { hours_declared: true, plan_declared: true, channel_activity: true, email: true, crm_won: true };
+var WEAK_MIN_KINDS = 2;
+var WEAK_LABEL = { hours_declared: 'ore dichiarate', plan_declared: 'pianificazione senza recap', channel_activity: 'canale attivo', email: 'email col cliente', crm_won: 'deal won su Attio' };
 var OPEN_STATUSES = ['active', 'planning', 'on_hold'];
 
 function _db() { return require('../../supabase'); }
@@ -109,6 +118,30 @@ function evidenceFromSources(project, ctx) {
     var tot = dayKeys.reduce(function(s, k) { return s + days[k]; }, 0);
     out.push({ kind: 'hours_declared', observed_on: dayKeys[dayKeys.length - 1], valid_until: addDays(dayKeys[dayKeys.length - 1], HOURS_WINDOW_DAYS), source_url: null, detail: Math.round(tot * 10) / 10 + 'h dichiarate su ' + dayKeys.length + ' giorni' });
   }
+  // Fatturazione: una riga del cliente nel mese M vale fino a fine M + 15.
+  // Mesi futuri già pianificati contano da oggi (il contratto c'è).
+  var billing = require('./billingSheet');
+  (ctx.billing || []).forEach(function(r) {
+    if (!r || !/^\d{4}-\d{2}$/.test(String(r.month || '')) || !isHttps(r.source_url)) return;
+    var start = r.month + '-01', end = billing.monthEnd(r.month);
+    var observed = start <= today ? start : today;
+    var until = addDays(end, VALIDITY_DAYS.billing);
+    if (until < today) return;
+    var amount = (r.monthly || 0) + (r.one_off || 0);
+    out.push({ kind: 'billing', observed_on: observed, valid_until: until, source_url: r.source_url, detail: 'in fatturazione a ' + r.month.slice(5, 7) + '/' + r.month.slice(0, 4) + (amount ? ' (' + Math.round(amount) + ' €' : '') + (r.invoiced ? ', fattura inviata' : ', prevista') + (amount ? ')' : '') + (r.description ? ': ' + String(r.description).substring(0, 60) : '') });
+  });
+  // Indizi deboli: canale attivo, email col cliente, deal won.
+  (ctx.channels || []).forEach(function(c) {
+    if (!c || !(c.count > 0) || !isDate(c.last_on) || c.last_on > today) return;
+    out.push({ kind: 'channel_activity', observed_on: c.last_on, valid_until: addDays(c.last_on, VALIDITY_DAYS.channel_activity), source_url: c.link || null, detail: c.count + ' messaggi del team in #' + (c.channel_name || c.channel_id) + ' (ultimo il ' + c.last_on + ')' });
+  });
+  (ctx.emails || []).forEach(function(m) {
+    if (!m || !isDate(m.date) || m.date > today) return;
+    out.push({ kind: 'email', observed_on: m.date, valid_until: addDays(m.date, VALIDITY_DAYS.email), source_url: m.link || null, detail: 'email del ' + m.date + (m.subject ? ': "' + String(m.subject).substring(0, 50) + '"' : '') });
+  });
+  if ((project.tags || []).indexOf('sales:won') !== -1) {
+    out.push({ kind: 'crm_won', observed_on: today, valid_until: today, source_url: null, detail: 'deal won su Attio' });
+  }
   return out;
 }
 
@@ -123,6 +156,8 @@ function assess(project, evidences, ctx) {
   var primary = valid.filter(function(e) { return PRIMARY[e.kind] && isHttps(e.source_url); })
     .sort(function(a, b) { return b.valid_until.localeCompare(a.valid_until); });
   var hours = valid.find(function(e) { return e.kind === 'hours_declared' || e.kind === 'plan_declared'; });
+  var weakKinds = [];
+  valid.forEach(function(e) { if (WEAK[e.kind] && weakKinds.indexOf(e.kind) === -1) weakKinds.push(e.kind); });
   var imported = /^(attio_|chan_)/.test(String(project.id)) || (project.tags || []).some(function(t) { return t === 'attio-sync' || t === 'channel-sync'; });
   var closedPhase = /chiuso|conclus|complet/i.test(hints.fase || '');
   var stoppedPhase = /fermo|sospes|stand-?by/i.test(hints.fase || '');
@@ -149,6 +184,12 @@ function assess(project, evidences, ctx) {
   }
   if (stoppedPhase && project.status !== 'on_hold') return { state: 'sospeso?', primary: primary, hints: hints, reason: 'la scheda dice "' + hints.fase + '"' };
   if (hours) return { state: 'operativo?', primary: primary, hints: hints, reason: hours.detail + ' negli ultimi ' + HOURS_WINDOW_DAYS + ' giorni, ma nessuna fonte documentale' };
+  // Indizi deboli: da soli non dicono nulla (un deal won resta won a lavoro
+  // finito), ma due di tipo diverso insieme meritano la domanda al PM.
+  if (weakKinds.length >= WEAK_MIN_KINDS) {
+    var weakDetails = weakKinds.map(function(k) { var e = valid.find(function(x) { return x.kind === k; }); return e.detail || WEAK_LABEL[k]; });
+    return { state: 'operativo?', primary: primary, hints: hints, reason: 'indizi senza fonte documentale: ' + weakDetails.join('; ') };
+  }
   // Evidenza scaduta: vale anche se la sync ha già riportato il progetto a
   // planning (gira prima del refresh); il PM va comunque interpellato.
   if (ex && ex.state === 'active' && isDate(ex.valid_until) && ex.valid_until < today) {
@@ -178,6 +219,76 @@ async function loadCalendarEvents(deps, today) {
         if (start) out.push({ date: start, summary: ev.summary || '', description: ev.description || '', htmlLink: ev.htmlLink || null });
       });
     } catch(e) { logger.debug('[LIFECYCLE] calendario ' + users[i] + ' non leggibile:', e.message); }
+  }
+  return out;
+}
+
+// ── Canali: messaggi del team negli ultimi 14 giorni nei canali della commessa ─
+// (registro delle posizioni + channel map). Solo il conteggio e l'ultima
+// data: il volume non fa ore, qui serve solo come indizio.
+async function loadChannelActivity(deps, projects, today) {
+  if (deps.channelActivity) return deps.channelActivity;
+  var app = deps.app !== undefined ? deps.app : (function() { try { return require('../services/slackService').app; } catch(_) { return null; } })();
+  var out = {};
+  if (!app || !app.client || !app.client.conversations) return out;
+  var loc = require('../services/projectLocations');
+  var rows;
+  try { rows = await loc.loadRegistry({ deps: deps.locationDeps }); } catch(e) { return out; }
+  var ids = {};
+  projects.forEach(function(p) { ids[p.id] = true; });
+  // Un canale appartiene a UNA commessa: si passa dall'indice del registro
+  // (riga admin > dedotta, chan_ esatto > per nome, ambiguo → nessuno), così
+  // la stessa storia non viene accreditata a due progetti.
+  var idx = loc.index(rows || []);
+  var seen = {}, channels = [];
+  (rows || []).forEach(function(r) {
+    if (r.kind !== 'slack_channel' || seen[r.ref]) return;
+    seen[r.ref] = true;
+    var owner = loc.lookup(idx, 'slack_channel', r.ref);
+    if (!owner || !ids[owner.id]) return;
+    channels.push({ ref: r.ref, name: r.name, project_id: owner.id });
+  });
+  channels = channels.slice(0, 80);
+  var oldest = String(Math.floor(Date.parse(addDays(today, -VALIDITY_DAYS.channel_activity) + 'T00:00:00Z') / 1000));
+  for (var i = 0; i < channels.length; i++) {
+    var ch = channels[i];
+    try {
+      var hist = await app.client.conversations.history({ channel: ch.ref, oldest: oldest, limit: 50 });
+      var human = ((hist && hist.messages) || []).filter(function(m) { return m && m.user && !m.bot_id && !m.subtype; });
+      if (!human.length) continue;
+      var lastTs = Math.max.apply(null, human.map(function(m) { return Number(m.ts) || 0; }));
+      (out[ch.project_id] = out[ch.project_id] || []).push({ channel_id: ch.ref, channel_name: String(ch.name || '').replace(/^#/, ''), count: human.length, last_on: iso(lastTs * 1000), link: 'https://slack.com/archives/' + ch.ref });
+    } catch(e) { logger.debug('[LIFECYCLE] canale ' + ch.ref + ' non leggibile:', e.message); }
+  }
+  return out;
+}
+
+// ── Email: thread con il cliente negli ultimi 30 giorni (Gmail di un admin) ──
+async function loadEmails(deps, projects, today) {
+  if (deps.emails) return deps.emails;
+  var out = {};
+  var gauth;
+  try { gauth = require('../services/googleAuthService'); } catch(_) { return out; }
+  var tokens = gauth.getUserTokens ? (gauth.getUserTokens() || {}) : {};
+  var admins = (deps.roles || []).filter(function(r) { return (r.role === 'admin' || r.role === 'manager') && tokens[r.slack_user_id]; }).map(function(r) { return r.slack_user_id; });
+  var gm = admins.length && gauth.getGmailPerUtente ? gauth.getGmailPerUtente(admins[0]) : null;
+  if (!gm) return out;
+  var deadline = Date.now() + 45000;
+  for (var i = 0; i < projects.length && Date.now() < deadline; i++) {
+    var p = projects[i];
+    var client = String(p.client_name || '').trim();
+    if (client.length < 4) continue;
+    try {
+      var list = await gm.users.messages.list({ userId: 'me', maxResults: 3, q: '"' + client.replace(/"/g, '') + '" newer_than:' + VALIDITY_DAYS.email + 'd' });
+      var msgs = (list.data && list.data.messages) || [];
+      if (!msgs.length) continue;
+      var msg = await gm.users.messages.get({ userId: 'me', id: msgs[0].id, format: 'metadata', metadataHeaders: ['Subject', 'Date'] });
+      var headers = (msg.data && msg.data.payload && msg.data.payload.headers) || [];
+      var subject = (headers.find(function(h) { return h.name === 'Subject'; }) || {}).value || '';
+      var dateHdr = (headers.find(function(h) { return h.name === 'Date'; }) || {}).value;
+      var d = dateHdr && isFinite(Date.parse(dateHdr)) ? iso(Date.parse(dateHdr)) : today;
+      out[p.id] = [{ date: d > today ? today : d, subject: subject, link: 'https://mail.google.com/mail/#all/' + msgs[0].id, count: msgs.length }];
+    } catch(e) { logger.debug('[LIFECYCLE] email per ' + p.name + ' non lette:', e.message); }
   }
   return out;
 }
@@ -223,11 +334,17 @@ async function refreshLifecycle(opts) {
   projects = (projects || []).filter(function(p) { return p && p.id && !/^cat_/.test(p.id) && !p.merged_into; });
   var actions = deps.actions || await dossiers.listProjectActions({ limit: 500 });
   var calendar = await loadCalendarEvents(deps, today);
+  var billingSheet = require('./billingSheet');
+  var billingRows = deps.billing || await billingSheet.readBillingRows({ deps: { roles: roles } });
+  var channelActivity = await loadChannelActivity(deps, projects, today);
+  var emails = await loadEmails(deps, projects, today);
+  report.sources = { billing_rows: (billingRows || []).length, channels: Object.keys(channelActivity).length, emails: Object.keys(emails).length };
   var since = addDays(today, -HOURS_WINDOW_DAYS);
   for (var i = 0; i < projects.length; i++) {
     var p = projects[i];
     report.considered++;
-    var ctx = { today: today, now: now, existing: p.lifecycle_evidence || null, actions: actions, calendar: calendar };
+    var ctx = { today: today, now: now, existing: p.lifecycle_evidence || null, actions: actions, calendar: calendar,
+      billing: billingSheet.rowsForProject(billingRows, p, projects), channels: channelActivity[p.id] || [], emails: emails[p.id] || [] };
     try { ctx.docs = await dossiers.getProjectDocuments(p.id); } catch(_) { ctx.docs = []; }
     try { ctx.dossier = await dossiers.getDossier(p.id); } catch(_) { ctx.dossier = null; }
     ctx.logs = deps.logsFor ? await deps.logsFor(p.id, since) : await loadRecentLogs(supabase, p.id, since);
@@ -325,6 +442,7 @@ async function handleLifecycleButton(actionId, projectId, userId, body, deps) {
 
 function formatReport(r, applied) {
   var lines = ['*Evidenze operative* — ' + r.considered + ' progetti aperti: ' + r.activated + ' da attivare, ' + r.extended + ' evidenze da aggiornare, ' + r.proposals + ' da confermare col PM' + (applied ? ' (applicato)' : ' (anteprima)')];
+  if (r.sources) lines.push('_Fonti: ' + r.sources.billing_rows + ' righe di fatturazione, ' + r.sources.channels + ' commesse con canale attivo, ' + r.sources.emails + ' con email recenti_');
   var groups = { 'operativo': '▶️ Operativi (evidenza documentale)', 'operativo?': '❓ Probabilmente operativi: chiedo conferma', 'sospeso?': '⏸ Forse fermi', 'concluso?': '✅ Forse conclusi', 'acquisito': '📋 Acquisiti senza evidenze (restano candidati)' };
   Object.keys(groups).forEach(function(k) {
     var its = r.items.filter(function(it) { return it.state === k; });
@@ -338,7 +456,7 @@ function formatReport(r, applied) {
 }
 
 module.exports = {
-  VALIDITY_DAYS: VALIDITY_DAYS, OPEN_STATUSES: OPEN_STATUSES,
+  VALIDITY_DAYS: VALIDITY_DAYS, OPEN_STATUSES: OPEN_STATUSES, WEAK_MIN_KINDS: WEAK_MIN_KINDS, loadChannelActivity: loadChannelActivity, loadEmails: loadEmails,
   docDate: docDate, textMentionsProject: textMentionsProject, evidenceFromSources: evidenceFromSources, assess: assess,
   buildProposalBlocks: buildProposalBlocks, refreshLifecycle: refreshLifecycle, notifyProposal: notifyProposal,
   recordDecision: recordDecision, handleLifecycleButton: handleLifecycleButton, formatReport: formatReport,
