@@ -91,7 +91,9 @@ function parseTab(values) {
 // delle schede che hanno una tabella mensile (la prima è gennaio).
 function rowsFromTabs(tabs, year, sheetId) {
   var out = [];
-  var withTable = (tabs || []).map(function(t) { return { tab: t, rows: parseTab(t.values) }; }).filter(function(x) { return x.rows.length; });
+  // Conta come scheda mensile ogni scheda con l'intestazione, anche vuota:
+  // un gennaio senza righe non deve far slittare febbraio.
+  var withTable = (tabs || []).map(function(t) { return { tab: t, rows: parseTab(t.values), header: !!findHeader(t.values || []) }; }).filter(function(x) { return x.header; });
   var titled = withTable.filter(function(x) { return monthFromTitle(x.tab.title); });
   withTable.forEach(function(x, idx) {
     var m = monthFromTitle(x.tab.title) || (titled.length ? null : idx + 1);
@@ -109,9 +111,10 @@ async function pickScanner(deps) {
   var tokens = gauth.getUserTokens ? (gauth.getUserTokens() || {}) : {};
   var roles = deps.roles;
   if (!roles) { try { roles = await require('../../rbac').getAllRoles(); } catch(_) { roles = []; } }
+  // Solo admin e manager: il foglio contabile non si legge con il Google di
+  // un membro qualsiasi. Senza un token elevato non si legge affatto.
   var lead = (roles || []).filter(function(r) { return (r.role === 'admin' || r.role === 'manager') && tokens[r.slack_user_id]; }).map(function(r) { return r.slack_user_id; });
-  var picked = lead.length ? lead : Object.keys(tokens);
-  return picked[0] || null;
+  return lead[0] || null;
 }
 
 async function findSheetId(deps, year) {

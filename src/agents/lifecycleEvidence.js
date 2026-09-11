@@ -231,11 +231,24 @@ async function loadChannelActivity(deps, projects, today) {
   var app = deps.app !== undefined ? deps.app : (function() { try { return require('../services/slackService').app; } catch(_) { return null; } })();
   var out = {};
   if (!app || !app.client || !app.client.conversations) return out;
+  var loc = require('../services/projectLocations');
   var rows;
-  try { rows = await require('../services/projectLocations').loadRegistry({ deps: deps.locationDeps }); } catch(e) { return out; }
+  try { rows = await loc.loadRegistry({ deps: deps.locationDeps }); } catch(e) { return out; }
   var ids = {};
   projects.forEach(function(p) { ids[p.id] = true; });
-  var channels = (rows || []).filter(function(r) { return r.kind === 'slack_channel' && ids[r.project_id]; }).slice(0, 80);
+  // Un canale appartiene a UNA commessa: si passa dall'indice del registro
+  // (riga admin > dedotta, chan_ esatto > per nome, ambiguo → nessuno), così
+  // la stessa storia non viene accreditata a due progetti.
+  var idx = loc.index(rows || []);
+  var seen = {}, channels = [];
+  (rows || []).forEach(function(r) {
+    if (r.kind !== 'slack_channel' || seen[r.ref]) return;
+    seen[r.ref] = true;
+    var owner = loc.lookup(idx, 'slack_channel', r.ref);
+    if (!owner || !ids[owner.id]) return;
+    channels.push({ ref: r.ref, name: r.name, project_id: owner.id });
+  });
+  channels = channels.slice(0, 80);
   var oldest = String(Math.floor(Date.parse(addDays(today, -VALIDITY_DAYS.channel_activity) + 'T00:00:00Z') / 1000));
   for (var i = 0; i < channels.length; i++) {
     var ch = channels[i];

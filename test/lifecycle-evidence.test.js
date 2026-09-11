@@ -191,11 +191,19 @@ test('loadChannelActivity/loadEmails: contano solo i messaggi umani nei canali d
   var locDeps = { supabase: null, db: { getChannelMapCache: function() { return {}; } }, projects: projects, channelMap: {} };
   var loc = require('../src/services/projectLocations');
   var origLoad = loc.loadRegistry;
-  loc.loadRegistry = async function() { return [{ project_id: 'attio_1', kind: 'slack_channel', ref: 'C1', name: '#mandorle' }, { project_id: 'attio_2', kind: 'slack_channel', ref: 'C2', name: '#elios' }, { project_id: 'attio_1', kind: 'drive_folder', ref: 'F' }]; };
+  loc.loadRegistry = async function() { return [
+    { project_id: 'attio_1', kind: 'slack_channel', ref: 'C1', name: '#mandorle', source: 'channel_map', confidence: 'media' },
+    { project_id: 'attio_2', kind: 'slack_channel', ref: 'C2', name: '#elios', source: 'channel_map', confidence: 'media' },
+    // review Codex: lo stesso canale anche su un altro progetto → vince la riga admin, la storia va a UNO solo
+    { project_id: 'attio_2', kind: 'slack_channel', ref: 'C1', name: '#mandorle', source: 'admin', confidence: 'alta' },
+    { project_id: 'attio_1', kind: 'drive_folder', ref: 'F' }]; };
   try {
     var act = await lc.loadChannelActivity({ app: app, locationDeps: locDeps }, projects, TODAY);
-    assert.deepEqual(Object.keys(act), ['attio_1']);
-    assert.equal(act.attio_1[0].count, 1); assert.equal(act.attio_1[0].channel_name, 'mandorle'); assert.match(act.attio_1[0].last_on, /^2025-09-10$/);
+    assert.deepEqual(Object.keys(act), ['attio_2'], 'C1 accreditato solo al progetto della riga admin');
+    assert.equal(act.attio_2[0].count, 1); assert.equal(act.attio_2[0].channel_name, 'mandorle'); assert.match(act.attio_2[0].last_on, /^2025-09-10$/);
+    // due righe dedotte di pari rango sullo stesso canale → ambiguo → a nessuno
+    loc.loadRegistry = async function() { return [{ project_id: 'attio_1', kind: 'slack_channel', ref: 'C1', source: 'channel_map', confidence: 'media' }, { project_id: 'attio_2', kind: 'slack_channel', ref: 'C1', source: 'channel_map', confidence: 'media' }]; };
+    assert.deepEqual(await lc.loadChannelActivity({ app: app, locationDeps: locDeps }, projects, TODAY), {});
   } finally { loc.loadRegistry = origLoad; }
   assert.deepEqual(await lc.loadChannelActivity({ app: null }, projects, TODAY), {});
   assert.deepEqual(await lc.loadEmails({ roles: [] }, projects, TODAY), {}, 'senza token Gmail nessuna email');

@@ -32,6 +32,10 @@ test('rowsFromTabs: il mese dal titolo della scheda, altrimenti dall\'ordine; li
   assert.equal(titled[0].source_url, 'https://docs.google.com/spreadsheets/d/SHEET/edit#gid=9');
   var ordered = bs.rowsFromTabs([{ title: 'TOTALE', gid: 0, values: [['Uscite']] }, tab('Foglio2', 1, 'A'), tab('Foglio3', 2, 'B')], 2026, 'SHEET');
   assert.deepEqual(ordered.map(function(r) { return r.month; }), ['2026-01', '2026-02']);
+  // review Codex: un gennaio con intestazione ma senza righe non fa slittare febbraio
+  var emptyJan = { title: 'Foglio2', gid: 1, values: [HEADER_NO_DESC, ['', ''], ['', '', '', '', '']] };
+  var shifted = bs.rowsFromTabs([{ title: 'TOTALE', gid: 0, values: [['Uscite']] }, emptyJan, tab('Foglio3', 2, 'B')], 2026, 'SHEET');
+  assert.deepEqual(shifted.map(function(r) { return r.client + '@' + r.month; }), ['B@2026-02']);
 });
 
 test('readBillingRows: legge titoli e valori via Sheets API con il token di un admin; senza token o foglio → []', async function() {
@@ -43,4 +47,7 @@ test('readBillingRows: legge titoli e valori via Sheets API con il token di un a
   assert.deepEqual(calls, ['meta', "'TOTALE'!A1:Z400", "'Settembre'!A1:Z400"]);
   var none = await bs.readBillingRows({ year: 2026, force: true, deps: { sheetId: null, gauth: { getUserTokens: function() { return {}; } }, roles: [] } });
   assert.deepEqual(none, []);
+  // review Codex: il Google di un membro non basta, serve admin o manager
+  var memberOnly = { getUserTokens: function() { return { U_MEMBER: {} }; }, getDrivePerUtente: function() { throw new Error('non deve essere chiamato'); } };
+  assert.equal(await bs.findSheetId({ gauth: memberOnly, roles: [{ slack_user_id: 'U_MEMBER', role: 'member' }] }, 2026), null);
 });
