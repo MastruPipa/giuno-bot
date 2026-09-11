@@ -25,3 +25,18 @@ test('prefillFromEstimate: righe del modale dalla stima, ore ai quarti, progetto
   assert.equal(dsv2.prefillFromEstimate(null), null);
   assert.equal(dsv2.prefillFromEstimate({ oggi: [], domani: [] }), null);
 });
+
+test('respondedFromDb: chi ha una entry vera oggi conta come presente, le stime no', async function() {
+  var clientPath = require.resolve('../src/services/db/client');
+  var orig = require.cache[clientPath];
+  var fake = new Module(clientPath); fake.filename = clientPath; fake.loaded = true;
+  fake.exports = { getClient: function() { return { from: function() { return { select: function() { return { eq: function() { return { limit: async function() { return { data: [
+    { slack_user_id: 'U_GIANNA', source: 'modal' }, { slack_user_id: 'U_PAOLO', source: 'estimate' }, { slack_user_id: 'U_SAM', source: 'channel' },
+  ] }; } }; } }; } }; } }; }, useSupabase: true, logErr: function() {} };
+  require.cache[clientPath] = fake;
+  try {
+    var r = await dsv2.respondedFromDb('2026-09-10');
+    assert.deepEqual(Object.keys(r).sort(), ['U_GIANNA', 'U_SAM']);
+    assert.equal(r.U_GIANNA.fromDb, true);
+  } finally { if (orig) require.cache[clientPath] = orig; else delete require.cache[clientPath]; }
+});

@@ -539,7 +539,33 @@ la #135; (5) attività e consegne: le azioni hanno già `description_key`
 anti-duplicato, le consegne vengono dalla scheda; manca un registro
 "consegne" con stato e data proprio, da fare dopo la #135.
 
-## 19. Da fare
+## 19. Daily stimato: appello dal DB, fonti per tutti, ore sempre
+
+Segnalazione del 10/9 (Antonio): Gianna aveva compilato alle 17:16 ma alle
+18:00 era "mancante"; le stime uscivano solo per tre persone e solo dal
+calendario; Samuele aveva task senza ore.
+
+1. **Appello dal DB.** L'appello delle 18:00 e il push delle 17:30 leggevano
+   `sd.risposte`, una cache in memoria: con due istanze sovrapposte durante
+   un deploy (l'una salva, l'altra ha la copia vecchia) chi ha compilato
+   risulta assente. Ora `respondedFromDb` legge `standup_entries` del giorno
+   (source ≠ estimate) e la cache è solo un'aggiunta.
+2. **Fonti anche senza token.** Prima le fonti erano calendario ed email
+   della persona (serve il suo Google) e la ricerca Slack (serve
+   SLACK_USER_TOKEN): chi non aveva né l'uno né l'altra non aveva stima.
+   Ora il contesto di giornata, letto una volta per corsa, dà a tutti:
+   documenti su Drive creati o modificati oggi (token degli admin/manager,
+   raggruppati per ultimo autore, email o nome), messaggi e allegati nei
+   canali dove c'è Giuno (token del bot), riunioni nei calendari degli admin
+   dove la persona è invitata. Chi ha il proprio Google aggiunge il proprio
+   calendario e le email, comprese quelle inviate.
+3. **Ore sempre.** Il modello assegna una durata a ogni task (riunione =
+   calendario, documento creato 1-2h, modificato 1h, email o scambio 30 min,
+   supporto 1h, piano di ieri = pianificato); un task rimasto a 0 vale 30
+   minuti. Tetto 8h. Il numero dei messaggi non conta.
+4. In #daily, per chi resta senza stima Giuno dice che non ha trovato tracce.
+
+## 20. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

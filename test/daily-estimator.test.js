@@ -65,3 +65,65 @@ test('estimateDaily: senza tracce ritorna null senza chiamare il modello', async
   assert.equal(out, null);
   assert.equal(called, 0);
 });
+
+test('romeDayBounds: giorno di Roma con offset estivo/invernale', function() {
+  assert.deepEqual(est.romeDayBounds('2026-09-10'), { start: '2026-09-10T00:00:00+02:00', end: '2026-09-11T00:00:00+02:00', offset: '+02:00' });
+  assert.equal(est.romeDayBounds('2026-12-10').offset, '+01:00');
+});
+
+test('collectSlackChannelActivity: messaggi e allegati di oggi per autore, solo canali con Giuno, niente bot', async function() {
+  var calls = [];
+  var app = { client: { conversations: {
+    list: async function() { return { channels: [{ id: 'C1', name: 'progetto-elios', is_member: true }, { id: 'C2', name: 'altro', is_member: false }] }; },
+    history: async function(p) { calls.push(p); return { messages: [
+      { user: 'U1', text: 'inviata documentazione a Elios', ts: '1' }, { user: 'U1', subtype: 'file_share', text: '', files: [{ name: 'brief.pdf' }] },
+      { user: 'U2', bot_id: 'B1', text: 'bot' }, { user: 'U3', subtype: 'channel_join', text: 'joined' },
+    ] }; },
+  } } };
+  var by = await est.collectSlackChannelActivity(app, '2026-09-10');
+  assert.equal(calls.length, 1); assert.equal(calls[0].channel, 'C1');
+  assert.equal(calls[0].oldest, String(Date.parse('2026-09-10T00:00:00+02:00') / 1000));
+  assert.deepEqual(Object.keys(by), ['U1']);
+  assert.equal(by.U1.length, 2); assert.deepEqual(by.U1[1].files, ['brief.pdf']);
+});
+
+test('collectDriveActivity/collectAdminCalendar: output di giornata per email e nome; inviti per email', async function() {
+  var q;
+  var drives = { U_ADM: { files: { list: async function(p) { q = p.q; return { data: { files: [
+    { id: 'f1', name: 'Registro cassa OFFKATANIA', mimeType: 'application/vnd.google-apps.spreadsheet', createdTime: '2026-09-10T09:00:00Z', modifiedTime: '2026-09-10T10:30:00Z', webViewLink: 'https://d/1', lastModifyingUser: { emailAddress: 'Peppe@katania.it', displayName: 'Peppe Rossi' } },
+    { id: 'f2', name: 'Analisi comunicativa KS', mimeType: 'application/vnd.google-apps.document', createdTime: '2026-08-01T00:00:00Z', modifiedTime: '2026-09-10T15:00:00Z', lastModifyingUser: { displayName: 'Samuele Licciardello' } },
+  ] } }; } } } };
+  var r = await est.collectDriveActivity('2026-09-10', ['U_ADM', 'U_NOTOKEN'], { drives: drives });
+  assert.match(q, /modifiedTime >= '2026-09-10T00:00:00\+02:00' and modifiedTime < '2026-09-11T00:00:00\+02:00'/);
+  assert.equal(r.byEmail['peppe@katania.it'][0].created_today, true); assert.equal(r.byEmail['peppe@katania.it'][0].type, 'spreadsheet');
+  assert.equal(r.byName['samuele licciardello'][0].created_today, false);
+  var calendars = { U_ADM: { events: { list: async function() { return { data: { items: [
+    { id: 'e1', summary: 'SAL OFFKATANIA', start: { dateTime: '2026-09-10T10:00:00+02:00' }, end: { dateTime: '2026-09-10T10:30:00+02:00' }, attendees: [{ email: 'peppe@katania.it' }, { email: 'x@y.it', responseStatus: 'declined' }] },
+    { id: 'e2', summary: 'Tutto il giorno', start: { date: '2026-09-10' }, end: { date: '2026-09-11' } },
+  ] } }; } } } };
+  var ev = await est.collectAdminCalendar('2026-09-10', ['U_ADM'], { calendars: calendars });
+  assert.equal(ev.length, 1); assert.equal(ev[0].minutes, 30); assert.deepEqual(ev[0].attendees, ['peppe@katania.it']);
+});
+
+test('estimateDaily: senza token usa Drive, canali e inviti dal contesto di giornata; ogni task ha ore', async function() {
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({
+    oggi: [{ task: 'SAL OFFKATANIA', hours: 0, minutes: 30 }, { task: 'Registro uscite cassa OFFKATANIA (Sheets)', hours: 0, minutes: 0 }], domani: [], blocchi: null, confidence: 'alta', note: '',
+  }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var dayContext = {
+    users: [{ id: 'U_PEPPE', name: 'Peppe Rossi', email: 'peppe@katania.it' }],
+    slackByUser: { U_PEPPE: [{ channel: 'offkatania', text: 'caricato il registro', files: ['registro.xlsx'] }] },
+    driveByEmail: { 'peppe@katania.it': [{ name: 'Registro cassa OFFKATANIA', type: 'spreadsheet', created_today: true, modified_at: '2026-09-10T10:30:00Z' }] },
+    driveByName: {},
+    adminEvents: [{ title: 'SAL OFFKATANIA', start: '2026-09-10T10:00:00+02:00', minutes: 30, attendees: ['peppe@katania.it'] }],
+  };
+  var out = await est.estimateDaily('U_PEPPE', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext });
+  assert.ok(out);
+  assert.match(prompt, /CALENDARIO DI OGGI:\n- SAL OFFKATANIA — 30 min/);
+  assert.match(prompt, /DOCUMENTI SU DRIVE CREATI O MODIFICATI OGGI[\s\S]*Registro cassa OFFKATANIA \(spreadsheet, creato oggi alle 10:30\)/);
+  assert.match(prompt, /MESSAGGI E ALLEGATI DI OGGI NEI CANALI[\s\S]*\[#offkatania\] caricato il registro \[allegati: registro.xlsx\]/);
+  assert.deepEqual(out.estimate.sources, ['calendario (inviti)', 'documenti Drive', 'messaggi nei canali']);
+  assert.equal(out.oggi[1].minutes, 30, 'task a 0 ore → 30 min');
+  assert.equal(out.totalOggi, 1);
+});
