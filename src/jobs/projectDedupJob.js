@@ -155,7 +155,10 @@ async function applyMerge(dup, canonical, deps) {
   if (!c.useSupabase) return { moved: {}, skipped: 'no supabase' };
   var sb = c.getClient();
   var moved = {};
-  var tables = ['time_logs', 'resource_allocations', 'project_documents', 'project_actions'];
+  // Anche le attività (livello commessa → attività → microtask) seguono la
+  // commessa canonica; i task nei daily restano con l'id del duplicato e la
+  // dashboard li legge tramite merged_into.
+  var tables = ['time_logs', 'resource_allocations', 'project_documents', 'project_actions', 'project_activities'];
   for (var i = 0; i < tables.length; i++) {
     try {
       var res = await sb.from(tables[i]).update({ project_id: canonical.id }).eq('project_id', dup.id).select('id');

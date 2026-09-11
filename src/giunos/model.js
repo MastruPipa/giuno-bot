@@ -68,13 +68,16 @@ function category(text) {
   for(const [name,re] of CATEGORY_RULES) if(re.test(t)) return name;
   return 'Non classificato';
 }
-function categoryHours(logs,entries) {
+// I task del daily possono portare l'id di un duplicato unito dopo: si
+// confrontano con la commessa canonica (mappa degli alias), come i log.
+const canon=(aliases,id)=>(aliases&&aliases.get(id))||id;
+function categoryHours(logs,entries,aliases) {
   const totals=new Map();
   function add(name,h){totals.set(name,round((totals.get(name)||0)+h));}
   for(const l of logs) {
     const matches=(entries||[]).filter(e=>e.slack_user_id===l.person && e.date===l.date);
     const e=matches.length===1?matches[0]:null;
-    const tasks=e && Array.isArray(e.oggi_tasks)?e.oggi_tasks.filter(t=>t.project_id===l.project):[];
+    const tasks=e && Array.isArray(e.oggi_tasks)?e.oggi_tasks.filter(t=>canon(aliases,t.project_id)===l.project):[];
     const parts=tasks.map(t=>({category:category(t.task),hours:(parseInt(t.hours,10)||0)+(parseInt(t.minutes,10)||0)/60}));
     const sum=parts.reduce((a,t)=>a+t.hours,0);
     // Daily details are explanatory only; they must reconcile with the canonical log.
@@ -88,12 +91,12 @@ function categoryHours(logs,entries) {
 // valgono solo se il daily torna con il consuntivo, come le categorie: mai
 // ore inventate. Il resto della commessa resta "senza attività".
 const NO_ACTIVITY='__none__';
-function activityRows(logs,entries) {
+function activityRows(logs,entries,aliases) {
   const out=[];
   for(const l of logs) {
     const matches=(entries||[]).filter(e=>e.slack_user_id===l.person && e.date===l.date);
     const e=matches.length===1?matches[0]:null;
-    const tasks=e && Array.isArray(e.oggi_tasks)?e.oggi_tasks.filter(t=>t.project_id===l.project):[];
+    const tasks=e && Array.isArray(e.oggi_tasks)?e.oggi_tasks.filter(t=>canon(aliases,t.project_id)===l.project):[];
     const parts=tasks.map(t=>({activity:t.activity_id||NO_ACTIVITY,activityName:t.activity_name||null,task:String(t.task||''),hours:(parseInt(t.hours,10)||0)+(parseInt(t.minutes,10)||0)/60}));
     const sum=parts.reduce((a,t)=>a+t.hours,0);
     if(!parts.length || parts.some(t=>t.hours<0) || Math.abs(sum-l.hours)>.02 || (e.source==='estimate')!==l.estimated) { out.push({person:l.person,project:l.project,date:l.date,activity:NO_ACTIVITY,activityName:null,task:null,hours:l.hours,estimated:l.estimated}); continue; }
@@ -106,7 +109,11 @@ function activityRows(logs,entries) {
 function projectActivities(pid,rows,activities,period,today) {
   const mine=rows.filter(r=>r.project===pid);
   const defs=(activities||[]).filter(a=>a.project_id===pid && !a.recurrence);
-  const ids=new Set([...defs.filter(a=>a.status==='open' || (a.period_start && a.period_end && a.period_start<=period.end && a.period_end>=period.start)).map(a=>a.id),...mine.filter(r=>r.activity!==NO_ACTIVITY).map(r=>r.activity)]);
+  // Un'attività compare nel periodo se il suo intervallo lo tocca (un'aperta
+  // senza date sempre; il PED di settembre non compare guardando agosto) o se
+  // ha ore nel periodo.
+  const overlaps=a=>(!a.period_start || a.period_start<=period.end) && (!a.period_end || a.period_end>=period.start);
+  const ids=new Set([...defs.filter(a=>(a.status==='open' || a.period_start || a.period_end) && overlaps(a)).map(a=>a.id),...mine.filter(r=>r.activity!==NO_ACTIVITY).map(r=>r.activity)]);
   const list=[...ids].map(id=>{
     const def=defs.find(a=>a.id===id);
     const rs=mine.filter(r=>r.activity===id);
@@ -129,8 +136,8 @@ function buildSnapshot(raw,period,now=new Date()) {
   const thisWeek=periodBounds('week',today).start;
   const budgets=raw.giunos_budgets||[];
   const actions=raw.project_actions||[];
-  const activityDefs=raw.project_activities||[];
-  const actRows=activityRows(logs,raw.standup_entries);
+  const activityDefs=(raw.project_activities||[]).map(a=>({...a,project_id:canon(aliases,a.project_id)}));
+  const actRows=activityRows(logs,raw.standup_entries,aliases);
   const catalogue=(raw.projects||[]).filter(p=>!p.merged_into).map(p=>{
     const dossier=(raw.project_dossiers||[]).find(d=>d.project_id===p.id);
     const evidence=dossier?.dossier||{};
@@ -172,7 +179,7 @@ function buildSnapshot(raw,period,now=new Date()) {
       summary:evidence.stato_sintesi||null,phase:evidence.fase||null,updatedAt:dossier?.updated_at||null,
       deadlines:Array.isArray(evidence.scadenze)?evidence.scadenze:[],
       team: [...new Set(projectLogs.map(l=>l.person))],dossierTeam,
-      categories:categoryHours(projectLogs,raw.standup_entries),
+      categories:categoryHours(projectLogs,raw.standup_entries,aliases),
       ...projectActivities(p.id,actRows,activityDefs,period,today),
       documents:(raw.project_documents||[]).filter(d=>d.project_id===p.id).map(d=>({name:d.file_name,url:d.drive_link})),
       actions:projectActions.map(a=>({id:a.id,name:a.description,status:a.status,due:a.due_date,assignee:a.assignee_slack_id})),
@@ -198,9 +205,9 @@ function buildSnapshot(raw,period,now=new Date()) {
       internal:[...new Set(mine.filter(l=>String(l.project).startsWith('cat_')).map(l=>l.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,hours:hours(mine.filter(l=>l.project===pid)).total})),
       internalShare:(()=>{const tot=hours(mine).total;const int=hours(mine.filter(l=>String(l.project).startsWith('cat_'))).total;return tot?Math.round((int||0)/tot*100):null;})(),
       closed:raw.project_actions===null?null:closed.length,medianDays:median,closureSample:durations.length,
-      categories:categoryHours(mine,raw.standup_entries),
+      categories:categoryHours(mine,raw.standup_entries,aliases),
       activities:[...new Set(mine.map(l=>l.project))].map(pid=>{const pa=projectActivities(pid,actRows.filter(r=>r.person===id),activityDefs,period,today);return {project:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,activities:pa.activities.filter(a=>a.hours.total!==null).map(a=>({id:a.id,name:a.name,status:a.status,hours:a.hours,tasks:a.tasks})),unassigned:pa.unassigned,unassignedTasks:actRows.filter(r=>r.person===id&&r.project===pid&&r.activity===NO_ACTIVITY&&r.task).map(r=>({date:r.date,task:r.task,hours:r.hours,estimated:r.estimated})).sort((a,b)=>b.date.localeCompare(a.date))};}).filter(x=>x.activities.length||x.unassignedTasks.length),
-      projectCategories:Object.fromEntries([...new Set(mine.map(l=>l.project))].map(pid=>[pid,categoryHours(mine.filter(l=>l.project===pid),raw.standup_entries)])),
+      projectCategories:Object.fromEntries([...new Set(mine.map(l=>l.project))].map(pid=>[pid,categoryHours(mine.filter(l=>l.project===pid),raw.standup_entries,aliases)])),
       closureTypes:[...new Set(closed.map(a=>category(a.description)))].map(name=>{const cases=closed.filter(a=>category(a.description)===name);const values=cases.filter(a=>Date.parse(a.done_at)>=Date.parse(a.created_at)).map(a=>(Date.parse(a.done_at)-Date.parse(a.created_at))/day).sort((a,b)=>a-b);return {name,count:cases.length,medianDays:values.length?round((values[Math.floor((values.length-1)/2)]+values[Math.floor(values.length/2)])/2):null};}),
       buckets:[...buckets.values()]};
   });
@@ -228,6 +235,6 @@ function buildSnapshot(raw,period,now=new Date()) {
   const internal=catalogue.filter(p=>p.lifecycle==='interno').map(p=>({id:p.id,name:p.name,hours:p.hours,lifetime:p.lifetime,planned:p.planned,plannedPeople:p.plannedPeople,categories:p.categories,team:p.team,activities:p.activities,unassigned:p.unassigned,unassignedTasks:p.unassignedTasks})).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0));
   const internalHours=hours(logs.filter(l=>String(l.project).startsWith('cat_')));
   const clientHours=hours(logs.filter(l=>!String(l.project).startsWith('cat_')));
-  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
+  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries,aliases),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
 module.exports={CATEGORY_RULES,category,categoryHours,activityRows,projectActivities,normalizePlans,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

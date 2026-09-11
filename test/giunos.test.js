@@ -186,6 +186,16 @@ test('attività in dashboard: ore per attività solo se il daily torna con il co
  const u=s.people.find(x=>x.id==='u');
  assert.deepEqual(u.activities.map(g=>[g.project,g.activities.map(a=>[a.name,a.hours.total,a.tasks[0].task]),g.unassignedTasks.map(t=>t.task)]),[['p',[['PED settembre 2026',1.5,'caption video']],['call cliente']]]);
  assert.deepEqual(s.people.find(x=>x.id==='w').activities,[],'senza microtask niente pannello');
+ // review Codex: guardando agosto, il PED di settembre (aperto) non compare; le attività senza date sì
+ const aug=periodBounds('month','2026-08-10');
+ const paAug=projectActivities('p',[],acts.concat([{id:'act_free',project_id:'p',name:'Continuativa',status:'open'}]),aug,'2026-09-10');
+ assert.deepEqual(paAug.activities.map(a=>a.id).sort(),['act_free','act_late','act_old'],'settembre escluso, agosto chiuso e landing (15/8→5/9) inclusi, senza date inclusa');
+ // review Codex: dopo un merge i task e le attività del duplicato seguono la commessa canonica
+ const merged=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',status:'active'},{id:'dup',name:'Gambino',status:'merged',merged_into:'p'}],
+  time_logs:[log({project_id:'dup',hours:2})],standup_entries:[{slack_user_id:'u',date:'2026-09-08',source:'modal',oggi_tasks:[{task:'caption video',hours:2,project_id:'dup',activity_id:'act_dup'}]}],
+  project_activities:[{id:'act_dup',project_id:'dup',name:'PED settembre',status:'open',period_start:'2026-09-01',period_end:'2026-09-30'}],team_members:[{slack_user_id:'u',canonical_name:'Giusy'}]}),period,now);
+ assert.deepEqual(merged.projects[0].activities.map(a=>[a.id,a.name,a.hours.total]),[['act_dup','PED settembre',2]]);assert.equal(merged.projects[0].unassigned.total,null);
+ assert.deepEqual(merged.projects[0].categories,[{name:'Video e foto',hours:2}],'anche le categorie leggono i task tramite l\'alias');
  // senza tabella project_activities: le attività nominate nei daily compaiono comunque, per nome
  const s2=buildSnapshot(raw({projects:[{id:'p',name:'Gambino Social',status:'active'}],time_logs:logs,standup_entries:entries,project_activities:null}),period,now);
  assert.deepEqual(s2.projects[0].activities.map(a=>[a.id,a.name,a.status]),[['act_ped9','PED settembre 2026','sconosciuta']]);
