@@ -133,3 +133,15 @@ test('review Codex: evidenza scaduta → sospeso? anche se la sync ha già ripor
   assert.equal(r.items[0].applied, false); assert.match(r.items[0].error, /null/);
   assert.match(lc.formatReport(r, true), /⚠️ non scritto/);
 });
+
+test('pianificazione settimanale: con il permalink del recap è evidenza (settimana + 7), senza link è un indizio che fa chiedere al PM', function() {
+  var withLink = { today: TODAY, logs: [{ log_type: 'weekly', log_date: '2026-09-14', hours: 6, notes: 'weekly planner · https://katania.slack.com/archives/C1/p1' }] };
+  var ev = lc.evidenceFromSources(prj(), withLink);
+  assert.equal(ev[0].kind, 'weekly_plan'); assert.equal(ev[0].observed_on, TODAY, 'la settimana è futura: osservata oggi'); assert.equal(ev[0].valid_until, '2026-09-27');
+  var a = lc.assess(prj(), ev, withLink);
+  assert.equal(a.state, 'operativo'); assert.equal(a.evidence.kind, 'weekly_plan');
+  assert.equal(scope.hasActiveEvidence({ lifecycle_evidence: a.evidence }, TODAY), true);
+  var noLink = { today: TODAY, logs: [{ log_type: 'weekly', log_date: '2026-09-07', hours: 6, notes: 'weekly planner' }] };
+  var b = lc.assess(prj(), lc.evidenceFromSources(prj(), noLink), noLink);
+  assert.equal(b.state, 'operativo?'); assert.match(b.reason, /pianificate 6h[\s\S]*senza recap/);
+});

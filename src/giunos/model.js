@@ -29,6 +29,19 @@ function normalizeLogs(rows) {
   }
   return [...unique.values()].map(r=>({person:r.slack_user_id,project:r.project_id,date:r.log_date,hours:Number(r.hours),estimated:r.validation?.status==='estimate'}));
 }
+// Pianificazione settimanale (log_type=weekly, log_date=lunedì): ore che la
+// persona ha DICHIARATO di voler dedicare. Mai sommate alle registrate.
+function normalizePlans(rows) {
+  const unique=new Map();
+  for(const r of rows||[]) {
+    if(r.log_type!=='weekly' || !validDate(r.log_date) || !r.project_id || !r.slack_user_id || !Number.isFinite(Number(r.hours)) || Number(r.hours)<0) continue;
+    const key=JSON.stringify([r.slack_user_id,r.project_id,r.log_date]);
+    const prior=unique.get(key);
+    if(!prior || String(r.updated_at||'')>=String(prior.updated_at||'')) unique.set(key,r);
+  }
+  return [...unique.values()].map(r=>({person:r.slack_user_id,project:r.project_id,week:r.log_date,hours:Number(r.hours)}));
+}
+function planned(rows){return rows.length?round(rows.reduce((s,r)=>s+r.hours,0)):null;}
 function budgetFor(rows,pid,person,start,end) {
   const candidates=rows.filter(b=>b.scope!=='project' && b.project_id===pid && (b.slack_user_id||null)===(person||null) && b.verified===true && b.period_start===start && b.period_end===end && b.source_url && b.hours!==null && Number.isFinite(Number(b.hours)) && Number(b.hours)>=0);
   // Conflicting baselines must never be silently resolved by recency.
@@ -75,6 +88,10 @@ function buildSnapshot(raw,period,now=new Date()) {
   const aliases=new Map((raw.projects||[]).filter(p=>p.merged_into).map(p=>[p.id,p.merged_into]));
   const allLogs=normalizeLogs(raw.time_logs||[]).filter(r=>r.date<=today).map(r=>({...r,project:aliases.get(r.project)||r.project}));
   const logs=allLogs.filter(r=>r.date>=period.start && r.date<=cutoff);
+  // Piani delle settimane che iniziano nel periodo (anche future, entro il periodo)
+  const allPlans=normalizePlans(raw.time_logs||[]).map(r=>({...r,project:aliases.get(r.project)||r.project}));
+  const plans=allPlans.filter(r=>r.week>=periodBounds('week',period.start).start && r.week<=period.end);
+  const thisWeek=periodBounds('week',today).start;
   const budgets=raw.giunos_budgets||[];
   const actions=raw.project_actions||[];
   const catalogue=(raw.projects||[]).filter(p=>!p.merged_into).map(p=>{
@@ -83,6 +100,7 @@ function buildSnapshot(raw,period,now=new Date()) {
     const b=budgetFor(budgets,p.id,null,period.start,period.end);
     const projectLogs=logs.filter(l=>l.project===p.id);
     const used=hours(projectLogs);
+    const projectPlans=plans.filter(r=>r.project===p.id);
     const wholeRows=budgets.filter(b=>b.scope==='project' && b.project_id===p.id && !b.slack_user_id && b.source_url && validDate(b.period_start) && validDate(b.period_end) && b.hours!==null && Number.isFinite(Number(b.hours)) && Number(b.hours)>=0);
     const whole=wholeRows.filter(b=>b.verified===true);
     const wholeBudget=whole.length===1?whole[0]:null;
@@ -112,7 +130,7 @@ function buildSnapshot(raw,period,now=new Date()) {
       evidence:p.lifecycle_evidence&&p.lifecycle_evidence.valid_until?{kind:p.lifecycle_evidence.kind||null,validUntil:p.lifecycle_evidence.valid_until,detail:p.lifecycle_evidence.detail||null}:null,
       wholeBudget:wholeBudget?{hours:Number(wholeBudget.hours),source:wholeBudget.source_url,start:wholeBudget.period_start,end:wholeBudget.period_end,used:wholeUsed}:null,
       sold,soldConflict:!!soldConflict,
-      hours:used,budget:b,overrun:b&&used.total!==null?round(used.total-b.hours):null,
+      hours:used,planned:planned(projectPlans),plannedPeople:[...new Set(projectPlans.map(r=>r.person))],budget:b,overrun:b&&used.total!==null?round(used.total-b.hours):null,
       lifetime:hours(allLogs.filter(l=>l.project===p.id)),deliveries:details,deliveryCounts,milestones,blocks,nextSteps,
       summary:evidence.stato_sintesi||null,phase:evidence.fase||null,updatedAt:dossier?.updated_at||null,
       deadlines:Array.isArray(evidence.scadenze)?evidence.scadenze:[],
@@ -128,6 +146,7 @@ function buildSnapshot(raw,period,now=new Date()) {
   const people=[...peopleIds].map(id=>{
     const member=(raw.team_members||[]).find(m=>m.slack_user_id===id);
     const mine=logs.filter(l=>l.person===id);
+    const myPlans=plans.filter(r=>r.person===id);
     const closed=actions.filter(a=>a.assignee_slack_id===id && a.status==='done' && a.done_at && a.done_at.slice(0,10)>=period.start && a.done_at.slice(0,10)<=cutoff);
     const durations=closed.filter(a=>validDate(a.created_at?.slice(0,10)) && Date.parse(a.done_at)>=Date.parse(a.created_at)).map(a=>(Date.parse(a.done_at)-Date.parse(a.created_at))/day).sort((a,b)=>a-b);
     const median=durations.length ? round((durations[Math.floor((durations.length-1)/2)]+durations[Math.floor(durations.length/2)])/2):null;
@@ -135,6 +154,8 @@ function buildSnapshot(raw,period,now=new Date()) {
     for(let d=new Date(period.start);iso(d)<=cutoff;d=new Date(d.getTime()+day)) {const key=period.kind==='week'?iso(d):periodBounds('week',iso(d)).start;buckets.set(key,{date:key,hours:null,projects:{}});}
     mine.forEach(l=>{const key=period.kind==='week'?l.date:periodBounds('week',l.date).start;const bucket=buckets.get(key);if(bucket){bucket.hours=round((bucket.hours||0)+l.hours);bucket.projects[l.project]=round((bucket.projects[l.project]||0)+l.hours);}});
     return {id,name:member?.canonical_name||id,role:member?.role||null,hours:hours(mine),
+      planned:planned(myPlans),plannedProjects:[...new Set(myPlans.map(r=>r.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,hours:planned(myPlans.filter(r=>r.project===pid))})),
+      plannedThisWeek:planned(allPlans.filter(r=>r.person===id&&r.week===thisWeek)),
       projects:[...new Set(mine.map(l=>l.project))].map(pid=>{const ph=hours(mine.filter(l=>l.project===pid));const tot=hours(mine).total;return {id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,status:(raw.projects||[]).find(p=>p.id===pid)?.status||'unknown',hours:ph,share:tot&&ph.total!==null?Math.round(ph.total/tot*100):null,budget:budgetFor(budgets,pid,id,period.start,period.end)};}).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0)),
       internal:[...new Set(mine.filter(l=>String(l.project).startsWith('cat_')).map(l=>l.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,hours:hours(mine.filter(l=>l.project===pid)).total})),
       internalShare:(()=>{const tot=hours(mine).total;const int=hours(mine.filter(l=>String(l.project).startsWith('cat_'))).total;return tot?Math.round((int||0)/tot*100):null;})(),
@@ -165,9 +186,9 @@ function buildSnapshot(raw,period,now=new Date()) {
       blocks:ps.reduce((s,p)=>s+p.blocks.length,0),overdue:ps.reduce((s,p)=>s+p.overdueActions+p.milestones.filter(m=>m.overdue).length,0)};})
     .sort((a,b)=>((b.hours.total||0)-(a.hours.total||0))||a.name.localeCompare(b.name));
   // Interno: le attività trasversali (cat_*), sempre visibili, senza venduto.
-  const internal=catalogue.filter(p=>p.lifecycle==='interno').map(p=>({id:p.id,name:p.name,hours:p.hours,categories:p.categories,team:p.team})).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0));
+  const internal=catalogue.filter(p=>p.lifecycle==='interno').map(p=>({id:p.id,name:p.name,hours:p.hours,lifetime:p.lifetime,planned:p.planned,plannedPeople:p.plannedPeople,categories:p.categories,team:p.team})).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0));
   const internalHours=hours(logs.filter(l=>String(l.project).startsWith('cat_')));
   const clientHours=hours(logs.filter(l=>!String(l.project).startsWith('cat_')));
-  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
+  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
-module.exports={CATEGORY_RULES,category,categoryHours,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};
+module.exports={CATEGORY_RULES,category,categoryHours,normalizePlans,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

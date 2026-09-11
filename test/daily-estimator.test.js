@@ -243,3 +243,16 @@ test('calendario: riunioni senza cliente vanno alle attività trasversali, con i
   assert.match(prompt, /- Meeting KatiaMP - The new dawn — 30 min, 1 partecipanti\n/);
   assert.match(prompt, /riunione "Daily meeting team" \[progetto: Daily e riunioni di team\]/);
 });
+
+test('review Codex: una riunione che nomina un cliente va al cliente, non alle attività interne', async function() {
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'x', hours: 1 }], domani: [], blocchi: null, confidence: 'alta' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var catalog = [{ id: 'attio_1', name: 'Elios', norm: 'elios', norms: ['elios'], client: null }, { id: 'attio_2', name: 'Sito', norm: 'sito', norms: ['sito'], client: 'acme' }];
+  var dayContext = { users: [{ id: 'U1', name: 'Paolo', email: 'paolo@k.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, figmaByEmail: {}, figmaByName: {}, figmaEvents: { byEmail: {}, byName: {} },
+    adminEvents: [{ title: 'Riunione con Antonio per Elios', start: '2026-09-10T09:00:00+02:00', minutes: 30, attendees: ['paolo@k.it'] }, { title: 'Preventivo Acme', start: '2026-09-10T11:00:00+02:00', minutes: 30, attendees: ['paolo@k.it'] }, { title: 'Riunione di management', start: '2026-09-10T15:00:00+02:00', minutes: 60, attendees: ['paolo@k.it'] }] };
+  await est.estimateDaily('U1', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null, catalog: catalog });
+  assert.match(prompt, /Riunione con Antonio per Elios — 30 min, 1 partecipanti \[progetto: Elios\]/);
+  assert.match(prompt, /Preventivo Acme — 30 min, 1 partecipanti \[progetto: Sito\]/);
+  assert.match(prompt, /Riunione di management — 60 min, 1 partecipanti \[progetto: Management e direzione\]/);
+});

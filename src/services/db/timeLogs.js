@@ -182,6 +182,20 @@ async function upsertWeeklyAllocation(slackUserId, projectId, weekStart, hours) 
   } catch(e) { c.logErr('upsertWeeklyAllocation', e); return null; }
 }
 
+// Il recap pubblico della pianificazione (post in #weekly) è la traccia
+// datata e linkabile del piano: il permalink finisce nelle note delle righe
+// weekly di quella settimana, così il piano vale come evidenza operativa.
+async function annotateWeeklyPlans(weekStart, permalink) {
+  if (!c.useSupabase || !permalink) return 0;
+  try {
+    var res = await c.getClient().from('time_logs')
+      .update({ notes: 'weekly planner · ' + permalink })
+      .eq('log_type', 'weekly').eq('log_date', weekStart).select('id');
+    if (res.error) throw res.error;
+    return (res.data || []).length;
+  } catch(e) { c.logErr('annotateWeeklyPlans', e); return 0; }
+}
+
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
 // Tutti i log di una settimana (entrambi i tipi), con nome progetto.
@@ -238,6 +252,7 @@ async function getLogsInRange(dateFrom, dateTo) {
 }
 
 module.exports = {
+  annotateWeeklyPlans: annotateWeeklyPlans,
   saveTimeLogs: saveTimeLogs,
   replaceTimeLogs: replaceTimeLogs,
   getLogsForUserDate: getLogsForUserDate,

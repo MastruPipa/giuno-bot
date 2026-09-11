@@ -56,3 +56,15 @@ test('dedup: due deal Attio dello stesso cliente restano commesse distinte; cana
   var one = dedup.findDuplicateGroups([a, c]);
   assert.equal(one.length, 1); assert.deepEqual(one[0].projects.map(function(p) { return p.id; }).sort(), ['attio_1', 'chan_C1']); assert.deepEqual(one[0].reasons, ['stesso cliente']);
 });
+
+test('review Codex: un task che nomina solo il cliente non diventa interno (una commessa → quella; più commesse → al modello)', function() {
+  var catalog = [
+    { id: 'attio_1', name: 'Website refresh', norm: 'website refresh', norms: ['website refresh'], client: 'acme' },
+    { id: 'attio_2', name: 'Campagna', norm: 'campagna', norms: ['campagna'], client: 'globex' },
+    { id: 'attio_3', name: 'Video', norm: 'video', norms: ['video'], client: 'globex' },
+    { id: 'cat_riunioni_team', name: 'Daily e riunioni di team', norm: 'daily e riunioni di team', norms: ['daily e riunioni di team'], client: null },
+  ];
+  assert.equal(matcher.resolveTask('Daily interno Acme', catalog).id, 'attio_1');
+  assert.equal(matcher.resolveTask('Daily interno Globex', catalog), null, 'due commesse dello stesso cliente: decide il modello, non è interno');
+  assert.equal(matcher.resolveTask('Daily team', catalog).id, 'cat_riunioni_team');
+});

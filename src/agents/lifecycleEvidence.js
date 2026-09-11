@@ -10,6 +10,9 @@
 //   • azioni aperte emerse dalle call, con link alla fonte    → fino a scadenza + 14
 //   • riunioni in calendario con il nome del progetto/cliente → fino al giorno + 7
 //   • decisione esplicita di admin/PM (bottone o comando)     → 60 giorni
+//   • pianificazione settimanale con il permalink del recap    → settimana + 7
+//     (stesso criterio del planner: si pianifica su ciò che è operativo, e
+//     pianificare su un acquisito lo rende operativo)
 // Le ore dichiarate nel daily sono un indizio, non una prova: se sono l'unica
 // cosa che c'è, Giuno CHIEDE al PM (o agli admin) con tre bottoni e la
 // risposta diventa l'evidenza (permalink Slack). Il volume dei messaggi nei
@@ -20,10 +23,10 @@
 
 var logger = require('../utils/logger');
 
-var VALIDITY_DAYS = { kickoff: 90, recap: 30, admin: 60, calendar: 7, action_open: 14 };
+var VALIDITY_DAYS = { kickoff: 90, recap: 30, admin: 60, calendar: 7, action_open: 14, weekly_plan: 13 };
 var HOURS_WINDOW_DAYS = 21;
 var HOURS_MIN_DAYS = 2;
-var PRIMARY = { kickoff: true, recap: true, action_open: true, calendar: true, admin: true };
+var PRIMARY = { kickoff: true, recap: true, action_open: true, calendar: true, admin: true, weekly_plan: true };
 var OPEN_STATUSES = ['active', 'planning', 'on_hold'];
 
 function _db() { return require('../../supabase'); }
@@ -84,6 +87,15 @@ function evidenceFromSources(project, ctx) {
   if (ex && ex.kind === 'admin' && ex.state === 'active' && isHttps(ex.source_url) && isDate(ex.observed_on) && isDate(ex.valid_until)) {
     out.push({ kind: 'admin', observed_on: ex.observed_on, valid_until: ex.valid_until, source_url: ex.source_url, detail: 'confermato da ' + (ex.decided_by || 'admin') });
   }
+  // Pianificazione settimanale: con il permalink del recap è una prova
+  // (il PM/la persona dichiara lavoro da fare); senza link resta un indizio.
+  (ctx.logs || []).forEach(function(l) {
+    if (l.log_type !== 'weekly' || !(Number(l.hours) > 0) || !isDate(l.log_date) || l.log_date > addDays(today, 7)) return;
+    var m = /(https:\/\/\S+)/.exec(String(l.notes || ''));
+    var observed = l.log_date > today ? today : l.log_date;
+    if (m) out.push({ kind: 'weekly_plan', observed_on: observed, valid_until: addDays(l.log_date, VALIDITY_DAYS.weekly_plan), source_url: m[1], detail: 'pianificate ' + Number(l.hours) + 'h nella settimana del ' + l.log_date });
+    else out.push({ kind: 'plan_declared', observed_on: observed, valid_until: addDays(l.log_date, VALIDITY_DAYS.weekly_plan), source_url: null, detail: 'pianificate ' + Number(l.hours) + 'h nella settimana del ' + l.log_date + ' (senza recap)' });
+  });
   // Ore dichiarate (non stimate) su almeno HOURS_MIN_DAYS giorni distinti
   var days = {};
   (ctx.logs || []).forEach(function(l) {
@@ -110,7 +122,7 @@ function assess(project, evidences, ctx) {
   var valid = evidences.filter(function(e) { return isDate(e.observed_on) && isDate(e.valid_until) && e.observed_on <= today && today <= e.valid_until; });
   var primary = valid.filter(function(e) { return PRIMARY[e.kind] && isHttps(e.source_url); })
     .sort(function(a, b) { return b.valid_until.localeCompare(a.valid_until); });
-  var hours = valid.find(function(e) { return e.kind === 'hours_declared'; });
+  var hours = valid.find(function(e) { return e.kind === 'hours_declared' || e.kind === 'plan_declared'; });
   var imported = /^(attio_|chan_)/.test(String(project.id)) || (project.tags || []).some(function(t) { return t === 'attio-sync' || t === 'channel-sync'; });
   var closedPhase = /chiuso|conclus|complet/i.test(hints.fase || '');
   var stoppedPhase = /fermo|sospes|stand-?by/i.test(hints.fase || '');
@@ -173,7 +185,7 @@ async function loadCalendarEvents(deps, today) {
 async function loadRecentLogs(supabase, projectId, since) {
   if (!supabase) return [];
   try {
-    var res = await supabase.from('time_logs').select('slack_user_id, log_date, log_type, hours, validation').eq('project_id', projectId).gte('log_date', since).limit(500);
+    var res = await supabase.from('time_logs').select('slack_user_id, log_date, log_type, hours, validation, notes').eq('project_id', projectId).gte('log_date', since).limit(500);
     return res.error ? [] : (res.data || []);
   } catch(_) { return []; }
 }

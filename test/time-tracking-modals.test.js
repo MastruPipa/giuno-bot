@@ -252,3 +252,20 @@ test('check-in: nessun dispatch e nessun campo Altro (solo planner)', function()
   var select = blocks.find(function(b) { return b.block_id === 'tt_project_1'; });
   assert.equal(select.dispatch_action, undefined);
 });
+
+test('planner: le opzioni seguono lo stesso criterio di presenza della dashboard (operative per cliente, acquisite, interno)', function() {
+  var modals = require('../src/handlers/timeTrackingModals');
+  var projects = [
+    { id: 'attio_2', name: 'Sito', client_name: 'Beta Srl', status: 'active', tags: ['attio-sync', 'sales:won'], lifecycle_evidence: { state: 'active', source_url: 'https://d/k', observed_on: '2000-01-01', valid_until: '2099-12-31' } },
+    { id: 'attio_1', name: 'Landing', client_name: 'Alfa', status: 'planning', tags: ['attio-sync', 'sales:won'] },
+    { id: 'prj_3', name: 'Mandorle', status: 'active' },
+    { id: 'cat_riunioni_team', name: 'Daily e riunioni di team', client_name: 'Interno', status: 'active' },
+    { id: 'prj_4', name: 'Fermo', status: 'on_hold' },
+  ];
+  assert.equal(modals.projectLifecycle(projects[0]), 'operativo'); assert.equal(modals.projectLifecycle(projects[1]), 'acquisito');
+  assert.equal(modals.projectLifecycle(projects[2]), 'operativo'); assert.equal(modals.projectLifecycle(projects[3]), 'interno'); assert.equal(modals.projectLifecycle(projects[4]), 'sospeso');
+  var src = modals.buildProjectSelectSource(projects);
+  assert.deepEqual(src.option_groups.map(function(g) { return g.label.text; }), ['Commesse operative', 'Acquisite · da confermare', 'Sospese', 'Interno · attività trasversali', 'Altro']);
+  assert.deepEqual(src.option_groups[0].options.map(function(o) { return o.text.text; }), ['Beta Srl · Sito', 'Mandorle']);
+  assert.deepEqual(src.option_groups[1].options.map(function(o) { return o.text.text; }), ['Alfa · Landing']);
+});

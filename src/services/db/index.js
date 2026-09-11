@@ -201,6 +201,7 @@ module.exports = {
   saveTimeLogs:              timeLogs.saveTimeLogs,
   replaceTimeLogs:           timeLogs.replaceTimeLogs,
   getLogsForUserDate:        timeLogs.getLogsForUserDate,
+  annotateWeeklyPlans:       timeLogs.annotateWeeklyPlans,
   getUsersWithDailyLog:      timeLogs.getUsersWithDailyLog,
   getWeekActuals:            timeLogs.getWeekActuals,
   getWeekPlanned:            timeLogs.getWeekPlanned,
