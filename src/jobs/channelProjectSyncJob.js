@@ -1,15 +1,5 @@
-// ─── Channel Project Sync Job ──────────────────────────────────────────────
-// Sincronizza i canali Slack ATTIVI (≥1 messaggio negli ultimi ~60 giorni)
-// nella tabella projects, così la casella progetti del weekly planner/check-in
-// include anche clienti storici e progetti interni che NON sono su Attio.
-//
-// Mappatura: ogni canale attivo presente in channel_map → progetto attivo con
-// id 'chan_<channel_id>' e tag 'channel-sync' + tipologia (tipo:cliente |
-// tipo:progetto | tipo:interno) dedotta dai tag del canale. I progetti interni
-// entrano "per nome" (uno per canale interno), non in un bucket unico.
-//
-// Dedup: un canale il cui cliente/nome coincide (normalizzato) con un progetto
-// 'attio_%' attivo viene saltato — Attio è autorevole per quel cliente.
+// Discover project candidates from Slack; channel activity never proves a sale
+// or that the associated work is still in progress.
 'use strict';
 
 var logger = require('../utils/logger');
@@ -58,7 +48,7 @@ async function syncProjectsFromChannels() {
   }
 
   // Progetti Attio attivi per il dedup (Attio è autorevole per quei clienti).
-  var activeProjects = await db.searchProjects({ status: 'active', limit: 200 });
+  var activeProjects = await db.searchProjects({ limit: 200 });
   var attioNames = attioNameSet(activeProjects);
 
   var activeIds = [];
@@ -97,7 +87,7 @@ async function syncProjectsFromChannels() {
       id: 'chan_' + channelId,
       name: name.substring(0, 200),
       client_name: entry.cliente ? String(entry.cliente).substring(0, 200) : null,
-      status: 'active',
+      status: 'planning',
       tags: ['channel-sync', type],
     };
     activeIds.push(row.id);

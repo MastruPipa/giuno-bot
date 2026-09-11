@@ -2,7 +2,7 @@
 // Server-only, SELECT-only adapter. No Slack jobs, model calls or database writes.
 const columns={
   standup_entries:'slack_user_id,date,oggi_tasks,source',
-  projects:'id,name,client_name,status,owner_slack_id,merged_into',
+  projects:'id,name,client_name,status,owner_slack_id,merged_into,tags,lifecycle_evidence',
   team_members:'slack_user_id,canonical_name,role,active',
   time_logs:'slack_user_id,project_id,log_date,log_type,hours,validation,updated_at',
   project_dossiers:'project_id,dossier,updated_at',

@@ -1,4 +1,5 @@
 'use strict';
+const {isActiveProject} = require('./projectScope');
 const day = 86400000;
 const iso = d => d.toISOString().slice(0,10);
 function validDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s)) && iso(new Date(s)) === s; }
@@ -64,8 +65,7 @@ function buildSnapshot(raw,period,now=new Date()) {
   const logs=allLogs.filter(r=>r.date>=period.start && r.date<=cutoff);
   const budgets=raw.giunos_budgets||[];
   const actions=raw.project_actions||[];
-  const active=(raw.projects||[]).filter(p=>!p.merged_into);
-  const projects=active.map(p=>{
+  const catalogue=(raw.projects||[]).filter(p=>!p.merged_into).map(p=>{
     const dossier=(raw.project_dossiers||[]).find(d=>d.project_id===p.id);
     const evidence=dossier?.dossier||{};
     const b=budgetFor(budgets,p.id,null,period.start,period.end);
@@ -87,6 +87,8 @@ function buildSnapshot(raw,period,now=new Date()) {
       documents:(raw.project_documents||[]).filter(d=>d.project_id===p.id).map(d=>({name:d.file_name,url:d.drive_link})),
       actions:actions.filter(a=>a.project_id===p.id).map(a=>({id:a.id,name:a.description,status:a.status,due:a.due_date,assignee:a.assignee_slack_id}))};
   });
+  const activeIds=new Set((raw.projects||[]).filter(p=>isActiveProject(p,today)).map(p=>p.id));
+  const projects=catalogue.filter(p=>activeIds.has(p.id));
   const peopleIds=new Set([...(raw.team_members||[]).filter(m=>m.active!==false).map(m=>m.slack_user_id),...logs.map(l=>l.person)]);
   const people=[...peopleIds].map(id=>{
     const member=(raw.team_members||[]).find(m=>m.slack_user_id===id);
@@ -98,7 +100,7 @@ function buildSnapshot(raw,period,now=new Date()) {
     for(let d=new Date(period.start);iso(d)<=cutoff;d=new Date(d.getTime()+day)) {const key=period.kind==='week'?iso(d):periodBounds('week',iso(d)).start;buckets.set(key,{date:key,hours:null,projects:{}});}
     mine.forEach(l=>{const key=period.kind==='week'?l.date:periodBounds('week',l.date).start;const bucket=buckets.get(key);if(bucket){bucket.hours=round((bucket.hours||0)+l.hours);bucket.projects[l.project]=round((bucket.projects[l.project]||0)+l.hours);}});
     return {id,name:member?.canonical_name||id,role:member?.role||null,hours:hours(mine),
-      projects:[...new Set(mine.map(l=>l.project))].map(pid=>({id:pid,name:projects.find(p=>p.id===pid)?.name||pid,hours:hours(mine.filter(l=>l.project===pid)),budget:budgetFor(budgets,pid,id,period.start,period.end)})),
+      projects:[...new Set(mine.map(l=>l.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,status:(raw.projects||[]).find(p=>p.id===pid)?.status||'unknown',hours:hours(mine.filter(l=>l.project===pid)),budget:budgetFor(budgets,pid,id,period.start,period.end)})),
       closed:raw.project_actions===null?null:closed.length,medianDays:median,closureSample:durations.length,
       categories:categoryHours(mine,raw.standup_entries),
       projectCategories:Object.fromEntries([...new Set(mine.map(l=>l.project))].map(pid=>[pid,categoryHours(mine.filter(l=>l.project===pid),raw.standup_entries)])),
@@ -107,6 +109,6 @@ function buildSnapshot(raw,period,now=new Date()) {
   });
   const alerts=projects.filter(p=>p.overrun>0).map(p=>({project:p.id,title:p.name+' · oltre budget',detail:round(p.overrun)+' h oltre le ore vendute nel periodo'}));
   projects.filter(p=>p.phase==='in attesa cliente').forEach(p=>alerts.push({project:p.id,title:p.name+' · attesa cliente',detail:'Stato ricostruito dal dossier di progetto'}));
-  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:raw.warnings||[],projects,people,alerts:alerts.slice(0,3),hours:hours(logs)};
+  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...((raw.projects||[]).some(p=>!p.merged_into && ['active','planning'].includes(p.status) && /^(attio_|chan_)/.test(p.id) && !isActiveProject(p,today))?['Alcuni progetti importati sono da verificare e non sono conteggiati tra gli attivi. Le ore storiche restano incluse nei consuntivi.']:[])],projects,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)),people,alerts:alerts.slice(0,3),hours:hours(logs)};
 }
 module.exports={category,categoryHours,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

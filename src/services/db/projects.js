@@ -68,8 +68,12 @@ async function upsertSyncedProject(row) {
   if (!c.useSupabase) return null;
   try {
     // Un duplicato unito a un altro progetto non va resuscitato dalla sync.
-    var existing = await c.getClient().from('projects').select('id, status').eq('id', row.id).maybeSingle();
-    if (existing && existing.data && existing.data.status === 'merged') return existing.data;
+    var existing = await c.getClient().from('projects').select('id, status, lifecycle_evidence').eq('id', row.id).maybeSingle();
+    if (existing.error) throw existing.error;
+    if (existing.data && ['merged', 'completed', 'cancelled', 'on_hold', 'archived'].includes(existing.data.status)) return existing.data;
+    // Source imports may discover a project, but cannot decide its lifecycle.
+    if (existing.data && existing.data.status === 'active' &&
+        require('../../giunos/projectScope').hasActiveEvidence(existing.data)) row.status = 'active';
     row.updated_at = new Date().toISOString();
     var res = await c.getClient().from('projects').upsert(row, { onConflict: 'id' }).select().single();
     if (res.error) throw res.error;
@@ -96,7 +100,7 @@ async function archiveStaleSyncedProjects(prefix, activeIds) {
     var res = await q.select('id');
     if (res.error) throw res.error;
     return (res.data || []).length;
-  } catch(e) { c.logErr('archiveStaleSyncedProjects', e); return 0; }
+  } catch(e) { c.logErr('archiveStaleSyncedProjects', e); throw e; }
 }
 
 // Slot fissi "mondo agency" (Prospect, Flussi interni, Formazione/Admin):

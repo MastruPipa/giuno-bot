@@ -1,80 +1,18 @@
-// ─── Project Sync Job ──────────────────────────────────────────────────────
-// Sincronizza i deal Attio "in lavorazione" nella tabella projects di Supabase,
-// così la casella progetti del weekly planner (e gli altri consumatori di
-// searchProjects) riflette i progetti realmente attivi senza inserimento
-// manuale. Attio è il CRM di riferimento; questa tabella ne è una proiezione.
-//
-// Mappatura: deal con stage ∈ ACTIVE_STAGES → progetto attivo. I progetti
-// sincronizzati hanno id 'attio_<record_id>' e tag 'attio-sync', così non
-// collidono con quelli creati a mano e possono essere archiviati quando il
-// deal esce dagli stage attivi.
+// Import won deals as candidates; operational lifecycle is verified separately.
 'use strict';
 
 var logger = require('../utils/logger');
 var attio = require('../services/attioService');
 var db = require('../../supabase');
-var slackService = require('../services/slackService');
 var filters = require('./projectFilters');
 
-// Stage dei deal che corrispondono a progetti attivi. Deciso con il team:
-// Contratto e In Progress (in lavorazione) + Won (firmati/in consegna) — un
-// deal che passa a Contratto e poi a Won deve restare tra i progetti.
-// Il match è per SOTTOSTRINGA perché lo stage reale può contenere emoji o
-// suffissi (es. "Won 🎉"), quindi un confronto esatto fallirebbe.
-var ACTIVE_STAGES = ['contratto', 'in progress', 'won'];
-
+// Only a completed sale enters the project catalogue. Operational activity
+// needs separate evidence; the CRM pipeline does not track project completion.
+var ACTIVE_STAGES = ['won', 'won 🎉'];
 function firstOf(v) { return Array.isArray(v) ? v[0] : v; }
-
-function normStage(s) {
-  s = firstOf(s);
-  return s == null ? '' : String(s).toLowerCase().trim();
-}
-
-// Attivo se lo stage normalizzato CONTIENE una delle keyword attive.
-function isActiveStage(stage) {
-  var n = normStage(stage);
-  if (!n) return false;
-  for (var i = 0; i < ACTIVE_STAGES.length; i++) {
-    if (n.indexOf(ACTIVE_STAGES[i]) !== -1) return true;
-  }
-  return false;
-}
-
-// I Won non hanno una data di attività affidabile su Attio (import in blocco),
-// quindi vengono "gateati" sull'attività del canale Slack del cliente.
-function isWonStage(stage) {
-  return normStage(stage).indexOf('won') !== -1;
-}
-
-// Indice inverso nome-canale → channel_id dalla channel_map, per agganciare un
-// deal Won al suo canale Slack. Coppie [needle, channelId] con il nome cliente
-// e il nome canale (entrambi normalizzati a valle via nameMatches).
-function buildChannelIndex() {
-  var map = db.getChannelMapCache() || {};
-  var pairs = [];
-  Object.keys(map).forEach(function(cid) {
-    var e = map[cid] || {};
-    if (e.cliente) pairs.push([e.cliente, cid]);
-    if (e.channel_name) pairs.push([e.channel_name, cid]);
-  });
-  return pairs;
-}
-
-// Un deal Won è "vivo" se esiste un canale Slack che combacia col nome e che è
-// stato attivo nella finestra. channelActivity è memoizzata per channel_id.
-async function isWonBackedByActiveChannel(name, channelPairs, activityCache) {
-  for (var i = 0; i < channelPairs.length; i++) {
-    if (!filters.nameMatches(name, channelPairs[i][0])) continue;
-    var cid = channelPairs[i][1];
-    if (!(cid in activityCache)) {
-      var act = await slackService.channelActivity(cid, filters.ACTIVITY_WINDOW_DAYS, 1);
-      if (!act || act.error) throw new Error('Attività Slack non disponibile: ' + cid);
-      activityCache[cid] = !!act.active;
-    }
-    if (activityCache[cid]) return true;
-  }
-  return false;
-}
+function normStage(s) { return String(firstOf(s) || '').toLowerCase().trim(); }
+function isActiveStage(stage) { return ACTIVE_STAGES.includes(normStage(stage)); }
+function isWonStage(stage) { return isActiveStage(stage); }
 
 // I nomi deal possono contenere caratteri spazzatura (es. "\\"): ripuliamo e
 // scartiamo quelli vuoti.
@@ -120,10 +58,10 @@ function dealToProjectRow(deal) {
   return {
     id: 'attio_' + deal.record_id,
     name: deal.name.substring(0, 200),
-    status: 'active',
+    status: 'planning',
     budget_quoted: budget,
     service_category: serviceCategory ? serviceCategory.substring(0, 200) : null,
-    tags: ['attio-sync', 'tipo:cliente'],
+    tags: ['attio-sync', 'tipo:cliente', 'sales:won'],
   };
 }
 
@@ -138,21 +76,11 @@ async function syncActiveProjectsFromAttio() {
   }
   var deals = await fetchActiveDeals();
 
-  // Gate dei Won sull'attività del canale Slack. Se non abbiamo dati canale
-  // (channel_map vuota) non potiamo al buio: includiamo i Won.
-  var channelPairs = buildChannelIndex();
-  var haveChannelData = channelPairs.length > 0;
-  var activityCache = {};
-
   var activeIds = [];
   var synced = 0;
   var wonDropped = 0;
   for (var i = 0; i < deals.length; i++) {
     var deal = deals[i];
-    if (deal.isWon && haveChannelData) {
-      var alive = await isWonBackedByActiveChannel(deal.name, channelPairs, activityCache);
-      if (!alive) { wonDropped++; continue; }
-    }
     var row = dealToProjectRow(deal);
     activeIds.push(row.id);
     var res = await db.upsertSyncedProject(row);
@@ -168,4 +96,5 @@ async function syncActiveProjectsFromAttio() {
 module.exports = {
   syncActiveProjectsFromAttio: syncActiveProjectsFromAttio,
   ACTIVE_STAGES: ACTIVE_STAGES,
+  isActiveStage: isActiveStage,
 };

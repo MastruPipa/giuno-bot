@@ -132,3 +132,25 @@ test('scheduler skips overlapping lock acquisition and fails closed on outage',a
   assert.equal(runs,1);
   assert.equal(scheduler.listJobs()[0].lastError,'DB unavailable');
 });
+test('Attio commercial stages never become operational projects',async()=>{
+  const rows=[];
+  const sync=load('src/jobs/projectSyncJob.js',{
+    '../utils/logger':quiet,'../services/attioService':{isConfigured:()=>true,queryRecords:async()=>['In Progress','Contratto','Proposta','Lost','Not won','Won 🎉'].map((stage,i)=>({record_id:String(i),values:{name:'Client '+i,stage}}))},
+    '../../supabase':{isSupabase:()=>true,upsertSyncedProject:async row=>{rows.push(row);return row;},archiveStaleSyncedProjects:async()=>0},
+  });
+  await sync.syncActiveProjectsFromAttio();
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].id,'attio_5');
+  assert.equal(rows[0].status,'planning');
+  assert.ok(rows[0].tags.includes('sales:won'));
+});
+test('source sync cannot reactivate closed projects or write after failed status lookup',async()=>{
+ for(const status of ['completed','cancelled','archived','merged','on_hold','error']) {
+  let writes=0;
+  const query={select(){return this;},eq(){return this;},maybeSingle:async()=>status==='error'?{error:Error('offline')}:{data:{id:'p',status}},upsert(){writes++;throw Error('unexpected');}};
+  const db=load('src/services/db/projects.js',{'./client':{useSupabase:true,getClient:()=>({from:()=>query}),logErr(){}}});
+  const result=await db.upsertSyncedProject({id:'p',status:'active'});
+  assert.equal(writes,0);
+  if(status==='error') assert.equal(result,null); else assert.equal(result.status,status);
+ }
+});
