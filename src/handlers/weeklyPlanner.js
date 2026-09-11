@@ -295,11 +295,20 @@ async function closePlannerWindow() {
       try {
         var recap = await buildWeeklyRecapText(weekStart, state);
         try { await app.client.conversations.join({ channel: WEEKLY_CHANNEL_ID }); } catch(e) { /* già dentro o privato */ }
-        await app.client.chat.postMessage({
+        var recapMsg = await app.client.chat.postMessage({
           channel: WEEKLY_CHANNEL_ID,
           text: recap,
           unfurl_links: false,
         });
+        // Il recap è la traccia datata del piano: il suo permalink rende la
+        // pianificazione un'evidenza operativa per i progetti pianificati.
+        try {
+          var pl = await app.client.chat.getPermalink({ channel: recapMsg.channel, message_ts: recapMsg.ts });
+          if (pl && pl.permalink && db.annotateWeeklyPlans) {
+            var annotated = await db.annotateWeeklyPlans(weekStart, pl.permalink);
+            logger.info('[PLANNER] Piani annotati col permalink del recap:', annotated);
+          }
+        } catch(e) { logger.warn('[PLANNER] permalink recap non disponibile:', e.message); }
       } catch(e) {
         logger.error('[PLANNER] Errore recap #weekly:', e.message);
       }

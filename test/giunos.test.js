@@ -150,3 +150,14 @@ test('cliente → commesse e gruppo Interno: raggruppamento, ordine per ore, quo
  const u=s.people.find(p=>p.id==='u');assert.equal(u.internalShare,11);assert.deepEqual(u.internal,[{id:'cat_riunioni_team',name:'Daily e riunioni di team',hours:1}]);
  assert.equal(s.people.find(p=>p.id==='v').internalShare,100);
 });
+test('pianificazione in dashboard: ore pianificate separate dalle registrate, per persona e progetto, copertura del planner',()=>{
+ const rows=[log({hours:2}),log({log_type:'weekly',log_date:'2026-09-07',hours:10}),log({log_type:'weekly',log_date:'2026-09-14',hours:8,slack_user_id:'v'}),log({log_type:'weekly',log_date:'2026-08-31',hours:5})];
+ const s=buildSnapshot(raw({time_logs:rows,team_members:[{slack_user_id:'u',canonical_name:'U'},{slack_user_id:'v',canonical_name:'V'}]}),period,now);
+ assert.equal(s.hours.total,2,'le pianificate non si sommano');
+ assert.equal(s.planned,23,'settimane che iniziano nel mese o che lo contengono (31/8) contano');
+ assert.equal(s.projects[0].planned,23);assert.deepEqual(s.projects[0].plannedPeople.sort(),['u','v']);
+ const u=s.people.find(p=>p.id==='u');assert.equal(u.planned,15);assert.equal(u.plannedThisWeek,10);assert.deepEqual(u.plannedProjects,[{id:'p',name:'Project',hours:15}]);
+ assert.deepEqual(s.plannerCoverage,{week:'2026-09-07',people:2,planned:1});
+ const {normalizePlans}=require('../src/giunos/model');
+ assert.equal(normalizePlans([log({log_type:'weekly',log_date:'2026-09-07',hours:3,updated_at:'a'}),log({log_type:'weekly',log_date:'2026-09-07',hours:4,updated_at:'b'})])[0].hours,4,'ultima correzione');
+});

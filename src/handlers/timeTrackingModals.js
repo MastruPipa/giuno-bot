@@ -70,25 +70,49 @@ function projectTipo(p) {
 // Costruisce la sorgente del static_select: raggruppata per tipologia
 // (option_groups) quando ci sono ≥2 gruppi valorizzati, altrimenti options
 // flat. Slack ammette max 100 opzioni totali: si troncano in ordine di gruppo.
+// Stesso criterio di presenza della dashboard (src/giunos/projectScope.js):
+// operativo = attivo con evidenza (o manuale attivo); acquisito = importato
+// senza evidenza; interno = commesse trasversali (cat_*).
+function projectLifecycle(p) {
+  var id = String((p && p.id) || '');
+  if (id.indexOf('cat_') === 0) return 'interno';
+  try {
+    var scope = require('../giunos/projectScope');
+    var today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' });
+    if (scope.isActiveProject(p, today)) return 'operativo';
+  } catch(_) { if (p && p.status === 'active') return 'operativo'; }
+  if (p && p.status === 'on_hold') return 'sospeso';
+  return 'acquisito';
+}
+
 var GROUP_ORDER = [
-  { tipo: 'cliente',   label: 'Clienti' },
-  { tipo: 'progetto',  label: 'Progetti' },
-  { tipo: 'interno',   label: 'Interni' },
-  { tipo: 'categoria', label: 'Categorie' },
+  { tipo: 'operativo', label: 'Commesse operative' },
+  { tipo: 'acquisito', label: 'Acquisite · da confermare' },
+  { tipo: 'sospeso',   label: 'Sospese' },
+  { tipo: 'interno',   label: 'Interno · attività trasversali' },
 ];
 
+function optionLabel(p) {
+  var client = p.client_name && norm(p.client_name) !== norm(p.name) ? p.client_name + ' · ' : '';
+  return (client + (p.name || p.id)).substring(0, 75);
+}
+
 function buildProjectSelectSource(projects) {
-  var buckets = { cliente: [], progetto: [], interno: [], categoria: [] };
-  (projects || []).forEach(function(p) {
-    var tipo = projectTipo(p);
-    if (!buckets[tipo]) tipo = 'progetto';
-    buckets[tipo].push(projectOption(p));
+  var buckets = { operativo: [], acquisito: [], sospeso: [], interno: [] };
+  (projects || []).slice().sort(function(a, b) {
+    var ca = norm(a.client_name || a.name), cb = norm(b.client_name || b.name);
+    return ca < cb ? -1 : ca > cb ? 1 : norm(a.name) < norm(b.name) ? -1 : 1;
+  }).forEach(function(p) {
+    var lc = projectLifecycle(p);
+    if (!buckets[lc]) lc = 'acquisito';
+    var opt = projectOption(p);
+    if (lc !== 'interno') opt.text.text = optionLabel(p);
+    buckets[lc].push(opt);
   });
 
   // Dedup per nome normalizzato attraverso i gruppi, in ordine di priorità
-  // (Clienti → Progetti → Interni → Categorie): un nome già visto in un gruppo
-  // a priorità più alta non si ripete. Es. "Hammersud" resta solo in Clienti,
-  // i deal omonimi ("DICAR"×2) si fondono in una voce.
+  // (operative → acquisite → sospese → interno): un nome già visto in un
+  // gruppo a priorità più alta non si ripete.
   var seen = {};
   var groups = [];
   var total = 0;
@@ -356,6 +380,8 @@ function extractNote(stateValues) {
 function invalidateProjectsCache() { _projCache = null; _projCacheAt = 0; }
 
 module.exports = {
+  projectLifecycle: projectLifecycle,
+  buildProjectSelectSource: buildProjectSelectSource,
   MAX_ROWS_PLANNER: MAX_ROWS_PLANNER,
   MAX_ROWS_CHECKIN: MAX_ROWS_CHECKIN,
   OTHER_PROJECT_VALUE: OTHER_PROJECT_VALUE,

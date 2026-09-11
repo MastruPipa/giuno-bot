@@ -706,7 +706,36 @@ attività trasversali.
    persona × attività trasversale. La tipologia "Riunioni e coordinamento"
    resta sull'altro asse: somma le riunioni interne e quelle sui clienti.
 
-## 24. Da fare
+## 24. Un solo criterio di presenza: dashboard, planner e pianificazione in giun.os
+
+Antonio (11/9): il criterio di presenza dei progetti "dovrebbe essere lo
+stesso applicato nel planning settimanale, che tra l'altro non è integrato in
+visione su giun.os".
+
+1. **Planner con lo stesso criterio.** Le opzioni del modulo di pianificazione
+   (e della modale ore) usano `projectLifecycle`, che chiama lo stesso
+   `isActiveProject` della dashboard: gruppi "Commesse operative" (per
+   cliente, etichetta "Cliente · commessa"), "Acquisite · da confermare",
+   "Sospese", "Interno · attività trasversali", poi "Altro". Chi pianifica
+   vede subito se sta pianificando su una commessa che per Giuno non è
+   ancora operativa.
+2. **Pianificare è una prova.** Alla chiusura della finestra del planner
+   (giovedì 18:00) Giuno pubblica il recap in #weekly e ne scrive il permalink
+   nelle note delle righe `weekly` di quella settimana
+   (`annotateWeeklyPlans`). Per il motore delle evidenze una pianificazione
+   con permalink è una prova primaria (`weekly_plan`, vale fino alla domenica
+   della settimana pianificata + 7); senza permalink (piani vecchi) è un
+   indizio e Giuno chiede al PM. Pianificare su un acquisito lo rende
+   operativo: è la persona che dichiara lavoro da fare, con data e link.
+3. **Pianificazione in giun.os.** L'adattatore legge anche le righe
+   `weekly`; il modello le tiene separate dalle registrate (`normalizePlans`,
+   mai sommate). Panoramica: card "Pianificate" con copertura del planner
+   della settimana corrente (quanti hanno pianificato su quanti). Commesse e
+   persone: "pianificate X h" accanto alle ore registrate; scheda persona:
+   pianificate per progetto e piano della settimana in corso; scheda
+   commessa: persone con un piano anche se non hanno ancora ore.
+
+## 25. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

@@ -15,7 +15,7 @@ async function readTable(client,table) {
   for(let offset=0;offset<100000;offset+=500) {
     // Stable pagination prevents the default 1000-row API cap from changing totals.
     let q=client.from(table).select(columns[table]).order(table==='team_members'?'slack_user_id':table==='project_dossiers'?'project_id':'id').range(offset,offset+499);
-    if(table==='time_logs') q=q.eq('log_type','daily');
+    if(table==='time_logs') q=q.in('log_type',['daily','weekly']);
     if (q.abortSignal) q=q.abortSignal(AbortSignal.timeout(15000));
     const res=await q;
     if(res.error) throw new Error(table+' unavailable');
