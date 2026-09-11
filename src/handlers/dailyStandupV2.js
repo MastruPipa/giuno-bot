@@ -175,6 +175,24 @@ async function respondedFromDb(dateStr) {
   return out;
 }
 
+// Se per (utente, giorno) c'era una stima di Giuno (in sospeso o già pubblicata)
+// e arriva il daily vero, le ore stimate e quelle reali finiscono in
+// daily_estimate_calibration: Giuno impara se per quella persona stima basso o alto.
+async function recordEstimateCorrection(userId, dateStr, structured, confirmed) {
+  try {
+    var pending = getPendingEstimate(userId, dateStr);
+    var estimatedTasks = pending ? pending.oggi : null;
+    var sources = pending && pending.estimate ? pending.estimate.sources : null;
+    if (!estimatedTasks) {
+      var prior = await getExistingEntry(userId, dateStr);
+      if (prior && prior.source === 'estimate') estimatedTasks = prior.oggi_tasks || [];
+    }
+    if (!estimatedTasks || !estimatedTasks.length) return false;
+    var actualTasks = structured && Array.isArray(structured.oggi) ? structured.oggi : [];
+    return await require('../services/estimateCalibration').recordCorrection(userId, dateStr, estimatedTasks, actualTasks, { confirmed: !!confirmed, sources: sources });
+  } catch(e) { logger.debug('[DAILY-V2] calibrazione saltata:', e.message); return false; }
+}
+
 async function buildEstimateFor(utente, dateStr) {
   var estimator = require('../agents/dailyEstimator');
   var structured = await estimator.estimateDaily(utente.id, dateStr);
@@ -445,6 +463,9 @@ async function handleDailyResponse(userId, text, structured, opts) {
   sd.inattesa = Array.from(standupInAttesa);
   await db.saveStandup(sd);
 
+  // Stima di Giuno confermata o corretta → coppia stimato/reale per la calibrazione
+  await recordEstimateCorrection(userId, todayStr, structured, opts.source === 'estimate_confirmed');
+
   // Save permanently to standup_entries
   try {
     var dbClient = require('../services/db/client');
@@ -565,6 +586,7 @@ async function recordChannelDaily(userId, text, channelId) {
     structured = await require('../services/dailyParser').parseDailyText(clean);
     if (structured) await require('../services/projectMatcher').enrichStructured(structured);
   } catch(e) { logger.warn('[DAILY-V2] Parse daily da canale fallito:', e.message); }
+  await recordEstimateCorrection(userId, todayStr, structured, false);
 
   try {
     var supabase = require('../services/db/client').getClient();
@@ -746,6 +768,7 @@ module.exports = {
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
   respondedFromDb: respondedFromDb,
+  recordEstimateCorrection: recordEstimateCorrection,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,
