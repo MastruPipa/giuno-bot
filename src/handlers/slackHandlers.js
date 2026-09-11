@@ -1557,6 +1557,54 @@ async function handleAdmin(command, respond) {
     return;
   }
 
+  // ─── Attività di progetto: il livello tra commessa e microtask ────────────
+  if (sub === 'attivita' || sub === 'attività') {
+    if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager possono gestire le attività.', response_type: 'ephemeral' }); return; }
+    var acts = require('../services/projectActivities');
+    var actFind = require('../agents/projectDossier').findProject;
+    try {
+      if (args[1] === 'nuova' || args[1] === 'chiudi') {
+        var actSpec = acts.parseSpec(args.slice(2).join(' '));
+        if (!actSpec) { await respond({ text: 'Uso: `/giuno admin attivita ' + args[1] + ' <commessa> = <nome>' + (args[1] === 'nuova' ? ' [mensile|settimanale] [entro AAAA-MM-GG] [parole: a, b, c]' : '') + '`', response_type: 'ephemeral' }); return; }
+        var actPrj = await actFind(actSpec.projectName);
+        if (!actPrj) { await respond({ text: 'Commessa "' + actSpec.projectName + '" non trovata.', response_type: 'ephemeral' }); return; }
+        if (args[1] === 'chiudi') {
+          var openActs = (await acts.loadOpen({ force: true })).filter(function(a) { return a.project_id === actPrj.id && acts.norm(a.name) === acts.norm(actSpec.name); });
+          if (!openActs.length) { await respond({ text: 'Nessuna attività aperta "' + actSpec.name + '" su ' + actPrj.name + '.', response_type: 'ephemeral' }); return; }
+          for (var ca = 0; ca < openActs.length; ca++) await acts.setStatus(openActs[ca].id, 'done');
+          await respond({ text: '✅ Chiusa "' + openActs[0].name + '" su *' + actPrj.name + '*. Le ore restano registrate.', response_type: 'ephemeral' });
+          return;
+        }
+        var actRes = await acts.createActivity({ project_id: actPrj.id, name: actSpec.name, recurrence: actSpec.recurrence, period_end: actSpec.period_end, vocabulary: actSpec.vocabulary, owner_slack_id: actPrj.owner_slack_id || null, created_by: command.user_id });
+        if (actRes.error) { await respond({ text: '⚠️ ' + actRes.error + (acts.tableMissing() ? ' (manca la tabella project_activities: migrazione in supabase_migration.sql)' : ''), response_type: 'ephemeral' }); return; }
+        var actMsg = (actRes.existed ? 'Esisteva già: ' : '✅ Creata ') + '*' + actRes.activity.name + '* su *' + actPrj.name + '*' + (actSpec.recurrence ? ' (ricorrenza ' + actSpec.recurrence + ': l\'istanza del periodo si apre da sola)' : '') + (actSpec.period_end ? ' entro il ' + actSpec.period_end : '') + '.';
+        if (actSpec.recurrence) { var rr = await acts.rollRecurring({ apply: true }); actMsg += '\n' + acts.formatRollReport(rr, true); }
+        var rea = await acts.reattach({ days: 14, apply: true });
+        actMsg += '\nRiagganciate ' + rea.attached + ' microtask degli ultimi 14 giorni.';
+        await respond({ text: actMsg, response_type: 'ephemeral' });
+        return;
+      }
+      if (args[1] === 'ricorrenze') {
+        var rollRep = await acts.rollRecurring({ apply: args[2] === 'apply' });
+        await respond({ text: acts.formatRollReport(rollRep, args[2] === 'apply'), response_type: 'ephemeral' });
+        return;
+      }
+      if (args[1] === 'orfane' || args[1] === 'rialloca') {
+        var reDays = parseInt(args[2], 10) || 14;
+        var reApply = args[1] === 'rialloca' && args.indexOf('apply') !== -1;
+        var reRep = await acts.reattach({ days: reDays, apply: reApply });
+        await respond({ text: acts.formatReattachReport(reRep, reApply), response_type: 'ephemeral' });
+        return;
+      }
+      var actList = await acts.loadOpen({ force: true });
+      var actProjects = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
+      var actFilter = args.slice(1).filter(function(a) { return a !== 'lista'; }).join(' ');
+      if (actFilter) { var fp = await actFind(actFilter); actList = fp ? actList.filter(function(a) { return a.project_id === fp.id; }) : []; }
+      await respond({ text: acts.formatList(actList, actProjects) + (acts.tableMissing() ? '\n⚠️ Manca la tabella project_activities: applica la migrazione in supabase_migration.sql.' : '') + '\n\n`/giuno admin attivita nuova <commessa> = <nome> [mensile|settimanale] [entro AAAA-MM-GG] [parole: a, b]` · `chiudi <commessa> = <nome>` · `orfane [giorni]` · `rialloca [giorni] apply` · `ricorrenze [apply]`', response_type: 'ephemeral' });
+    } catch(e) { await respond({ text: toUserErrorMessage(e), response_type: 'ephemeral' }); }
+    return;
+  }
+
   if (sub === 'dossier') {
     if (callerRole !== 'admin' && callerRole !== 'manager') { await respond({ text: 'Solo admin e manager possono gestire i dossier.', response_type: 'ephemeral' }); return; }
     var dossierAgentAdm = require('../agents/projectDossier');
@@ -1778,7 +1826,7 @@ async function handleAdmin(command, respond) {
     return;
   }
 
-  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin progetti [dedup [apply]|merge a -> b|evidenze [apply]|stato <nome> …|posizioni [rebuild [apply]]|posizione <nome> = <link>]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
+  await respond({ text: 'Comandi admin:\n• `admin list` — utenti e token Google\n• `admin roles` — mostra ruoli team\n• `admin ruolo @nome livello` — cambia ruolo\n• `admin revoke @utente` — revoca token Google\n• `admin push-google` — invita chi non ha ancora collegato Google\n• `admin import-leads` — importa lead dal CRM Sheet\n• `admin team [list|refresh|set|remove|sync]` — gestisci il roster del team (disambiguazione nomi)\n• `admin copertura [giorni]` — chi ha Google, daily veri/stimati, ore, integrazioni, stato dati\n• `admin budget [applica|conferma <progetto> [ore]]` — budget ore per progetto (dashboard giun.os)\n• `admin attribuzione [giorni] [apply]` — riaggancia ai progetti le ore senza progetto\n• `admin attivita [lista [commessa]|nuova <commessa> = <nome> [mensile|settimanale] [entro data] [parole: …]|chiudi …|orfane|rialloca [apply]|ricorrenze [apply]]` — attività di progetto (il livello tra commessa e microtask)\n• `admin progetti [dedup [apply]|merge a -> b|evidenze [apply]|stato <nome> …|posizioni [rebuild [apply]]|posizione <nome> = <link>]`, `admin dossier`, `admin gemini-scan [giorni]`, `admin pipeline`, `admin campagne`, `admin eval`, `admin retrospettiva`, `admin cron`, `admin higgsfield`, `admin kb-cleanup`\n\nLivelli: admin, finance, manager, member, restricted', response_type: 'ephemeral' });
 }
 
 module.exports = {

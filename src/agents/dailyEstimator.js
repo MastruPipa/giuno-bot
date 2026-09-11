@@ -600,7 +600,7 @@ function formatEstimateBody(structured) {
   var lines = [];
   if (structured.oggi && structured.oggi.length) {
     lines.push('*Oggi:*');
-    structured.oggi.forEach(function(t) { lines.push('• ' + t.task + fmtDur(t)); });
+    structured.oggi.forEach(function(t) { lines.push('• ' + t.task + fmtDur(t) + (t.activity_name ? ' _(' + t.activity_name + ')_' : '')); });
   }
   if (structured.domani && structured.domani.length) {
     lines.push('*Domani:*');

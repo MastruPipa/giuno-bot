@@ -146,6 +146,12 @@ async function enrichTasksWithProjects(tasks, options) {
   } catch(e) {
     logger.warn('[PROJECT-MATCH] enrich fallito (task restano senza progetto):', e.message);
   }
+  // Livello attività: la microtask agganciata alla commessa cerca l'attività
+  // aperta ("caption video gambino" → "PED settembre 2026"). Mai bloccante.
+  if (options.activities !== false) {
+    try { await require('./projectActivities').enrichTasks(tasks, { date: options.date, activities: Array.isArray(options.activities) ? options.activities : null }); }
+    catch(e) { logger.debug('[PROJECT-MATCH] attività saltate:', e.message); }
+  }
   return tasks;
 }
 
