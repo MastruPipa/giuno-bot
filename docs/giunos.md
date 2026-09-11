@@ -39,3 +39,8 @@ Passaggi successivi: verifica di lettura su ambiente Giuno, riconciliazione budg
 ## Copertura osservata il 10 settembre 2026
 
 75 progetti, 13 membri roster, 200 daily, 29 righe di consuntivo daily, 1 dossier e 0 azioni con chiusura datata. Questi conteggi descrivono la disponibilità dei dati, non il lavoro effettivamente svolto.
+
+
+## Criteri rivisti l'11 settembre 2026
+
+Vedi `docs/RICALIBRAZIONE_2026-09.md` §22: venduto sulla commessa (verificato o proposta marcata) al posto del venduto per periodo di calendario; tassonomia delle attività da agenzia con distribuzione per progetto e per team; blocchi, milestone, prossimi passi e azioni nella scheda progetto; segnali in ordine di gravità; ciclo di vita esplicito con gli acquisiti in attesa di evidenza separati dallo storico; copertura delle persone.

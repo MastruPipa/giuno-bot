@@ -81,3 +81,54 @@ test('Giuno HTTP integration protects the snapshot in production without admin c
  try {const oauth=require('../src/handlers/oauthHandler');let status,body;await oauth.handleRequest({url:'/giunos/api/snapshot',method:'GET',headers:{}},{writeHead(s){status=s;},end(b){body=b;}});assert.equal(status,401);assert(!body.includes('projects'));}
  finally{if(old===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=old;}
 });
+test('revisione criteri: venduto sulla commessa mostrato anche come proposta (marcata), mai due baseline; oltre il venduto solo se verificato',()=>{
+ const sold=(extra={})=>({scope:'project',project_id:'p',period_start:'2026-07-01',period_end:'2026-12-31',hours:10,verified:false,source_url:'https://example.org/quote',...extra});
+ let s=buildSnapshot(raw({time_logs:[log({log_date:'2026-08-10',hours:7}),log({hours:5})],giunos_budgets:[sold()]}),period,now);
+ assert.equal(s.projects[0].sold.verified,false);assert.equal(s.projects[0].sold.used.total,12);assert.equal(s.projects[0].sold.remaining,-2);assert.equal(s.projects[0].sold.ratio,1.2);
+ assert.ok(!s.alerts.some(a=>a.kind==='sold'),'una proposta non genera allarmi di sforamento');
+ s=buildSnapshot(raw({time_logs:[log({log_date:'2026-08-10',hours:7}),log({hours:5})],giunos_budgets:[sold({verified:true})]}),period,now);
+ assert.equal(s.projects[0].sold.verified,true);assert.ok(s.alerts.some(a=>a.kind==='sold'&&/oltre il venduto/.test(a.title)));
+ s=buildSnapshot(raw({time_logs:[log()],giunos_budgets:[sold(),sold({hours:20,source_url:'https://example.org/other'})]}),period,now);
+ assert.equal(s.projects[0].sold,null);assert.equal(s.projects[0].soldConflict,true);
+ s=buildSnapshot(raw({time_logs:[log()]}),period,now);
+ assert.equal(s.projects[0].sold,null);assert.ok(s.alerts.some(a=>a.kind==='nosold'),'ore senza venduto è un segnale');
+});
+test('revisione criteri: tipologie di attività da agenzia, distribuzione per progetto e per team',()=>{
+ const {category}=require('../src/giunos/model');
+ assert.equal(category('Montaggio video reel Mandorle'),'Video e foto');
+ assert.equal(category('Copy per i post di settembre'),'Contenuti e copy');
+ assert.equal(category('Impaginazione brochure su Figma'),'Design');
+ assert.equal(category('Landing page: deploy e bug'),'Sviluppo');
+ assert.equal(category('SAL con il cliente'),'Riunioni e coordinamento');
+ assert.equal(category('Preventivo per Elios'),'Commerciale');
+ assert.equal(category('Registro uscite cassa'),'Amministrazione');
+ assert.equal(category('Revisioni grafiche dal feedback'),'Revisioni');
+ assert.equal(category('boh'),'Non classificato');
+ const entries=[{slack_user_id:'u',date:'2026-09-08',source:'dm',oggi_tasks:[{project_id:'p',task:'Montaggio video',hours:1},{project_id:'p',task:'Call cliente',hours:1}]}];
+ const s=buildSnapshot(raw({time_logs:[log()],standup_entries:entries}),period,now);
+ assert.deepEqual(s.projects[0].categories,[{name:'Video e foto',hours:1},{name:'Riunioni e coordinamento',hours:1}]);
+ assert.deepEqual(s.categories,[{name:'Video e foto',hours:1},{name:'Riunioni e coordinamento',hours:1}]);
+ assert.equal(s.people[0].projects[0].share,100);
+});
+test('revisione criteri: ciclo di vita, candidati separati dallo storico, blocchi, milestone scadute, azioni scadute, copertura persone',()=>{
+ const projects=[
+  {id:'attio_1',name:'Acquisito',status:'planning',tags:['attio-sync','sales:won']},
+  {id:'attio_2',name:'Operativo',status:'active',tags:['attio-sync','sales:won'],lifecycle_evidence:{state:'active',source_url:'https://d/k',observed_on:'2026-09-01',valid_until:'2026-11-30',kind:'kickoff',detail:'kick-off'}},
+  {id:'prj_3',name:'Sospeso',status:'on_hold'},{id:'prj_4',name:'Chiuso',status:'completed'},
+ ];
+ const dossiers=[{project_id:'attio_2',dossier:{rischi_blocchi:['Attesa materiali dal cliente'],scadenze:[{cosa:'Consegna sito',quando:'2026-09-01',stato:'aperta'},{cosa:'Go live',quando:'2026-10-01',stato:'aperta'}],prossimi_passi:[{cosa:'Review',chi:'Paolo',entro:'2026-09-15'}],deliverable:[{nome:'Sito',stato:'in corso'},{nome:'Logo',stato:'consegnato'}],team:[{nome:'Paolo',ruolo:'PM'}]}}];
+ const actions=[{id:'a1',project_id:'attio_2',status:'open',due_date:'2026-09-05',description:'Inviare doc'},{id:'a2',project_id:'attio_2',status:'done',done_at:'2026-09-09T10:00:00Z',created_at:'2026-09-08T10:00:00Z',assignee_slack_id:'u'}];
+ const s=buildSnapshot(raw({projects,project_dossiers:dossiers,project_actions:actions,time_logs:[log({project_id:'attio_2'}),log({project_id:'attio_2',log_date:'2026-09-09',validation:{status:'estimate'},slack_user_id:'v'})]}),period,now);
+ assert.deepEqual(s.projects.map(p=>p.id),['attio_2']);
+ assert.deepEqual(s.candidateProjects.map(p=>p.lifecycle),['da verificare']);
+ assert.deepEqual(s.historicalProjects.map(p=>p.lifecycle).sort(),['concluso','sospeso']);
+ const p=s.projects[0];
+ assert.equal(p.lifecycle,'operativo');assert.equal(p.evidence.validUntil,'2026-11-30');
+ assert.deepEqual(p.blocks,['Attesa materiali dal cliente']);
+ assert.equal(p.milestones.filter(m=>m.overdue).length,1);assert.equal(p.nextSteps[0].who,'Paolo');
+ assert.deepEqual(p.deliveryCounts,{done:1,inProgress:1,todo:0,total:2});assert.equal(p.overdueActions,1);assert.equal(p.openActions,1);
+ assert.deepEqual(p.dossierTeam,[{name:'Paolo',role:'PM'}]);
+ assert.deepEqual(s.alerts.map(a=>a.kind),['block','overdue','milestone','nosold']);
+ assert.deepEqual(s.coverage,{people:2,peopleWithHours:2,peopleOnlyEstimates:1});
+ assert.match(s.warnings.join(' '),/1 progetti acquisiti attendono/);
+});

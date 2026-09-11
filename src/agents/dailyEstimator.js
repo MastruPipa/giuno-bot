@@ -86,6 +86,13 @@ async function dayContext(dateStr, deps) {
   await safeCall('ESTIMATE.day.drive', async function() { var r = await collectDriveActivity(dateStr, scanners, deps); ctx.driveByEmail = r.byEmail; ctx.driveByName = r.byName; ctx.driveEvents = r.events; });
   await safeCall('ESTIMATE.day.figma', async function() { var f = await collectFigmaActivity(dateStr, deps); ctx.figmaByEmail = f.byEmail; ctx.figmaByName = f.byName; ctx.figmaEvents = f.events; });
   await safeCall('ESTIMATE.day.admin_calendar', async function() { ctx.adminEvents = await collectAdminCalendar(dateStr, scanners, deps); });
+  // Registro delle posizioni: cartella → progetto, canale → progetto, file Figma → progetto
+  await safeCall('ESTIMATE.day.locations', async function() {
+    var loc = require('../services/projectLocations');
+    var locRowsAll = deps.locations !== undefined ? null : await loc.loadRegistry();
+    ctx.locationRows = locRowsAll || [];
+    ctx.locations = deps.locations !== undefined ? deps.locations : loc.index(locRowsAll);
+  });
   _day = { date: dateStr, at: now, ctx: ctx };
   return ctx;
 }
@@ -125,7 +132,7 @@ async function collectSlackChannelActivity(app, dateStr) {
         var text = String(m.text || '').replace(/\s+/g, ' ').trim();
         var files = (m.files || []).map(function(f) { return f.title || f.name; }).filter(Boolean);
         if (!text && !files.length) return;
-        (byUser[m.user] = byUser[m.user] || []).push({ channel: ch.name || ch.id, text: text.substring(0, 220), files: files.slice(0, 5), at: m.ts ? new Date(Number(m.ts) * 1000).toISOString() : null });
+        (byUser[m.user] = byUser[m.user] || []).push({ channel: ch.name || ch.id, channel_id: ch.id, text: text.substring(0, 220), files: files.slice(0, 5), at: m.ts ? new Date(Number(m.ts) * 1000).toISOString() : null });
       });
     } catch(e) { logger.debug('[DAILY-ESTIMATE] history ' + (ch.name || ch.id) + ':', e.message); }
   }
@@ -149,7 +156,7 @@ async function collectDriveActivity(dateStr, scanners, deps) {
       var res = await withTimeout(function() {
         return drive.files.list({
           q: "modifiedTime >= '" + b.start + "' and modifiedTime < '" + b.end + "' and trashed = false",
-          fields: 'files(id,name,mimeType,modifiedTime,createdTime,webViewLink,lastModifyingUser(emailAddress,displayName))',
+          fields: 'files(id,name,mimeType,modifiedTime,createdTime,webViewLink,parents,lastModifyingUser(emailAddress,displayName))',
           pageSize: 200, orderBy: 'modifiedTime desc', supportsAllDrives: true, includeItemsFromAllDrives: true, corpora: 'allDrives',
         });
       }, SOURCE_TIMEOUT_MS, 'estimate.drive');
@@ -157,7 +164,7 @@ async function collectDriveActivity(dateStr, scanners, deps) {
         if (seen[f.id]) return;
         seen[f.id] = true;
         var u = f.lastModifyingUser || {};
-        var item = { name: f.name, type: String(f.mimeType || '').replace(/^application\/vnd\.google-apps\./, '').replace(/^application\//, ''), created_today: String(f.createdTime || '').slice(0, 10) === dateStr, modified_at: f.modifiedTime, link: f.webViewLink || null };
+        var item = { name: f.name, type: String(f.mimeType || '').replace(/^application\/vnd\.google-apps\./, '').replace(/^application\//, ''), created_today: String(f.createdTime || '').slice(0, 10) === dateStr, modified_at: f.modifiedTime, link: f.webViewLink || null, folder: (f.parents || [])[0] || null };
         if (u.emailAddress) (byEmail[emailKey(u.emailAddress)] = byEmail[emailKey(u.emailAddress)] || []).push(item);
         if (u.displayName) (byName[nameKey(u.displayName)] = byName[nameKey(u.displayName)] || []).push(item);
         filesForRevisions.push({ drive: drive, file: f, item: item });
@@ -181,7 +188,7 @@ async function collectDriveActivity(dateStr, scanners, deps) {
       } catch(e) { logger.debug('[DAILY-ESTIMATE] revisions ' + fr.file.name + ':', e.message); }
     }
     if (!revs.length && fr.file.modifiedTime) revs = [{ modifiedTime: fr.file.modifiedTime, lastModifyingUser: fr.file.lastModifyingUser }];
-    revs.forEach(function(v) { pushEvent(v.lastModifyingUser || {}, { at: v.modifiedTime, kind: 'drive', name: fr.file.name, link: fr.item.link }); });
+    revs.forEach(function(v) { pushEvent(v.lastModifyingUser || {}, { at: v.modifiedTime, kind: 'drive', name: fr.file.name, link: fr.item.link, folder: fr.item.folder }); });
   }
   for (var q = 0; q < queue.length; q += 5) {
     await Promise.all(queue.slice(q, q + 5).map(scanOne));
@@ -218,7 +225,7 @@ async function collectFigmaActivity(dateStr, deps) {
   for (var i = 0; i < projects.length; i++) {
     try {
       var pf = (await api('/projects/' + projects[i].id + '/files')).files || [];
-      pf.forEach(function(f) { var t = Date.parse(f.last_modified); if (t >= startMs && t < endMs) files.push({ key: f.key, name: f.name, project: projects[i].name, last_modified: f.last_modified }); });
+      pf.forEach(function(f) { var t = Date.parse(f.last_modified); if (t >= startMs && t < endMs) files.push({ key: f.key, name: f.name, project: projects[i].name, project_id: String(projects[i].id), last_modified: f.last_modified }); });
     } catch(e) { logger.debug('[DAILY-ESTIMATE] figma project ' + projects[i].name + ':', e.message); }
   }
   for (var j = 0; j < files.length && j < 40; j++) {
@@ -228,8 +235,8 @@ async function collectFigmaActivity(dateStr, deps) {
       var versions = ((await api('/files/' + f.key + '/versions')).versions || []).filter(function(v) { var t = Date.parse(v.created_at); return t >= startMs && t < endMs; });
       versions.forEach(function(v) {
         var u = v.user || {};
-        var item = { name: f.name, project: f.project, type: 'figma', modified_at: v.created_at, link: link };
-        var ev = { at: v.created_at, kind: 'figma', name: f.name, link: link };
+        var item = { name: f.name, project: f.project, figma_project_id: f.project_id, file_key: f.key, type: 'figma', modified_at: v.created_at, link: link };
+        var ev = { at: v.created_at, kind: 'figma', name: f.name, link: link, figma_project_id: f.project_id, file_key: f.key };
         if (u.email) { var ek = emailKey(u.email); (out.byEmail[ek] = out.byEmail[ek] || []); if (!out.byEmail[ek].some(function(x) { return x.name === f.name; })) out.byEmail[ek].push(item); (out.events.byEmail[ek] = out.events.byEmail[ek] || []).push(ev); }
         if (u.handle) { var nk = nameKey(u.handle); (out.byName[nk] = out.byName[nk] || []); if (!out.byName[nk].some(function(x) { return x.name === f.name; })) out.byName[nk].push(item); (out.events.byName[nk] = out.events.byName[nk] || []).push(ev); }
       });
@@ -350,19 +357,28 @@ async function collectEvidence(userId, dateStr, deps) {
     evidence.sources.push('file Figma');
   }
 
-  // 2f. Sessioni di lavoro dai timestamp di tutto quanto sopra
+  // 2f. Progetto per POSIZIONE (registro cartelle/canali/Figma) su documenti, messaggi e file
+  var locations = ctx.locations || null;
+  var lookup = require('../services/projectLocations').lookup;
+  function projectOf(kind, ref) { var p = locations && ref ? lookup(locations, kind, ref) : null; return p && p.name ? p.name : null; }
+  evidence.drive.forEach(function(d) { d.project = d.project || projectOf('drive_folder', d.folder); });
+  evidence.channels.forEach(function(m) { m.project = m.project || projectOf('slack_channel', m.channel_id); });
+  evidence.figma.forEach(function(d) { d.project_hint = projectOf('figma_file', d.file_key) || projectOf('figma_project', d.figma_project_id) || null; });
+  evidence.locationRows = ctx.locationRows || [];
+
+  // 2g. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
   var events = [];
   var dEv = ctx.driveEvents || { byEmail: {}, byName: {} };
   var fEv = ctx.figmaEvents || { byEmail: {}, byName: {} };
-  events = events.concat(unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey));
-  events = events.concat(unionBy(myEmail && fEv.byEmail[myEmail], myName && fEv.byName[myName], eventKey));
-  chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null }); });
+  unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('drive_folder', e.folder) })); });
+  unionBy(myEmail && fEv.byEmail[myEmail], myName && fEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('figma_file', e.file_key) || projectOf('figma_project', e.figma_project_id) })); });
+  chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null, project: m.project || null }); });
   evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes }); });
   evidence.sessions = sessions.buildSessions(events);
   if (evidence.sessions.length) evidence.sources.push('sessioni di lavoro');
 
-  // 2g. Storico delle correzioni della persona
+  // 2h. Storico delle correzioni della persona
   await safeCall('ESTIMATE.calibration', async function() {
     var cal = deps.calibration !== undefined ? deps.calibration : await require('../services/estimateCalibration').getCalibration(userId);
     if (cal) evidence.calibration = cal;
@@ -424,7 +440,7 @@ var SYSTEM_PROMPT =
   'Ricostruisci il daily di un membro di un\'agenzia creativa italiana che NON lo ha compilato, a partire dalle tracce della sua giornata. ' +
   'Il daily ha tre parti: "oggi" (lavoro FATTO oggi con ore), "domani" (piano), "blocchi".\n' +
   'Rispondi SOLO con JSON valido:\n' +
-  '{"oggi":[{"task":"descrizione breve","hours":N,"minutes":N,"basis":"da dove viene"}],"domani":[{"task":"...","hours":0,"minutes":0}],"blocchi":null,"confidence":"alta|media|bassa","note":"una frase su cosa manca"}\n' +
+  '{"oggi":[{"task":"descrizione breve","hours":N,"minutes":N,"project":"nome del progetto o null","basis":"da dove viene"}],"domani":[{"task":"...","hours":0,"minutes":0,"project":null}],"blocchi":null,"confidence":"alta|media|bassa","note":"una frase su cosa manca"}\n' +
   'Regole:\n' +
   '- Ogni task in "oggi" deve avere una traccia concreta (riunione in calendario, documento creato o modificato su Drive, allegato o messaggio Slack, email inviata, piano scritto ieri). Niente task inventati.\n' +
   '- Se ci sono SESSIONI DI LAVORO ricostruite dai timestamp, le ore vengono da lì: la somma delle durate dei task deve avvicinarsi al totale delle sessioni, e ogni sessione va attribuita al task che le sue tracce indicano (documento, file Figma, canale, riunione). Le sessioni non coperte da alcuna traccia leggibile diventano un task generico sul progetto del canale o del file.\n' +
@@ -432,6 +448,7 @@ var SYSTEM_PROMPT =
   '- Totale "oggi" mai sopra 8 ore: se lo superi, riduci in proporzione. Preferisci poche righe solide a molte righe deboli.\n' +
   '- Il numero dei messaggi non misura il lavoro: conta il tema e l\'output, non il volume.\n' +
   '- Se c\'è uno STORICO DELLE STIME per la persona, correggi le durate dedotte nella direzione indicata.\n' +
+  '- "project": quando una traccia porta l\'indicazione [progetto: X] (cartella, canale o file di quel progetto), copia X nel campo project del task; altrimenti null. Non dedurre il progetto dal solo nome se c\'è un\'indicazione di posizione diversa.\n' +
   '- "domani": solo se emerge da piano settimanale o messaggi; altrimenti lista vuota.\n' +
   '- "blocchi": solo se un messaggio lo dice esplicitamente.\n' +
   '- confidence "alta" solo con calendario o documenti che confermano; "media" con messaggi o email; "bassa" se hai solo piano/settimanale o se le durate sono dedotte.\n' +
@@ -456,12 +473,12 @@ function buildPrompt(evidence) {
   }
   if (evidence.drive && evidence.drive.length) {
     parts.push('DOCUMENTI SU DRIVE CREATI O MODIFICATI OGGI DALLA PERSONA (output prodotti):\n' + evidence.drive.map(function(d) {
-      return '- ' + d.name + ' (' + (d.type || 'file') + (d.created_today ? ', creato oggi' : ', modificato') + (d.modified_at ? ' alle ' + String(d.modified_at).slice(11, 16) : '') + ')';
+      return '- ' + d.name + ' (' + (d.type || 'file') + (d.created_today ? ', creato oggi' : ', modificato') + (d.modified_at ? ' alle ' + String(d.modified_at).slice(11, 16) : '') + ')' + (d.project ? ' [progetto: ' + d.project + ']' : '');
     }).join('\n'));
   }
   if (evidence.figma && evidence.figma.length) {
     parts.push('FILE FIGMA CON VERSIONI SALVATE OGGI DALLA PERSONA:\n' + evidence.figma.map(function(d) {
-      return '- ' + d.name + (d.project ? ' (progetto Figma: ' + d.project + ')' : '');
+      return '- ' + d.name + (d.project ? ' (progetto Figma: ' + d.project + ')' : '') + (d.project_hint ? ' [progetto: ' + d.project_hint + ']' : '');
     }).join('\n'));
   }
   if (evidence.sessions && evidence.sessions.length) {
@@ -479,7 +496,7 @@ function buildPrompt(evidence) {
   }
   if (evidence.channels && evidence.channels.length) {
     parts.push('MESSAGGI E ALLEGATI DI OGGI NEI CANALI (' + evidence.channels.length + '):\n' + evidence.channels.map(function(m) {
-      return '- [#' + m.channel + '] ' + (m.text || '') + (m.files && m.files.length ? ' [allegati: ' + m.files.join(', ') + ']' : '');
+      return '- [#' + m.channel + (m.project ? ' → progetto: ' + m.project : '') + '] ' + (m.text || '') + (m.files && m.files.length ? ' [allegati: ' + m.files.join(', ') + ']' : '');
     }).join('\n'));
   }
   if (evidence.sent && evidence.sent.length) {
@@ -533,6 +550,23 @@ async function estimateDaily(userId, dateStr, deps) {
     });
     structured.totalOggi = Math.round(structured.oggi.reduce(function(s, t) { return s + t.hours * 60 + t.minutes; }, 0) / 60 * 100) / 100;
   }
+  // Progetto indicato dal modello (da [progetto: X]) → agganciato al catalogo per nome esatto
+  try {
+    var hints = {};
+    (parsed.oggi || []).concat(parsed.domani || []).forEach(function(t) { if (t && t.task && typeof t.project === 'string' && t.project.trim()) hints[String(t.task).trim().substring(0, 300)] = t.project.trim(); });
+    if (Object.keys(hints).length) {
+      var locSvc = require('../services/projectLocations');
+      var locRows = deps.locationRows || evidence.locationRows || [];
+      var catalog = await require('../services/projectMatcher').getCatalog();
+      (structured.oggi || []).concat(structured.domani || []).forEach(function(t) {
+        var h = hints[t.task];
+        if (!h || t.project_id) return;
+        // Prima il registro (stesso nome che abbiamo scritto nel prompt), poi il catalogo, con la stessa normalizzazione
+        var p = locSvc.projectIdForName(locRows, h) || (function() { var k = locSvc.norm(h); var c = catalog.find(function(x) { return locSvc.norm(x.name) === k; }); return c ? { id: c.id, name: c.name } : null; })();
+        if (p) { t.project_id = p.id; t.project_name = p.name; }
+      });
+    }
+  } catch(e) { logger.debug('[DAILY-ESTIMATE] project hints:', e.message); }
   try { await require('../services/projectMatcher').enrichStructured(structured); } catch(e) { logger.debug('[DAILY-ESTIMATE] project match:', e.message); }
 
   structured.estimate = {

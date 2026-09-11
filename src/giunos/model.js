@@ -34,13 +34,25 @@ function budgetFor(rows,pid,person,start,end) {
   // Conflicting baselines must never be silently resolved by recency.
   return candidates.length===1 ? {hours:Number(candidates[0].hours),source:candidates[0].source_url} : null;
 }
-// Conservative text labels, never used to infer hours or completion.
+// Categorie di attività di un'agenzia creativa, ricavate dal testo del task.
+// Indicative: mai usate per dedurre ore o completamento. L'ordine conta: le
+// voci più specifiche vengono prima di quelle generiche.
+const CATEGORY_RULES=[
+  ['Revisioni',/\brevision|correzion|feedback|modifich|fix\b|aggiust/],
+  ['Riunioni e coordinamento',/riunion|\bcall\b|meeting|\bsal\b|allineament|coordin|kick.?off|daily|weekly|brief(?!ing)|confronto/],
+  ['Commerciale',/preventiv|proposta|offerta|\blead\b|prospect|contratt|pitch|trattativ/],
+  ['Strategia e analisi',/strateg|analisi|ricerca|report|benchmark|audit|kpi|dati|insight/],
+  ['Video e foto',/video|montagg|shooting|riprese|foto|editing|reel|animazion|motion/],
+  ['Contenuti e copy',/copy|testo|testi|script|contenut|post\b|carosell|caption|newsletter|articol|blog|social/],
+  ['Design',/design|grafic|layout|logo|brand|mockup|figma|illustraz|impaginaz|visual|ui\b|ux\b/],
+  ['Sviluppo',/svilupp|sito|web|landing|codice|deploy|bug|github|integrazion|app\b|wordpress|shopify/],
+  ['Pianificazione e gestione',/pianific|organizz|gestion|calendar|piano|planning|task|to.?do|scadenz/],
+  ['Amministrazione',/amministr|fattur|cassa|registro|contabil|pagament|hr\b|document/],
+  ['Formazione',/formazion|corso|studio|tutorial|scuola|onboarding/],
+];
 function category(text) {
   const t=String(text||'').toLowerCase();
-  if(/revision|correzion|feedback/.test(t)) return 'Revisioni';
-  if(/riunione|call|coordin|account|kick.?off|brief/.test(t)) return 'Coordinamento';
-  if(/strateg|analisi|ricerca|report/.test(t)) return 'Strategia e analisi';
-  if(/design|grafica|carosell|montaggio|shooting|video|copy|script|post|contenut/.test(t)) return 'Produzione';
+  for(const [name,re] of CATEGORY_RULES) if(re.test(t)) return name;
   return 'Non classificato';
 }
 function categoryHours(logs,entries) {
@@ -71,21 +83,44 @@ function buildSnapshot(raw,period,now=new Date()) {
     const b=budgetFor(budgets,p.id,null,period.start,period.end);
     const projectLogs=logs.filter(l=>l.project===p.id);
     const used=hours(projectLogs);
-    const whole=budgets.filter(b=>b.scope==='project' && b.project_id===p.id && !b.slack_user_id && b.verified===true && b.source_url && validDate(b.period_start) && validDate(b.period_end) && b.hours!==null && Number.isFinite(Number(b.hours)) && Number(b.hours)>=0);
+    const wholeRows=budgets.filter(b=>b.scope==='project' && b.project_id===p.id && !b.slack_user_id && b.source_url && validDate(b.period_start) && validDate(b.period_end) && b.hours!==null && Number.isFinite(Number(b.hours)) && Number(b.hours)>=0);
+    const whole=wholeRows.filter(b=>b.verified===true);
     const wholeBudget=whole.length===1?whole[0]:null;
     const wholeUsed=wholeBudget?hours(allLogs.filter(l=>l.project===p.id && l.date>=wholeBudget.period_start && l.date<=wholeBudget.period_end)):null;
+    // Venduto sull'intera commessa: la baseline verificata se c'è; altrimenti
+    // la proposta (preventivo, kick-off, deal) SEMPRE marcata come tale.
+    const soldRow=wholeBudget||(whole.length===0 && wholeRows.length===1?wholeRows[0]:null);
+    const soldUsed=soldRow?hours(allLogs.filter(l=>l.project===p.id && l.date>=soldRow.period_start && l.date<=soldRow.period_end)):null;
+    const sold=soldRow?{hours:Number(soldRow.hours),verified:soldRow.verified===true,source:soldRow.source_url,start:soldRow.period_start,end:soldRow.period_end,used:soldUsed,
+      remaining:soldUsed&&soldUsed.total!==null?round(Number(soldRow.hours)-soldUsed.total):null,
+      ratio:soldUsed&&soldUsed.total!==null&&Number(soldRow.hours)>0?round(soldUsed.total/Number(soldRow.hours)):null,
+      conflict:false}:null;
+    if(!sold&&wholeRows.length>1) var soldConflict=true;
 
     const deliveries=Array.isArray(evidence.deliverable)?evidence.deliverable:[];
     const details=deliveries.map(d=>({name:String(d.nome||'Consegna'),status:String(d.stato||'non rilevato')}));
-    return {id:p.id,name:p.name,client:p.client_name,status:p.status,owner:p.owner_slack_id,
+    const deliveryCounts={done:details.filter(d=>/consegnat|approvat|fatt/.test(d.status)).length,inProgress:details.filter(d=>/in corso/.test(d.status)).length,todo:details.filter(d=>/da fare/.test(d.status)).length,total:details.length};
+    const milestones=(Array.isArray(evidence.scadenze)?evidence.scadenze:[]).map(m=>({what:String(m.cosa||m.scadenza||''),when:validDate(String(m.quando||'').slice(0,10))?String(m.quando).slice(0,10):(m.quando||null),status:String(m.stato||'aperta'),overdue:validDate(String(m.quando||'').slice(0,10))&&String(m.quando).slice(0,10)<today&&!/fatt|chius|consegnat/.test(String(m.stato||''))}));
+    const blocks=(Array.isArray(evidence.rischi_blocchi)?evidence.rischi_blocchi:[]).map(x=>typeof x==='string'?x:String(x.testo||x.rischio||x.cosa||JSON.stringify(x))).filter(Boolean);
+    const nextSteps=(Array.isArray(evidence.prossimi_passi)?evidence.prossimi_passi:[]).map(x=>typeof x==='string'?{what:x,who:null,when:null}:{what:String(x.cosa||''),who:x.chi||null,when:x.entro||null}).filter(x=>x.what);
+    const projectActions=actions.filter(a=>a.project_id===p.id);
+    const openActions=projectActions.filter(a=>a.status==='open'||a.status==='acknowledged');
+    const overdueActions=openActions.filter(a=>validDate(a.due_date)&&a.due_date<today);
+    const dossierTeam=(Array.isArray(evidence.team)?evidence.team:[]).map(x=>typeof x==='string'?{name:x,role:null}:{name:String(x.nome||x.chi||''),role:x.ruolo||null}).filter(x=>x.name);
+    const lifecycle=p.status==='completed'?'concluso':p.status==='on_hold'?'sospeso':p.status==='archived'||p.status==='cancelled'?'archiviato':isActiveProject(p,today)?'operativo':p.status==='planning'||p.status==='active'?'da verificare':p.status;
+    return {id:p.id,name:p.name,client:p.client_name,status:p.status,lifecycle,owner:p.owner_slack_id,
+      evidence:p.lifecycle_evidence&&p.lifecycle_evidence.valid_until?{kind:p.lifecycle_evidence.kind||null,validUntil:p.lifecycle_evidence.valid_until,detail:p.lifecycle_evidence.detail||null}:null,
       wholeBudget:wholeBudget?{hours:Number(wholeBudget.hours),source:wholeBudget.source_url,start:wholeBudget.period_start,end:wholeBudget.period_end,used:wholeUsed}:null,
+      sold,soldConflict:!!soldConflict,
       hours:used,budget:b,overrun:b&&used.total!==null?round(used.total-b.hours):null,
-      lifetime:hours(allLogs.filter(l=>l.project===p.id)),deliveries:details,
+      lifetime:hours(allLogs.filter(l=>l.project===p.id)),deliveries:details,deliveryCounts,milestones,blocks,nextSteps,
       summary:evidence.stato_sintesi||null,phase:evidence.fase||null,updatedAt:dossier?.updated_at||null,
       deadlines:Array.isArray(evidence.scadenze)?evidence.scadenze:[],
-      team: [...new Set(projectLogs.map(l=>l.person))],
+      team: [...new Set(projectLogs.map(l=>l.person))],dossierTeam,
+      categories:categoryHours(projectLogs,raw.standup_entries),
       documents:(raw.project_documents||[]).filter(d=>d.project_id===p.id).map(d=>({name:d.file_name,url:d.drive_link})),
-      actions:actions.filter(a=>a.project_id===p.id).map(a=>({id:a.id,name:a.description,status:a.status,due:a.due_date,assignee:a.assignee_slack_id}))};
+      actions:projectActions.map(a=>({id:a.id,name:a.description,status:a.status,due:a.due_date,assignee:a.assignee_slack_id})),
+      openActions:openActions.length,overdueActions:overdueActions.length};
   });
   const activeIds=new Set((raw.projects||[]).filter(p=>isActiveProject(p,today)).map(p=>p.id));
   const projects=catalogue.filter(p=>activeIds.has(p.id));
@@ -100,15 +135,25 @@ function buildSnapshot(raw,period,now=new Date()) {
     for(let d=new Date(period.start);iso(d)<=cutoff;d=new Date(d.getTime()+day)) {const key=period.kind==='week'?iso(d):periodBounds('week',iso(d)).start;buckets.set(key,{date:key,hours:null,projects:{}});}
     mine.forEach(l=>{const key=period.kind==='week'?l.date:periodBounds('week',l.date).start;const bucket=buckets.get(key);if(bucket){bucket.hours=round((bucket.hours||0)+l.hours);bucket.projects[l.project]=round((bucket.projects[l.project]||0)+l.hours);}});
     return {id,name:member?.canonical_name||id,role:member?.role||null,hours:hours(mine),
-      projects:[...new Set(mine.map(l=>l.project))].map(pid=>({id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,status:(raw.projects||[]).find(p=>p.id===pid)?.status||'unknown',hours:hours(mine.filter(l=>l.project===pid)),budget:budgetFor(budgets,pid,id,period.start,period.end)})),
+      projects:[...new Set(mine.map(l=>l.project))].map(pid=>{const ph=hours(mine.filter(l=>l.project===pid));const tot=hours(mine).total;return {id:pid,name:(raw.projects||[]).find(p=>p.id===pid)?.name||pid,status:(raw.projects||[]).find(p=>p.id===pid)?.status||'unknown',hours:ph,share:tot&&ph.total!==null?Math.round(ph.total/tot*100):null,budget:budgetFor(budgets,pid,id,period.start,period.end)};}).sort((a,b)=>(b.hours.total||0)-(a.hours.total||0)),
       closed:raw.project_actions===null?null:closed.length,medianDays:median,closureSample:durations.length,
       categories:categoryHours(mine,raw.standup_entries),
       projectCategories:Object.fromEntries([...new Set(mine.map(l=>l.project))].map(pid=>[pid,categoryHours(mine.filter(l=>l.project===pid),raw.standup_entries)])),
       closureTypes:[...new Set(closed.map(a=>category(a.description)))].map(name=>{const cases=closed.filter(a=>category(a.description)===name);const values=cases.filter(a=>Date.parse(a.done_at)>=Date.parse(a.created_at)).map(a=>(Date.parse(a.done_at)-Date.parse(a.created_at))/day).sort((a,b)=>a-b);return {name,count:cases.length,medianDays:values.length?round((values[Math.floor((values.length-1)/2)]+values[Math.floor(values.length/2)])/2):null};}),
       buckets:[...buckets.values()]};
   });
-  const alerts=projects.filter(p=>p.overrun>0).map(p=>({project:p.id,title:p.name+' · oltre budget',detail:round(p.overrun)+' h oltre le ore vendute nel periodo'}));
-  projects.filter(p=>p.phase==='in attesa cliente').forEach(p=>alerts.push({project:p.id,title:p.name+' · attesa cliente',detail:'Stato ricostruito dal dossier di progetto'}));
-  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...((raw.projects||[]).some(p=>!p.merged_into && ['active','planning'].includes(p.status) && /^(attio_|chan_)/.test(p.id) && !isActiveProject(p,today))?['Alcuni progetti importati sono da verificare e non sono conteggiati tra gli attivi. Le ore storiche restano incluse nei consuntivi.']:[])],projects,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)),people,alerts:alerts.slice(0,3),hours:hours(logs)};
+  // Segnali, in ordine di gravità: sforamenti verificati, sforamenti sulla
+  // commessa, blocchi dichiarati, azioni e milestone scadute, ore senza venduto.
+  const alerts=[];
+  projects.filter(p=>p.overrun>0).forEach(p=>alerts.push({project:p.id,kind:'overrun',title:p.name+' · oltre budget',detail:round(p.overrun)+' h oltre le ore vendute nel periodo'}));
+  projects.filter(p=>p.sold&&p.sold.verified&&p.sold.remaining!==null&&p.sold.remaining<0).forEach(p=>alerts.push({project:p.id,kind:'sold',title:p.name+' · oltre il venduto',detail:round(-p.sold.remaining)+' h oltre le '+p.sold.hours+' h vendute sulla commessa'}));
+  projects.filter(p=>p.sold&&p.sold.verified&&p.sold.ratio!==null&&p.sold.ratio>=0.8&&p.sold.remaining>=0).forEach(p=>alerts.push({project:p.id,kind:'sold_near',title:p.name+' · venduto quasi esaurito',detail:Math.round(p.sold.ratio*100)+'% delle ore vendute già utilizzate'}));
+  projects.filter(p=>p.blocks.length).forEach(p=>alerts.push({project:p.id,kind:'block',title:p.name+' · blocco segnalato',detail:p.blocks[0].slice(0,120)}));
+  projects.filter(p=>p.overdueActions>0).forEach(p=>alerts.push({project:p.id,kind:'overdue',title:p.name+' · azioni scadute',detail:p.overdueActions+' azioni dalle call oltre la scadenza'}));
+  projects.filter(p=>p.milestones.some(m=>m.overdue)).forEach(p=>alerts.push({project:p.id,kind:'milestone',title:p.name+' · milestone scaduta',detail:p.milestones.find(m=>m.overdue).what.slice(0,120)}));
+  projects.filter(p=>p.phase==='in attesa cliente').forEach(p=>alerts.push({project:p.id,kind:'waiting',title:p.name+' · attesa cliente',detail:'Stato ricostruito dal dossier di progetto'}));
+  projects.filter(p=>!p.sold&&p.hours.total>0).forEach(p=>alerts.push({project:p.id,kind:'nosold',title:p.name+' · ore senza venduto',detail:round(p.hours.total)+' h nel periodo, nessun budget ore sulla commessa'}));
+  const candidates=catalogue.filter(p=>p.lifecycle==='da verificare');
+  return {period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
-module.exports={category,categoryHours,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};
+module.exports={CATEGORY_RULES,category,categoryHours,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

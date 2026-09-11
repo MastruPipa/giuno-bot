@@ -57,8 +57,9 @@ function buildSessions(events, opts) {
     var refs = {};
     s.items.forEach(function(e) {
       var key = e.kind + ':' + (e.channel || e.name || '');
-      if (!refs[key]) refs[key] = { kind: e.kind, name: e.name || null, channel: e.channel || null, link: e.link || null, count: 0 };
+      if (!refs[key]) refs[key] = { kind: e.kind, name: e.name || null, channel: e.channel || null, link: e.link || null, project: e.project || null, count: 0 };
       refs[key].count++;
+      if (e.project && !refs[key].project) refs[key].project = e.project;
     });
     return { start: new Date(s.start).toISOString(), end: new Date(s.end).toISOString(), minutes: minutes, events: s.items.length,
       refs: Object.keys(refs).map(function(k) { return refs[k]; }) };
@@ -72,10 +73,11 @@ function totalMinutes(sessions) { return (sessions || []).reduce(function(a, s) 
 function formatSessions(sessions, offsetMinutes) {
   return (sessions || []).map(function(s) {
     var parts = s.refs.map(function(r) {
-      if (r.kind === 'slack') return '#' + r.channel + ' (' + r.count + ' messaggi)';
-      if (r.kind === 'calendar') return 'riunione "' + r.name + '"';
-      if (r.kind === 'figma') return 'Figma "' + r.name + '" (' + r.count + ' versioni)';
-      return 'Drive "' + r.name + '" (' + r.count + ' modifiche)';
+      var tag = r.project ? ' [progetto: ' + r.project + ']' : '';
+      if (r.kind === 'slack') return '#' + r.channel + ' (' + r.count + ' messaggi)' + tag;
+      if (r.kind === 'calendar') return 'riunione "' + r.name + '"' + tag;
+      if (r.kind === 'figma') return 'Figma "' + r.name + '" (' + r.count + ' versioni)' + tag;
+      return 'Drive "' + r.name + '" (' + r.count + ' modifiche)' + tag;
     });
     return '- ' + hhmm(Date.parse(s.start), offsetMinutes) + '–' + hhmm(Date.parse(s.end), offsetMinutes) + ' (' + fmtMinutes(s.minutes) + '): ' + parts.join('; ');
   }).join('\n');

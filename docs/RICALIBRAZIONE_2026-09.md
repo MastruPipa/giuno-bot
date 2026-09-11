@@ -595,7 +595,82 @@ il rapporto usato, così si può misurare se le stime migliorano nel tempo.
 Fuori scope, per dopo: Drive Activity API (serve un nuovo scope OAuth),
 registro cartelle/canali/file per progetto, commit GitHub.
 
-## 21. Da fare
+## 21. Registro delle posizioni di progetto
+
+Un artefatto va attribuito alla commessa per POSIZIONE, non per somiglianza
+del nome: il file sta nella cartella del progetto, il messaggio è nel suo
+canale, il file Figma è nel suo progetto Figma. `src/services/projectLocations.js`
+tiene il registro in `project_locations` (kind: slack_channel, drive_folder,
+figma_project, figma_file; source: channel_map, document, figma, admin).
+
+Ricostruzione (cron `project_locations_sync` 6:50 feriali,
+`/giuno admin progetti posizioni rebuild [apply]`): i canali dalla channel
+map (`chan_<id>` → alta, per nome → media); la cartella Drive che contiene
+il kick-off o il brief di un progetto (i recap no: stanno in "Appunti di
+Gemini", che non è mai una cartella di progetto); i progetti Figma con nome
+simile a progetto o cliente. Le righe impostate a mano
+(`/giuno admin progetti posizione <nome> = <#canale | link cartella | link
+progetto o file Figma>`) vincono e non vengono mai sovrascritte.
+
+Uso nel daily stimato: documenti Drive (per cartella), messaggi (per canale)
+e file Figma (per file o progetto) portano `[progetto: X]` nel prompt e
+nelle sessioni di lavoro; il modello copia X nel campo `project` del task e
+Giuno lo aggancia al catalogo per nome esatto prima del matcher. Senza
+tabella il registro vive in memoria con i soli canali, e i comandi lo dicono.
+
+## 22. Revisione dei criteri della dashboard giun.os
+
+Richiesta di Antonio (11/9): "ci sono un bel po' di criteri sbagliati".
+Letto tutto `src/giunos/*`. Cosa non tornava e cosa cambia:
+
+1. **Venduto "nel periodo" sempre "Non verificato".** Il confronto usava
+   solo budget con `scope=period` e date esattamente uguali al mese o
+   trimestre di calendario: nessun contratto è fatto così, quindi la colonna
+   restava vuota per sempre. Ora la colonna è "Usate / vendute sulla
+   commessa": il budget dell'intera commessa (`scope=project`), con ore
+   usate nel perimetro contrattuale, residue e percentuale. Se la baseline è
+   verificata è "venduto verificato"; se è la proposta di Giuno (preventivo,
+   kick-off, deal) resta visibile ma marcata "proposta, non confermata" e non
+   genera allarmi. Due baseline sulla stessa commessa → "in conflitto", nessun
+   numero. Il budget per periodo, quando c'è, resta in scheda.
+2. **Tipologie di attività.** Quattro categorie generiche con regex grezze
+   (`post` prendeva anche "posta"). Ora una tassonomia da agenzia: Revisioni,
+   Riunioni e coordinamento, Commerciale, Strategia e analisi, Video e foto,
+   Contenuti e copy, Design, Sviluppo, Pianificazione e gestione,
+   Amministrazione, Formazione. La distribuzione esiste anche per progetto e
+   per tutto il team in panoramica, non solo per persona.
+3. **Milestone e blocchi non c'erano.** Il brief li chiede per progetto. La
+   scheda ora mostra blocchi e rischi, milestone con data e stato (scadute
+   in evidenza), prossimi passi con responsabile, azioni dalle call aperte e
+   scadute, team dal dossier quando non ci sono ore.
+4. **Segnali.** Prima solo "oltre budget nel periodo" (impossibile, vedi 1)
+   e "attesa cliente". Ora in ordine di gravità: oltre il venduto sulla
+   commessa (solo verificato), venduto quasi esaurito (≥ 80%), blocchi,
+   azioni scadute, milestone scadute, attesa cliente, ore senza alcun budget.
+5. **Stato dei progetti.** "Storico / stato operativo da verificare" metteva
+   insieme acquisiti, sospesi e conclusi. Ora ogni progetto ha un ciclo di
+   vita esplicito (operativo con evidenza e scadenza, da verificare, sospeso,
+   concluso, archiviato); gli acquisiti in attesa di evidenza hanno una
+   sezione propria in panoramica invece di sparire.
+6. **Persone.** La colonna "azioni chiuse" (quasi sempre zero: le azioni
+   vengono solo dalle call) lascia il posto a "dove va più tempo" (progetto
+   principale e quota); nella scheda persona ogni progetto ha la quota del
+   periodo, e "budget individuale non verificato" sparisce dove non ha senso.
+   Nuova card di copertura: quante persone hanno ore nel periodo e quante
+   solo stime.
+
+Invariati, perché giusti: settimane lunedì-domenica e periodi di calendario;
+ore registrate e stimate separate; solo `log_type=daily` (i weekly sono
+piani); dedup delle correzioni; dettaglio del daily usato per le categorie
+solo se torna col consuntivo; `consegnato` ≠ approvato; dati assenti = "—",
+mai zero; 503 sugli errori, mai totali parziali.
+
+Restano da fare: tempi di chiusura per tipologia con una base dati vera
+(oggi solo le azioni dalle call), il venduto per persona (arriva con i ruoli
+dei contratti della #135), un andamento per progetto oltre a quello per
+persona.
+
+## 23. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

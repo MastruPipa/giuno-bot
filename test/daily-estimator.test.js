@@ -203,3 +203,31 @@ test('review Codex: bucket email e nome uniti senza doppioni; revisioni confront
   assert.equal(r2.events.byEmail['a@k.it'].length, 3, 'budget scaduto: resta la sola modifica finale per file');
   assert.ok(r2.events.byEmail['a@k.it'].every(function(e) { return e.at === '2026-09-10T15:00:00Z'; }));
 });
+
+test('registro posizioni: documenti, messaggi e file Figma portano [progetto: X] nel prompt e nelle sessioni', async function() {
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'Registro cassa', hours: 1, project: 'offkatania' }], domani: [], blocchi: null, confidence: 'alta' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var locSvc = require('../src/services/projectLocations');
+  var locations = locSvc.index([
+    { project_id: 'chan_C1', project_name: 'offkatania', kind: 'slack_channel', ref: 'C1', confidence: 'alta', source: 'channel_map' },
+    { project_id: 'chan_C1', project_name: 'offkatania', kind: 'drive_folder', ref: 'F_OFF', confidence: 'alta', source: 'admin' },
+    { project_id: 'attio_2', project_name: 'Elios', kind: 'figma_project', ref: '77', confidence: 'media', source: 'figma' },
+  ]);
+  var dayContext = {
+    users: [{ id: 'U1', name: 'Peppe Rossi', email: 'peppe@k.it' }],
+    slackByUser: { U1: [{ channel: 'offkatania', channel_id: 'C1', text: 'caricato', files: [], at: '2026-09-10T10:20:00+02:00' }] },
+    driveByEmail: { 'peppe@k.it': [{ name: 'Registro cassa', type: 'spreadsheet', created_today: true, modified_at: '2026-09-10T08:30:00Z', folder: 'F_OFF' }] }, driveByName: {},
+    driveEvents: { byEmail: { 'peppe@k.it': [{ at: '2026-09-10T10:30:00+02:00', kind: 'drive', name: 'Registro cassa', folder: 'F_OFF' }] }, byName: {} },
+    figmaByEmail: { 'peppe@k.it': [{ name: 'Landing', project: 'Elios landing', figma_project_id: '77', file_key: 'K1', type: 'figma' }] }, figmaByName: {},
+    figmaEvents: { byEmail: { 'peppe@k.it': [{ at: '2026-09-10T15:00:00+02:00', kind: 'figma', name: 'Landing', figma_project_id: '77', file_key: 'K1' }] }, byName: {} },
+    adminEvents: [], locations: locations,
+  };
+  var out = await est.estimateDaily('U1', '2026-09-10', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null });
+  assert.ok(out);
+  assert.match(prompt, /Registro cassa \(spreadsheet, creato oggi alle 08:30\) \[progetto: offkatania\]/);
+  assert.match(prompt, /\[#offkatania → progetto: offkatania\] caricato/);
+  assert.match(prompt, /Landing \(progetto Figma: Elios landing\) \[progetto: Elios\]/);
+  assert.match(prompt, /SESSIONI DI LAVORO[\s\S]*#offkatania \(1 messaggi\) \[progetto: offkatania\]; Drive "Registro cassa" \(1 modifiche\) \[progetto: offkatania\]/);
+  assert.match(prompt, /Figma "Landing" \(1 versioni\) \[progetto: Elios\]/);
+});
