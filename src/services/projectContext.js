@@ -130,6 +130,7 @@ async function resolveByContext(text, userId, catalog, deps) {
   var activities = deps.activities || await require('./projectActivities').loadOpen({ deps: deps });
   var v = matchByVocabulary(text, recentIds, activities);
   if (v && byId[v.id]) return { id: v.id, name: byId[v.id].name, via: 'vocabolario' };
+  if (deps.model === false) return null;
   var m = await matchByModel(text, catalog, recentIds, deps);
   if (m) return { id: m.id, name: m.name, via: 'modello' };
   return null;

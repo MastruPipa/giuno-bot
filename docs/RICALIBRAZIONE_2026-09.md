@@ -900,6 +900,12 @@ diventava un progetto attivo a sé, con le sue ore.
    (`enrichTasksWithProjects` con `userId`: vocabolario prima del modello,
    recenti per prime nel prompt), e la dedup delle righe già nate dal
    planner (contesto di chi le ha scritte, `owner_slack_id`).
+   Due limiti voluti (review Codex): nel planner si è prima dell'ack di
+   Slack (tre secondi), quindi lì il modello non viene interpellato (solo
+   commesse recenti e vocabolario); e un'unione letta dal modello non si
+   applica da sola con `dedup apply` (anteprima e apply sarebbero due
+   campionamenti diversi): il report la propone con il comando `merge`
+   esplicito, l'admin decide.
 
 Da fare dopo il merge: `/giuno admin progetti dedup` in anteprima, poi
 `apply`; le poche righe che restano irriconoscibili si uniscono con

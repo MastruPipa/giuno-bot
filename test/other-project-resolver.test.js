@@ -101,5 +101,18 @@ test('dal contesto: le commesse recenti della persona e il vocabolario delle att
   // dedup: la riga irriconoscibile del planner si risolve dal contesto di chi l'ha scritta
   var row = { id: 'prj_c', name: 'Tutte le pubblicazioni e le caption dei contenuti che ancora non le hanno', status: 'active', tags: ['fonte:planner'], owner_slack_id: 'U_GIUSY' };
   var pp = await dedup.plannerProposals(PROJECTS.concat([row]), {}, { supabase: sb, activities: activities, ask: ask });
-  assert.equal(pp.unresolved.length, 0); assert.equal(pp.proposals[0].canonical.id, 'attio_1'); assert.match(pp.proposals[0].reasons[0], /per contesto di chi l'ha scritta/);
+  assert.equal(pp.unresolved.length, 0); assert.equal(pp.proposals[0].canonical.id, 'attio_1'); assert.match(pp.proposals[0].reasons[0], /per contesto di chi l'ha scritta/); assert.equal(pp.proposals[0].manual, undefined || false);
+  // review Codex: la lettura del modello si propone ma non si applica da sola (anteprima e apply sono due campionamenti)
+  var ppModel = await dedup.plannerProposals(PROJECTS.concat([row]), {}, { supabase: sb, activities: [], ask: ask });
+  assert.equal(ppModel.proposals[0].manual, true); assert.match(ppModel.proposals[0].reasons[0], /il modello la legge come/);
+  var merges = [];
+  var repModel = await dedup.runDedup({ projects: PROJECTS.concat([row]), stats: {}, apply: true, deps: { client: { useSupabase: false }, supabase: sb, activities: [], ask: ask } });
+  assert.equal(repModel.applied, 0, 'niente merge automatico dal modello');
+  assert.match(dedup.formatReport(repModel, true), /🤔 Tutte le pubblicazioni[\s\S]*merge Tutte le pubblicazioni[\s\S]*-> Gambino Vini · Social/);
+  // review Codex: nel planner, prima dell'ack, il modello non viene interpellato
+  var asked = 0;
+  var pre = await resolver.resolveOtherProject('Tutte le pubblicazioni e le caption dei contenuti', 'U_GIUSY', PROJECTS, { db: db, matcher: matcher, catalog: catalog, supabase: sb, activities: [], ask: async function() { asked++; return 'Gambino Vini · Social'; }, model: false });
+  assert.equal(asked, 0); assert.match(pre.error, /Non capisco/);
+  var preVocab = await resolver.resolveOtherProject('caption e storie', 'U_GIUSY', PROJECTS, { db: db, matcher: matcher, catalog: catalog, supabase: sb, activities: activities, ask: async function() { asked++; return 'NONE'; }, model: false });
+  assert.equal(preVocab.project.id, 'attio_1'); assert.equal(preVocab.via, 'vocabolario'); assert.equal(asked, 0);
 });

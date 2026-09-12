@@ -158,7 +158,9 @@ async function plannerProposals(projects, redirect, deps) {
     var hops = 0;
     while (targetId && redirect[targetId] && hops < 10) { targetId = redirect[targetId]; hops++; }
     var canonical = targetId && byId[targetId];
-    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: ' + how + ' ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
+    // Una lettura del modello non è riproducibile tra anteprima e apply: si
+    // propone con il comando di merge esplicito, mai applicata da sola.
+    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], manual: how === 'il modello la legge come', reasons: ['creato dal planner: ' + how + ' ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
     else unresolved.push(p);
   }
   return { proposals: proposals, unresolved: unresolved };
@@ -267,7 +269,7 @@ async function runDedup(opts) {
   if (opts.apply) {
     for (var i = 0; i < proposals.length; i++) {
       var p = proposals[i];
-      if (p.ambiguous) continue;
+      if (p.ambiguous || p.manual) continue;
       for (var j = 0; j < p.duplicates.length; j++) {
         try { await applyMerge(p.duplicates[j], p.canonical, deps); report.applied++; } catch(e) { /* già loggato */ }
       }
@@ -283,6 +285,7 @@ function formatReport(r, applied) {
     (applied ? ' → ' + r.applied + ' merge applicati, ' + r.archived + ' archiviate' : ' (anteprima)'));
   r.proposals.forEach(function(p) {
     if (p.ambiguous) { lines.push('• ⚠️ ' + p.projects.map(function(x) { return x.name; }).join(' / ') + ' — ' + p.note + ': decidi tu con `merge`'); return; }
+    if (p.manual) { lines.push('• 🤔 ' + String(p.duplicates[0].name).substring(0, 60) + ' — ' + p.reasons.join(', ') + ': se torna, `/giuno admin progetti merge ' + String(p.duplicates[0].name).substring(0, 40) + ' -> ' + p.canonical.name + '`'); return; }
     lines.push('• *' + p.canonical.name + '* ← ' + p.duplicates.map(function(d) { return d.name + ' (' + source(d) + ')'; }).join(', ') + ' _[' + p.reasons.join(', ') + ']_');
   });
   if (r.noise.length) lines.push('Rumore da archiviare: ' + r.noise.map(function(n) { return n.name; }).join(', '));

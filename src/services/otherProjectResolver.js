@@ -46,6 +46,8 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
   if (!hit) {
     // Dal contesto: le commesse recenti della persona, il vocabolario delle
     // loro attività, poi il modello. Mai a indovinare.
+    // Nel planner si è PRIMA dell'ack di Slack (3 secondi): solo commesse
+    // recenti + vocabolario delle attività, niente modello (deps.model === false).
     var ctx = deps.context || require('./projectContext');
     var recent = await ctx.recentProjectsFor(userId, { deps: deps });
     var found = await ctx.resolveByContext(clean, userId, catalog, Object.assign({ recent: recent }, deps));
