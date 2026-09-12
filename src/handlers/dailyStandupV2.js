@@ -527,6 +527,9 @@ async function handleDailyResponse(userId, text, structured, opts) {
 
   // Stima di Giuno confermata o corretta → coppia stimato/reale per la calibrazione
   await recordEstimateCorrection(userId, todayStr, structured, opts.source === 'estimate_confirmed');
+  // La proposta è consumata: via anche dallo stato persistito, altrimenti un
+  // riavvio la ricarica e il vecchio "Confermo così" sovrascrive il daily vero.
+  if (getPendingEstimate(userId, todayStr)) { clearPendingEstimate(userId); await db.saveStandup(sd); }
 
   // Save permanently to standup_entries
   try {
@@ -649,6 +652,7 @@ async function recordChannelDaily(userId, text, channelId) {
     if (structured) await require('../services/projectMatcher').enrichStructured(structured, { userId: userId });
   } catch(e) { logger.warn('[DAILY-V2] Parse daily da canale fallito:', e.message); }
   await recordEstimateCorrection(userId, todayStr, structured, false);
+  if (getPendingEstimate(userId, todayStr)) { clearPendingEstimate(userId); try { await db.saveStandup(sd); } catch(e) { logger.debug('[DAILY-V2] stima consumata non persistita:', e.message); } }
 
   try {
     var supabase = require('../services/db/client').getClient();
@@ -837,6 +841,8 @@ module.exports = {
   recordEstimateCorrection: recordEstimateCorrection,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
+  clearPendingEstimate: clearPendingEstimate,
+  rememberPendingEstimate: rememberPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,
   quickProjectButtons: quickProjectButtons,
   notifyMissingEstimates: notifyMissingEstimates,

@@ -97,3 +97,15 @@ test('diagnosi agli admin in DM: una riga per persona con le cause, più le istr
   assert.equal(n, 1); assert.equal(sent[0].channel, 'U_ANT');
   assert.match(sent[0].text, /Stime del daily mancanti oggi \(2\)[\s\S]*\*Paolo Spartano\*: calendario: Google non collegato[\s\S]*\*Gianna\*: nessuna fonte vuota registrata[\s\S]*SLACK_USER_TOKEN/);
 });
+
+test('stima consumata: sparisce dalla memoria E dallo stato persistito (un riavvio non la ricarica)', function() {
+  var standup = require('../src/services/db/standup');
+  var d = require('../src/handlers/dailyStandupV2');
+  var sd = standup.getStandupCache();
+  d.rememberPendingEstimate('U9', '2026-09-12', { oggi: [{ task: 'y', hours: 2 }] });
+  assert.ok(sd.stime.U9, 'in standup_data.stime finché è in sospeso');
+  assert.ok(d.getPendingEstimate('U9', '2026-09-12'));
+  d.clearPendingEstimate('U9');
+  assert.equal(sd.stime.U9, undefined, 'via dallo stato persistito');
+  assert.equal(d.getPendingEstimate('U9', '2026-09-12'), null, 'e nemmeno la memoria la ripesca');
+});
