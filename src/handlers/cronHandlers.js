@@ -1298,6 +1298,10 @@ function scheduleCrons() {
     var { syncRosterFromSlack } = require('../jobs/teamRosterSyncJob');
     return syncRosterFromSlack({ apply: true, notify: true });
   }, { timezone: 'Europe/Rome', name: 'team_roster_sync', lockTtl: 10 });
+  // Clienti riconciliati: stato economico distinto dalle prove operative delle commesse.
+  cron.schedule('35 7 * * 1-5', function() {
+    return require('../jobs/clientEvidenceJob').run();
+  }, { timezone: 'Europe/Rome', name: 'client_evidence_refresh', lockTtl: 15 });
   // Evidenze operative dei progetti: attiva chi ha prove datate, chiede al PM per il resto
   cron.schedule('5 7 * * 1-5', function() {
     var { refreshLifecycle } = require('../agents/lifecycleEvidence');
