@@ -1116,6 +1116,23 @@ app.action('daily_estimate_confirm', async function(args) {
   } catch(e) { logger.error('[DAILY-ESTIMATE] conferma fallita:', e.message); }
 });
 
+// Bottone rapido "commessa X" nel DM del daily: il modulo si apre con la
+// prima riga già intestata alla commessa; la persona mette ore e dettaglio.
+app.action('daily_quick_project', async function(args) {
+  await args.ack();
+  var action = args.action || (args.body.actions && args.body.actions[0]) || {};
+  var label = action.text && action.text.text ? String(action.text.text) : '';
+  var prefill = label ? { oggi: [{ task: label + ' - ', hours: 0 }], domani: [], blocchi: null } : null;
+  try {
+    await withTimeout(function() {
+      return app.client.views.open({ trigger_id: args.body.trigger_id, view: rebuildDailyModal({ oggi: 2, domani: 2, prefill: prefill || undefined }) });
+    }, 2500, 'views.open daily quick');
+  } catch(e) {
+    logger.error('[DAILY-MODAL] quick views.open fallita:', e && e.message);
+    try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* ' + label + ' … (con le ore).' }); } catch(_) {}
+  }
+});
+
 app.action('open_daily_modal', async function(args) {
   var ackStart = Date.now();
   await args.ack();

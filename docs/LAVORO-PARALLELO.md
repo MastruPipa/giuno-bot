@@ -57,7 +57,7 @@ Aggiornare a inizio e fine sessione. Una riga per sessione attiva.
 
 | Agente | Area | Ramo / PR | Da | Stato |
 |---|---|---|---|---|
-| Claude | — | `claude/hopeful-dijkstra-uq0ulb` | 12/9 | #148–#151 mergiate; nessuna PR aperta |
+| Claude | C (stime del daily: diagnosi, bottoni rapidi, stime persistite, attività nel prompt) | `claude/hopeful-dijkstra-uq0ulb` / nuova PR | 12/9 | in attesa di merge |
 | Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136, #137 mergiate; #135 (contratti) in bozza | 10/9 | in corso |
 
 ## 4. Prossimi lavori concordati (chi li prende lo scrive qui)

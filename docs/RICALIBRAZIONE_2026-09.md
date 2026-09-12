@@ -911,7 +911,45 @@ Da fare dopo il merge: `/giuno admin progetti dedup` in anteprima, poi
 `apply`; le poche righe che restano irriconoscibili si uniscono con
 `/giuno admin progetti merge <riga> -> <commessa>` o si chiudono.
 
-## 29. Da fare
+## 29. Stime del daily: perché mancano, e quattro rimedi
+
+Antonio (12/9): "come possiamo migliorare le stime di Giuno? Ieri non ha
+nemmeno fatto la stima". In #daily alle 18:00 dell'11/9: "per Paolo e
+Gianna non ho trovato tracce di giornata: niente stima". La stima era
+partita, ma le fonti erano vuote: Drive e inviti si leggono con il Google
+di un admin, i canali contano solo dove c'è Giuno, `SLACK_USER_TOKEN` e
+`FIGMA_TOKEN` mancano, e i due non avevano piano né "domani".
+
+1. **Diagnosi per persona agli admin** (`dailyEstimator.explainMissing`,
+   `dailyStandupV2.notifyMissingEstimates`). Alle 18:00, per chi resta
+   senza stima, un DM agli admin con una riga a testa: "calendario: Google
+   non collegato e nessun admin con Google", "canali: nessun messaggio suo
+   nei canali dove c'è Giuno", "ricerca Slack: SLACK_USER_TOKEN mancante",
+   "Figma: FIGMA_TOKEN non configurato", "nessun piano settimanale". Le
+   frasi cambiano quando la causa è risolta ("Drive: nessun file suo oggi,
+   letto con il Google di 1 admin"). In fondo, cosa sblocca ogni fonte.
+2. **Bottoni rapidi quando non c'è stima** (`quickProjectButtons`, action
+   `daily_quick_project`). Nel DM delle 16:00 senza proposta: "Oggi hai
+   lavorato su una di queste?" con le commesse recenti della persona (max
+   4, per ore delle ultime tre settimane). Un tap apre il modulo con la
+   prima riga già intestata alla commessa: restano ore e dettaglio.
+3. **Stime persistite** (`standup_data.stime`, migrazione in
+   `supabase_migration.sql`). Le proposte delle 16:00 vivevano in memoria e
+   un deploy tra le 16:00 e le 18:00 le cancellava (l'11/9 abbiamo
+   pubblicato alle 16:10). Ora stanno nello stato del daily già
+   persistito, con degradazione se la colonna manca; alle 18:00 si
+   svuotano insieme al resto.
+4. **Attività nel prompt della stima.** Le attività aperte sulle commesse
+   recenti della persona, con il loro vocabolario, entrano nel prompt: il
+   modello chiama il task con il nome dell'attività ("PED settembre 2026")
+   quando le tracce combaciano, e la microtask si aggancia da sola.
+
+Da fare dopo il merge: applicare la migrazione (`ALTER TABLE standup_data
+ADD COLUMN IF NOT EXISTS stime JSONB NOT NULL DEFAULT '{}'`); collegare
+Google da un admin; invitare Giuno nei canali dove lavorano Paolo e Gianna;
+`SLACK_USER_TOKEN`, `FIGMA_TOKEN`, `FIGMA_TEAM_ID` su Railway.
+
+## 30. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
