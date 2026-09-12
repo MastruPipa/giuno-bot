@@ -26,4 +26,4 @@ Il codice richiede merge e deploy per entrare nel bot; le tabelle additive da so
 
 ## Validazione
 
-Suite completa sul codice integrato con origin/main, incluse conservazione ore, conflitti di identità, esclusione weekly dal consuntivo, vincoli SQL e riconoscimento Altro/daily. Il rendering viene verificato con test del frontend. La verifica visiva nel browser è rimasta indisponibile: il controllo di sicurezza amministrativo del browser non ha potuto autorizzare la pagina locale.
+411 test passati sul codice integrato con origin/main, incluse conservazione ore, conflitti di identità, esclusione weekly dal consuntivo, vincoli SQL e riconoscimento Altro/daily. Il rendering viene verificato con test del frontend. La verifica visiva nel browser è rimasta indisponibile: il controllo di sicurezza amministrativo del browser non ha potuto autorizzare la pagina locale.
