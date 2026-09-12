@@ -403,7 +403,9 @@ function register(appInstance) {
     for (var oi = 0; oi < rows.length; oi++) {
       var orow = rows[oi];
       if (orow.project_id !== modals.OTHER_PROJECT_VALUE) continue;
-      var resolved = await resolveOtherProject(orow.other_name, userId, projects);
+      // Prima dell'ack di Slack: niente modello (model:false), solo nome,
+      // cliente nominato, commesse recenti e vocabolario delle attività.
+      var resolved = await resolveOtherProject(orow.other_name, userId, projects, { model: false });
       if (resolved.error) { otherErrors['wp_other_' + orow.index] = resolved.error; continue; }
       orow.project_id = resolved.project.id;
       projectsById[resolved.project.id] = resolved.project;

@@ -440,7 +440,7 @@ async function handleDailyResponse(userId, text, structured, opts) {
   // Aggancio ai progetti veri (project_id/project_name dentro ogni task)
   if (structured) {
     try {
-      await require('../services/projectMatcher').enrichStructured(structured);
+      await require('../services/projectMatcher').enrichStructured(structured, { userId: userId });
     } catch(e) { logger.warn('[DAILY-V2] Project match fallito:', e.message); }
   }
 
@@ -584,7 +584,7 @@ async function recordChannelDaily(userId, text, channelId) {
   var structured = null;
   try {
     structured = await require('../services/dailyParser').parseDailyText(clean);
-    if (structured) await require('../services/projectMatcher').enrichStructured(structured);
+    if (structured) await require('../services/projectMatcher').enrichStructured(structured, { userId: userId });
   } catch(e) { logger.warn('[DAILY-V2] Parse daily da canale fallito:', e.message); }
   await recordEstimateCorrection(userId, todayStr, structured, false);
 

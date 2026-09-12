@@ -73,8 +73,12 @@ function invalidateCatalog() { _catalog = null; _catalogAt = 0; }
 
 // ─── Fallback LLM (batch, una chiamata per daily) ────────────────────────────
 
-async function llmMatch(unmatchedTexts, catalog) {
+// recentIds: commesse recenti della persona, elencate per prime nel prompt.
+async function llmMatch(unmatchedTexts, catalog, recentIds) {
   if (unmatchedTexts.length === 0 || catalog.length === 0) return {};
+  var recentSet = {};
+  (recentIds || []).forEach(function(id) { recentSet[id] = true; });
+  var ordered = catalog.filter(function(p) { return recentSet[p.id]; }).concat(catalog.filter(function(p) { return !recentSet[p.id]; }));
   try {
     var Anthropic = require('@anthropic-ai/sdk');
     var client = new Anthropic();
@@ -87,7 +91,7 @@ async function llmMatch(unmatchedTexts, catalog) {
           'Ometti gli indici per cui non sei sicuro: MAI tirare a indovinare.',
         messages: [{
           role: 'user',
-          content: 'PROGETTI:\n' + catalog.map(function(p) { return '- ' + p.name; }).join('\n') +
+          content: 'PROGETTI' + (recentIds && recentIds.length ? ' (i primi ' + ordered.filter(function(p) { return recentSet[p.id]; }).length + ' sono quelli su cui la persona ha lavorato di recente: i più probabili)' : '') + ':\n' + ordered.map(function(p) { return '- ' + p.name + (p.client ? ' (cliente: ' + p.client + ')' : ''); }).join('\n') +
             '\n\nTASK:\n' + unmatchedTexts.map(function(t, i) { return i + '. ' + t; }).join('\n'),
         }],
       });
@@ -120,7 +124,7 @@ async function enrichTasksWithProjects(tasks, options) {
   options = options || {};
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
   try {
-    var catalog = await getCatalog();
+    var catalog = options.catalog || await getCatalog();
 
     var unmatched = [];
     tasks.forEach(function(t, i) {
@@ -134,8 +138,26 @@ async function enrichTasksWithProjects(tasks, options) {
       }
     });
 
+    // Contesto della persona (options.userId): commesse recenti e vocabolario
+    // delle loro attività prima del modello; il modello le vede per prime.
+    var recentIds = [];
+    if (options.userId && unmatched.length > 0) {
+      try {
+        var ctx = require('./projectContext');
+        var recent = await ctx.recentProjectsFor(options.userId, { deps: options.deps });
+        recentIds = recent.map(function(r) { return r.id; });
+        var acts = Array.isArray(options.activities) ? options.activities : await require('./projectActivities').loadOpen({ deps: options.deps });
+        var byId = {};
+        catalog.forEach(function(p) { byId[p.id] = p; });
+        unmatched = unmatched.filter(function(u) {
+          var v = ctx.matchByVocabulary(u.text, recentIds, acts);
+          if (v && byId[v.id]) { tasks[u.index].project_id = v.id; tasks[u.index].project_name = byId[v.id].name; return false; }
+          return true;
+        });
+      } catch(e) { logger.debug('[PROJECT-MATCH] contesto persona saltato:', e.message); }
+    }
     if (catalog.length > 0 && options.useLlm !== false && unmatched.length > 0) {
-      var llmHits = await llmMatch(unmatched.map(function(u) { return u.text; }), catalog);
+      var llmHits = await (options.llm || llmMatch)(unmatched.map(function(u) { return u.text; }), catalog, recentIds);
       unmatched.forEach(function(u, pos) {
         var p = llmHits[String(pos)];
         if (p) {
