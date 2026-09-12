@@ -133,9 +133,10 @@ function isPlannerProject(p) {
 // una riga che nomina il canale "Tarocco" finisce sul deal in cui quel
 // canale sta per essere unito, non sul canale (che dopo l'apply è già
 // merged e lascerebbe le ore su un progetto intermedio).
-function plannerProposals(projects, redirect) {
+async function plannerProposals(projects, redirect, deps) {
   var matcher = require('../services/projectMatcher');
   var resolver = require('../services/otherProjectResolver');
+  var ctx = (deps && deps.context) || require('../services/projectContext');
   redirect = redirect || {};
   var list = (projects || []).filter(function(p) { return p && p.id && p.status !== 'merged'; });
   var real = list.filter(function(p) { return !isPlannerProject(p) && source(p) !== 'cat'; });
@@ -143,15 +144,23 @@ function plannerProposals(projects, redirect) {
   var byId = {};
   real.forEach(function(p) { byId[p.id] = p; });
   var proposals = [], unresolved = [];
-  list.filter(isPlannerProject).forEach(function(p) {
+  var rows = list.filter(isPlannerProject);
+  for (var i = 0; i < rows.length; i++) {
+    var p = rows[i];
     var hit = matcher.resolveTask(p.name, catalog) || resolver.tokenMatch(p.name, catalog);
+    var how = 'nomina';
+    if (!hit && p.owner_slack_id) {
+      // Dal contesto di chi l'ha scritta: le sue commesse recenti, il
+      // vocabolario delle attività, poi il modello.
+      try { var c = await ctx.resolveByContext(p.name, p.owner_slack_id, catalog, deps || {}); if (c) { hit = c; how = c.via === 'modello' ? 'il modello la legge come' : 'per contesto di chi l\'ha scritta:'; } } catch(e) { logger.debug('[DEDUP] contesto planner:', e.message); }
+    }
     var targetId = hit && hit.id;
     var hops = 0;
     while (targetId && redirect[targetId] && hops < 10) { targetId = redirect[targetId]; hops++; }
     var canonical = targetId && byId[targetId];
-    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: nomina ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
+    if (canonical) proposals.push({ canonical: canonical, duplicates: [p], projects: [canonical, p], reasons: ['creato dal planner: ' + how + ' ' + (hit.id === canonical.id ? canonical.name : hit.name + ' → ' + canonical.name)] });
     else unresolved.push(p);
-  });
+  }
   return { proposals: proposals, unresolved: unresolved };
 }
 
@@ -251,7 +260,7 @@ async function runDedup(opts) {
   var ordinary = proposeMerges(projects.filter(function(p) { return !isPlannerProject(p); }), stats);
   var redirect = {};
   ordinary.forEach(function(p) { if (!p.ambiguous) p.duplicates.forEach(function(d) { redirect[d.id] = p.canonical.id; }); });
-  var planner = plannerProposals(projects, redirect);
+  var planner = await plannerProposals(projects, redirect, deps);
   var proposals = ordinary.concat(planner.proposals);
   var noise = findNoiseProjects(projects);
   var report = { proposals: proposals, noise: noise, plannerUnresolved: planner.unresolved, applied: 0, archived: 0, ambiguous: proposals.filter(function(p) { return p.ambiguous; }).length };

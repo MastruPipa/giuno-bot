@@ -42,11 +42,21 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
   // Il testo nomina un cliente o una commessa ("Tarocco - shooting e onboarding")
   var catalog = deps.catalog || await matcher.getCatalog();
   var hit = matcher.resolveTask(clean, catalog) || tokenMatch(clean, catalog);
-  if (hit) {
-    var row = (activeProjects || []).find(function(p) { return String(p.id) === String(hit.id); }) || await db.getProject(hit.id) || { id: hit.id, name: hit.name };
-    return { project: row, created: false, via: 'testo', text: clean };
+  var via = 'testo';
+  if (!hit) {
+    // Dal contesto: le commesse recenti della persona, il vocabolario delle
+    // loro attività, poi il modello. Mai a indovinare.
+    var ctx = deps.context || require('./projectContext');
+    var recent = await ctx.recentProjectsFor(userId, { deps: deps });
+    var found = await ctx.resolveByContext(clean, userId, catalog, Object.assign({ recent: recent }, deps));
+    if (found) { hit = found; via = found.via; }
+    else {
+      var sugg = ctx.suggestions(recent, catalog, 3);
+      return { error: 'Non capisco a quale commessa si riferisce "' + clean.substring(0, 50) + '". Scegli una voce in lista' + (sugg.length ? ' (le tue ultime: ' + sugg.join(', ') + ')' : '') + ' oppure scrivi anche il nome del cliente.' };
+    }
   }
-  return { error: 'Non trovo una commessa in "' + clean.substring(0, 60) + '". Scegli una voce in lista o scrivi il nome del cliente: le commesse nuove le creano gli admin.' };
+  var row = (activeProjects || []).find(function(p) { return String(p.id) === String(hit.id); }) || await db.getProject(hit.id) || { id: hit.id, name: hit.name };
+  return { project: row, created: false, via: via, text: clean };
 }
 
 // "Vini Gambino - riunione…" nomina "Gambino Vini" con le parole in altro

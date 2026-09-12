@@ -887,9 +887,23 @@ diventava un progetto attivo a sé, con le sue ore.
    gruppi per somiglianza: i loro nomi lunghi avrebbero fuso commesse
    diverse.
 
+3. **Capire dal contesto** (Antonio: "non va bene, ma non possiamo farlo
+   capire dal contesto?"). Quando il testo non nomina nessuno,
+   `src/services/projectContext.js` guarda chi l'ha scritto: le sue commesse
+   recenti (ore registrate e pianificate negli ultimi 21 giorni), il
+   vocabolario delle attività aperte di quelle commesse ("caption" →
+   PED di Gambino Vini → Gambino Vini · Social), e solo dopo il modello,
+   che vede le commesse recenti della persona per prime e risponde con un
+   nome esatto o NONE, mai a indovinare. Vale in tre punti: la voce "Altro"
+   del planner (l'errore resta solo se nemmeno il modello sa, e suggerisce
+   le ultime tre commesse della persona), i task del daily
+   (`enrichTasksWithProjects` con `userId`: vocabolario prima del modello,
+   recenti per prime nel prompt), e la dedup delle righe già nate dal
+   planner (contesto di chi le ha scritte, `owner_slack_id`).
+
 Da fare dopo il merge: `/giuno admin progetti dedup` in anteprima, poi
-`apply`; per le righe irriconoscibili `/giuno admin progetti merge <riga> ->
-<commessa>` oppure `/giuno admin progetti stato <riga> concluso`.
+`apply`; le poche righe che restano irriconoscibili si uniscono con
+`/giuno admin progetti merge <riga> -> <commessa>` o si chiudono.
 
 ## 29. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
