@@ -57,6 +57,7 @@ Aggiornare a inizio e fine sessione. Una riga per sessione attiva.
 
 | Agente | Area | Ramo / PR | Da | Stato |
 |---|---|---|---|---|
+| Codex | C/D (ingresso planner e matcher cliente; G completata; nessuna riscrittura lifecycle) | `feat/gambino-client-hierarchy` | 12/9 | primo blocco completato, PR in bozza; estensione ad altri clienti da validare |
 | Claude | D (commessa dal contesto: `src/services/projectContext.js`, matcher, planner, dedup) | `claude/hopeful-dijkstra-uq0ulb` / nuova PR | 12/9 | in attesa di merge |
 | Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136, #137 mergiate; #135 (contratti) in bozza | 10/9 | in corso |
 

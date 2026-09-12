@@ -1,6 +1,10 @@
 'use strict';
 // Server-only, SELECT-only adapter. No Slack jobs, model calls or database writes.
 const columns={
+  agency_clients:'id,name,aliases',
+  work_nodes:'id,client_id,parent_id,kind,name,period_start,period_end,state,source_url,metadata',
+  project_client_links:'project_id,client_id,node_id,source_url,note',
+  client_evidence:'id,client_id,kind,valid_from,valid_until,source_url,detail',
   standup_entries:'slack_user_id,date,oggi_tasks,source',
   projects:'id,name,client_name,status,owner_slack_id,merged_into,tags,lifecycle_evidence',
   team_members:'slack_user_id,canonical_name,role,active',
@@ -15,7 +19,7 @@ async function readTable(client,table) {
   const rows=[];
   for(let offset=0;offset<100000;offset+=500) {
     // Stable pagination prevents the default 1000-row API cap from changing totals.
-    let q=client.from(table).select(columns[table]).order(table==='team_members'?'slack_user_id':table==='project_dossiers'?'project_id':'id').range(offset,offset+499);
+    let q=client.from(table).select(columns[table]).order(table==='team_members'?'slack_user_id':['project_dossiers','project_client_links'].includes(table)?'project_id':'id').range(offset,offset+499);
     if(table==='time_logs') q=q.in('log_type',['daily','weekly']);
     if (q.abortSignal) q=q.abortSignal(AbortSignal.timeout(15000));
     const res=await q;

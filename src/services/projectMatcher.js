@@ -126,9 +126,22 @@ async function enrichTasksWithProjects(tasks, options) {
   try {
     var catalog = options.catalog || await getCatalog();
 
+    var identity = require('./clientIdentity');
+    var clients = options.clients || await identity.getClients();
     var unmatched = [];
     tasks.forEach(function(t, i) {
       if (!t || !t.task || t.project_id) return;
+      var identified = identity.identify(t.task, clients);
+      if (identified) {
+        t.client_id = identified.client ? identified.client.id : null;
+        t.assignment_status = identified.ambiguous ? 'ambiguous_client' : 'client_only';
+        // Keep the original activity; no automatic month or deliverable guess.
+        if (identified.client && identified.client.default_project_id) {
+          t.project_id = identified.client.default_project_id;
+          t.project_name = identified.client.name;
+        }
+        return;
+      }
       var hit = resolveTask(t.task, catalog);
       if (hit) {
         t.project_id = hit.id;
@@ -169,6 +182,8 @@ async function enrichTasksWithProjects(tasks, options) {
   } catch(e) {
     logger.warn('[PROJECT-MATCH] enrich fallito (task restano senza progetto):', e.message);
   }
+  try { await require('./workNodeMatcher').enrich(tasks, { nodes: options.workNodes, date: options.date }); }
+  catch(e) { logger.debug('[PROJECT-MATCH] dettaglio cliente non disponibile:', e.message); }
   // Livello attività: la microtask agganciata alla commessa cerca l'attività
   // aperta ("caption video gambino" → "PED settembre 2026"). Mai bloccante.
   if (options.activities !== false) {

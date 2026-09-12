@@ -24,6 +24,17 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
   var matcher = deps.matcher || _matcher();
   var clean = String(name || '').replace(/\s+/g, ' ').trim();
   if (clean.length < 2) return { error: 'Scrivi il nome della commessa (almeno 2 caratteri).' };
+  // Explicit reconciled identity precedes ambiguous legacy commessa names.
+  var identity;
+  try { identity = await (deps.identity || require('./clientIdentity')).resolve(clean); }
+  catch(e) { return { error: 'Anagrafica clienti non disponibile. Riprova tra poco.' }; }
+  if (identity) {
+    if (identity.ambiguous) return { error: 'La riga cita più clienti: separa le attività per cliente.' };
+    if (!identity.client.default_project_id) return { error: 'Cliente riconosciuto, associazione ore ancora da completare.' };
+    var posting = (activeProjects || []).find(p => p.id === identity.client.default_project_id) || await db.getProject(identity.client.default_project_id);
+    if (!posting || posting.status !== 'active') return { error: 'Voce ore cliente non disponibile. Riprova tra poco.' };
+    return { project: posting, created: false, client_id: identity.client.id, via: 'cliente', text: clean };
+  }
   var key = norm(clean);
   var existing = (activeProjects || []).find(function(p) { return norm(p.name) === key; }) || null;
   if (!existing) {

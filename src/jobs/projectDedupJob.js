@@ -199,6 +199,9 @@ async function applyMerge(dup, canonical, deps) {
   var c = deps.client || require('../services/db/client');
   if (!c.useSupabase) return { moved: {}, skipped: 'no supabase' };
   var sb = c.getClient();
+  var protectedLinks = await sb.from('project_client_links').select('project_id').in('project_id', [dup.id, canonical.id]);
+  if (protectedLinks.error) throw protectedLinks.error;
+  if ((protectedLinks.data || []).length) throw new Error('Progetti riconciliati: modificare la gerarchia, non unire i registri ore.');
   var moved = {};
   // Anche le attività (livello commessa → attività → microtask) seguono la
   // commessa canonica; i task nei daily restano con l'id del duplicato e la
@@ -256,6 +259,13 @@ async function runDedup(opts) {
   var deps = opts.deps || {};
   var db = deps.db || require('../../supabase');
   var projects = opts.projects || await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 400 });
+  var hierarchyClient = deps.client || require('../services/db/client');
+  if (hierarchyClient.useSupabase) {
+    var linked = await hierarchyClient.getClient().from('project_client_links').select('project_id').in('project_id', projects.map(function(p) { return p.id; }));
+    if (linked.error) throw linked.error;
+    var protectedIds = new Set((linked.data || []).map(function(l) { return l.project_id; }));
+    projects = projects.filter(function(p) { return !protectedIds.has(p.id); });
+  }
   var stats = opts.stats || await loadStats(deps);
   // Le righe del planner si trattano a parte: non entrano nei gruppi per
   // somiglianza (i loro nomi lunghi farebbero fondere commesse diverse).
