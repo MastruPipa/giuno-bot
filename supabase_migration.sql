@@ -457,6 +457,11 @@ CREATE TABLE IF NOT EXISTS project_activities (
 CREATE UNIQUE INDEX IF NOT EXISTS project_activities_unique
   ON project_activities (project_id, lower(name), COALESCE(period_start, DATE '1970-01-01'));
 CREATE INDEX IF NOT EXISTS project_activities_project ON project_activities (project_id, status);
+
+-- ─── Stime del daily in sospeso (12/9/2026) ───
+-- Le proposte delle 16:00 vivevano in memoria: un deploy tra le 16:00 e le
+-- 18:00 le cancellava. Ora stanno qui (userId → { date, structured }).
+ALTER TABLE standup_data ADD COLUMN IF NOT EXISTS stime JSONB NOT NULL DEFAULT '{}';
 -- 2026-09-12: additive client hierarchy. Legacy projects and time logs remain intact.
 CREATE TABLE IF NOT EXISTS public.agency_clients (
  id text PRIMARY KEY, name text NOT NULL,

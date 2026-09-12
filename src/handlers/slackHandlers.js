@@ -1116,6 +1116,26 @@ app.action('daily_estimate_confirm', async function(args) {
   } catch(e) { logger.error('[DAILY-ESTIMATE] conferma fallita:', e.message); }
 });
 
+// Bottone rapido "commessa X" nel DM del daily: il modulo si apre con la
+// prima riga già intestata alla commessa; la persona mette ore e dettaglio.
+app.action('daily_quick_project', async function(args) {
+  await args.ack();
+  var action = args.action || (args.body.actions && args.body.actions[0]) || {};
+  var label = action.text && action.text.text ? String(action.text.text) : '';
+  var projectId = action.value ? String(action.value) : null;
+  var prefill = label ? { oggi: [{ task: label + ' - ', hours: 0 }], domani: [], blocchi: null } : null;
+  try {
+    await withTimeout(function() {
+      // L'id esatto viaggia nel private_metadata: al salvataggio la prima riga
+      // va su QUELLA commessa, anche se il nome è troncato o ambiguo.
+      return app.client.views.open({ trigger_id: args.body.trigger_id, view: rebuildDailyModal({ oggi: 2, domani: 2, prefill: prefill || undefined, quick_project_id: projectId, quick_project_name: label }) });
+    }, 2500, 'views.open daily quick');
+  } catch(e) {
+    logger.error('[DAILY-MODAL] quick views.open fallita:', e && e.message);
+    try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* ' + label + ' … (con le ore).' }); } catch(_) {}
+  }
+});
+
 app.action('open_daily_modal', async function(args) {
   var ackStart = Date.now();
   await args.ack();
@@ -1244,6 +1264,15 @@ app.view('daily_standup_submit', async function(args) {
       totalOggi: totalOggi,
       totalDomani: totalDomani,
     };
+    // Modulo aperto dal bottone rapido: la prima riga porta l'id esatto della
+    // commessa scelta (se la persona non l'ha cancellata dal testo).
+    try {
+      var qmeta = JSON.parse(view.private_metadata || '{}');
+      if (qmeta.quick_project_id && structured.oggi[0] && (!qmeta.quick_project_name || String(structured.oggi[0].task).indexOf(qmeta.quick_project_name) !== -1)) {
+        structured.oggi[0].project_id = String(qmeta.quick_project_id);
+        structured.oggi[0].project_name = qmeta.quick_project_name || undefined;
+      }
+    } catch(_) {}
 
     var dailyStandup = require('./dailyStandupV2');
     var saved = false;
