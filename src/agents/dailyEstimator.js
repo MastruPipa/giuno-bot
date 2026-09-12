@@ -276,7 +276,7 @@ async function collectEvidence(userId, dateStr, deps) {
   deps = deps || {};
   var db = deps.db || require('../../supabase');
   var app = deps.app || require('../services/slackService').app;
-  var evidence = { date: dateStr, sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], slack: [], channels: [], drive: [], figma: [], emails: [], sent: [], sessions: [], calibration: null };
+  var evidence = { date: dateStr, sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], slack: [], channels: [], drive: [], figma: [], emails: [], sent: [], sessions: [], calibration: null, activities: [] };
   var ctx = await dayContext(dateStr, deps);
   var me = findUser(ctx, userId);
   var myEmail = me && me.email ? emailKey(me.email) : null;
@@ -349,6 +349,26 @@ async function collectEvidence(userId, dateStr, deps) {
     evidence.channels = chan.slice(0, 40);
     evidence.sources.push('messaggi nei canali');
   }
+
+  // 1c. Attività aperte sulle commesse recenti della persona: il modello usa
+  // quei nomi ("PED settembre 2026") quando le tracce combaciano con il loro
+  // vocabolario, e la microtask si aggancia all'attività giusta.
+  await safeCall('ESTIMATE.activities', async function() {
+    var ctx = deps.context || require('../services/projectContext');
+    var acts = deps.activitiesService || require('../services/projectActivities');
+    var recent = deps.recent || await ctx.recentProjectsFor(userId, { deps: deps });
+    if (!recent.length) return;
+    var open = deps.activities || await acts.loadOpen({ deps: deps });
+    var rows = [];
+    for (var i = 0; i < recent.length && i < 6; i++) {
+      var mine = open.filter(function(a) { return a.project_id === recent[i].id && (a.status || 'open') === 'open' && !a.recurrence; });
+      if (!mine.length) continue;
+      var name = recent[i].id;
+      try { var p = await db.getProject(recent[i].id); if (p && p.name) name = p.name; } catch(_) {}
+      rows.push({ project: name, activities: mine.slice(0, 4).map(function(a) { return { name: a.name, vocabulary: (a.vocabulary || []).slice(0, 6) }; }) });
+    }
+    if (rows.length) evidence.activities = rows;
+  });
 
   // 2e. File Figma con versioni salvate oggi dalla persona
   var fig = unionBy(myEmail && ctx.figmaByEmail && ctx.figmaByEmail[myEmail], myName && ctx.figmaByName && ctx.figmaByName[myName], itemKey);
@@ -435,6 +455,31 @@ async function collectEvidence(userId, dateStr, deps) {
   return evidence;
 }
 
+// Perché per questa persona non c'è materia prima: una riga per fonte vuota,
+// con la causa che si può sbloccare (token, canali, Google). Usa il contesto
+// di giornata già in cache: costa poco anche alle 18:00.
+async function explainMissing(userId, dateStr, deps) {
+  deps = deps || {};
+  var env = deps.env || process.env;
+  var gauth = deps.gauth || require('../services/googleAuthService');
+  var tokens = gauth.getUserTokens ? (gauth.getUserTokens() || {}) : {};
+  var ctx = await dayContext(dateStr, deps);
+  var evidence = deps.evidence || await collectEvidence(userId, dateStr, deps);
+  var scanners = deps.scanners || await pickScanners(deps);
+  var me = findUser(ctx, userId);
+  var why = [];
+  var mine = !!tokens[userId];
+  if (!evidence.calendar.length) why.push(mine ? 'calendario: Google collegato ma nessun evento oggi' : (scanners.length ? 'calendario: Google non collegato e nessun invito da un admin' : 'calendario: Google non collegato e nessun admin con Google (inviti non leggibili)'));
+  if (!evidence.drive.length) why.push(scanners.length ? 'Drive: nessun file suo oggi (letto con il Google di ' + scanners.length + ' admin)' + (me && me.email ? '' : ', e senza email Slack non lo riconosco') : 'Drive: nessun admin con Google, non leggibile');
+  if (!evidence.channels.length) why.push('canali: nessun messaggio suo oggi nei canali dove c\'è Giuno');
+  if (!evidence.slack.length) why.push(env.SLACK_USER_TOKEN ? 'ricerca Slack: nessun messaggio suo oggi' : 'ricerca Slack: SLACK_USER_TOKEN mancante, vedo solo i canali con Giuno');
+  if (!evidence.figma.length) why.push(env.FIGMA_TOKEN && env.FIGMA_TEAM_ID ? 'Figma: nessuna versione sua oggi' : 'Figma: FIGMA_TOKEN/FIGMA_TEAM_ID non configurati');
+  if (!evidence.emails.length && !evidence.sent.length) why.push(mine ? 'email: nessuna oggi' : 'email: Google non collegato');
+  if (!evidence.plan_yesterday.length) why.push('nessun "domani" nel daily precedente');
+  if (!evidence.weekly_plan.length) why.push('nessun piano settimanale');
+  return why;
+}
+
 function hasUsableEvidence(evidence) {
   if (!evidence) return false;
   return ['plan_yesterday', 'weekly_plan', 'calendar', 'slack', 'channels', 'drive', 'figma', 'emails', 'sent'].some(function(k) { return Array.isArray(evidence[k]) && evidence[k].length > 0; });
@@ -491,6 +536,11 @@ function buildPrompt(evidence) {
     var sess = require('./activitySessions');
     var off = Number(String(romeDayBounds(evidence.date).offset).slice(0, 3)) * 60;
     parts.push('SESSIONI DI LAVORO RICOSTRUITE DAI TIMESTAMP (totale ' + sess.fmtMinutes(sess.totalMinutes(evidence.sessions)) + '):\n' + sess.formatSessions(evidence.sessions, off));
+  }
+  if (evidence.activities && evidence.activities.length) {
+    parts.push('ATTIVITÀ APERTE SULLE COMMESSE RECENTI DELLA PERSONA (se una traccia combacia con queste parole, chiama il task con il nome dell\'attività e metti la commessa in "project"):\n' + evidence.activities.map(function(r) {
+      return '- ' + r.project + ': ' + r.activities.map(function(a) { return a.name + (a.vocabulary.length ? ' (' + a.vocabulary.join(', ') + ')' : ''); }).join('; ');
+    }).join('\n'));
   }
   if (evidence.calibration && evidence.calibration.hint) {
     parts.push('STORICO DELLE STIME PER QUESTA PERSONA: ' + evidence.calibration.hint);
@@ -628,6 +678,7 @@ module.exports = {
   buildPrompt: buildPrompt,
   estimateDaily: estimateDaily,
   formatEstimateBody: formatEstimateBody,
+  explainMissing: explainMissing,
   formatSourcesLine: formatSourcesLine,
   previousWorkingDay: previousWorkingDay,
   SYSTEM_PROMPT: SYSTEM_PROMPT,

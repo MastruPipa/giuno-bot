@@ -58,6 +58,9 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
     } catch(e) { logger.warn('[DAILY-V2] persist inattesa fallito:', e.message); }
   }
   var nome = (utente.name || '').split(' ')[0] || 'ciao';
+  // Senza tracce per la stima, la scorciatoia: le commesse recenti della
+  // persona come bottoni; un tap apre il modulo con la riga già intestata.
+  var quick = await quickProjectButtons(utente.id);
   await app.client.chat.postMessage({
     channel: utente.id,
     text: 'Ciao ' + nome + ', è il momento del daily!',
@@ -70,6 +73,10 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Le ore contano come consuntivo. Il recap esce alle 18:00.' }],
       },
+    ].concat(quick.length ? [
+      { type: 'section', text: { type: 'mrkdwn', text: 'Oggi hai lavorato su una di queste? Un tap e ti apro il modulo già intestato:' } },
+      { type: 'actions', elements: quick },
+    ] : []).concat([
       {
         type: 'actions',
         elements: [{
@@ -79,8 +86,24 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
           action_id: 'open_daily_modal',
         }],
       },
-    ],
+    ]),
   });
+}
+
+// Bottoni con le commesse recenti della persona (max 4): value = project id.
+async function quickProjectButtons(userId, deps) {
+  deps = deps || {};
+  try {
+    var ctx = deps.context || require('../services/projectContext');
+    var recent = await ctx.recentProjectsFor(userId, { deps: deps });
+    var out = [];
+    for (var i = 0; i < recent.length && out.length < 4; i++) {
+      var p = await (deps.db || db).getProject(recent[i].id);
+      if (!p || !p.name) continue;
+      out.push({ type: 'button', text: { type: 'plain_text', text: String(p.name).substring(0, 30), emoji: true }, action_id: 'daily_quick_project', value: String(p.id) });
+    }
+    return out;
+  } catch(e) { logger.debug('[DAILY-V2] bottoni rapidi saltati:', e.message); return []; }
 }
 
 async function sendDailyRequests() {
@@ -154,11 +177,27 @@ var ESTIMATES_ENABLED = String(process.env.DAILY_ESTIMATES_ENABLED || 'true') !=
 // Alle 16:00 il daily arriva già compilato (stima) invece del modulo vuoto.
 var PREFILL_ENABLED = String(process.env.DAILY_PREFILL_ENABLED || 'true') !== 'false';
 
+// Memoria prima, poi lo stato persistito (standup_data.stime): sopravvive
+// a un deploy tra le 16:00 e le 18:00.
 function getPendingEstimate(userId, dateStr) {
   var p = _pendingEstimates[userId];
-  return p && p.date === dateStr ? p.structured : null;
+  if (p && p.date === dateStr) return p.structured;
+  var sd = db.getStandupCache();
+  var q = sd.stime && sd.stime[userId];
+  if (q && q.date === dateStr && q.structured) { _pendingEstimates[userId] = q; return q.structured; }
+  return null;
 }
-function clearPendingEstimate(userId) { delete _pendingEstimates[userId]; }
+function clearPendingEstimate(userId) {
+  delete _pendingEstimates[userId];
+  var sd = db.getStandupCache();
+  if (sd.stime && sd.stime[userId]) delete sd.stime[userId];
+}
+function rememberPendingEstimate(userId, dateStr, structured) {
+  _pendingEstimates[userId] = { date: dateStr, structured: structured };
+  var sd = db.getStandupCache();
+  sd.stime = sd.stime || {};
+  sd.stime[userId] = { date: dateStr, structured: structured };
+}
 
 // Chi ha già un daily VERO oggi, letto dal DB: è la fonte di verità per
 // l'appello. La cache in memoria (sd.risposte) può essere vecchia quando
@@ -193,11 +232,34 @@ async function recordEstimateCorrection(userId, dateStr, structured, confirmed) 
   } catch(e) { logger.debug('[DAILY-V2] calibrazione saltata:', e.message); return false; }
 }
 
+// DM agli admin con la diagnosi per persona: quale fonte era vuota e perché.
+async function notifyMissingEstimates(users, dateStr, deps) {
+  deps = deps || {};
+  var estimator = deps.estimator || require('../agents/dailyEstimator');
+  var roles = deps.roles || await require('../../rbac').getAllRoles();
+  var admins = roles.filter(function(r) { return r.role === 'admin'; }).map(function(r) { return r.slack_user_id; });
+  if (!admins.length || !users.length) return 0;
+  var lines = ['*Stime del daily mancanti oggi (' + users.length + '):* per ognuno, cosa ho controllato e perché era vuoto.'];
+  for (var i = 0; i < users.length; i++) {
+    var why = [];
+    try { why = await estimator.explainMissing(users[i].id, dateStr, deps.estimatorDeps); } catch(e) { why = ['diagnosi non disponibile: ' + e.message]; }
+    lines.push('• *' + (users[i].name || users[i].id) + '*: ' + (why.length ? why.join('; ') : 'nessuna fonte vuota registrata'));
+  }
+  lines.push('_Le fonti si sbloccano così: Google collegato da un admin (Drive e inviti per tutti), Giuno invitato nei canali di lavoro, `SLACK_USER_TOKEN` e `FIGMA_TOKEN` su Railway._');
+  var client = (deps.app || app).client;
+  var sent = 0;
+  for (var a = 0; a < admins.length; a++) {
+    try { await client.chat.postMessage({ channel: admins[a], text: lines.join('\n') }); sent++; }
+    catch(e) { logger.debug('[DAILY-V2] diagnosi a ' + admins[a] + ' fallita:', e.message); }
+  }
+  return sent;
+}
+
 async function buildEstimateFor(utente, dateStr) {
   var estimator = require('../agents/dailyEstimator');
   var structured = await estimator.estimateDaily(utente.id, dateStr);
   if (!structured || !structured.oggi || structured.oggi.length === 0) return null;
-  _pendingEstimates[utente.id] = { date: dateStr, structured: structured };
+  rememberPendingEstimate(utente.id, dateStr, structured);
   return structured;
 }
 
@@ -465,6 +527,9 @@ async function handleDailyResponse(userId, text, structured, opts) {
 
   // Stima di Giuno confermata o corretta → coppia stimato/reale per la calibrazione
   await recordEstimateCorrection(userId, todayStr, structured, opts.source === 'estimate_confirmed');
+  // La proposta è consumata: via anche dallo stato persistito, altrimenti un
+  // riavvio la ricarica e il vecchio "Confermo così" sovrascrive il daily vero.
+  if (getPendingEstimate(userId, todayStr)) { clearPendingEstimate(userId); await db.saveStandup(sd); }
 
   // Save permanently to standup_entries
   try {
@@ -587,6 +652,7 @@ async function recordChannelDaily(userId, text, channelId) {
     if (structured) await require('../services/projectMatcher').enrichStructured(structured, { userId: userId });
   } catch(e) { logger.warn('[DAILY-V2] Parse daily da canale fallito:', e.message); }
   await recordEstimateCorrection(userId, todayStr, structured, false);
+  if (getPendingEstimate(userId, todayStr)) { clearPendingEstimate(userId); try { await db.saveStandup(sd); } catch(e) { logger.debug('[DAILY-V2] stima consumata non persistita:', e.message); } }
 
   try {
     var supabase = require('../services/db/client').getClient();
@@ -656,6 +722,7 @@ async function publishDailySummary() {
       }
     }
     _pendingEstimates = {};
+    sd.stime = {};
 
     // Clear standup state (both in-memory Set and persisted list)
     getStandupInAttesa().clear();
@@ -680,6 +747,9 @@ async function publishDailySummary() {
     if (ESTIMATES_ENABLED && noTrace.length > 0) {
       publicMsg += '\n_Per ' + noTrace.map(function(u) { return '<@' + u.id + '>'; }).join(', ') +
         ' non ho trovato tracce di giornata (calendario, Drive, canali, email): niente stima._';
+      // Agli admin, in DM: perché ogni fonte era vuota, così si vede cosa manca
+      // (Google non collegato, Giuno fuori dai canali, token assenti).
+      try { await notifyMissingEstimates(noTrace, todayStr); } catch(e) { logger.debug('[DAILY-V2] diagnosi stime saltata:', e.message); }
     }
 
     try {
@@ -771,6 +841,10 @@ module.exports = {
   recordEstimateCorrection: recordEstimateCorrection,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
+  clearPendingEstimate: clearPendingEstimate,
+  rememberPendingEstimate: rememberPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,
+  quickProjectButtons: quickProjectButtons,
+  notifyMissingEstimates: notifyMissingEstimates,
   oggi: oggi,
 };
