@@ -82,7 +82,10 @@ test('bottoni rapidi: le commesse recenti della persona come bottoni (max 4), ni
   for (var i = 0; i < 6; i++) recent.push({ id: 'p' + i, hours: 6 - i });
   var deps = { context: { recentProjectsFor: async function() { return recent; } }, db: { getProject: async function(id) { return { id: id, name: 'Commessa ' + id.toUpperCase() }; } } };
   var btns = await dsv2.quickProjectButtons('U1', deps);
-  assert.equal(btns.length, 4); assert.equal(btns[0].action_id, 'daily_quick_project'); assert.equal(btns[0].value, 'p0'); assert.equal(btns[0].text.text, 'Commessa P0');
+  assert.equal(btns.length, 4); assert.equal(btns[0].action_id, 'daily_quick_project_0'); assert.equal(btns[0].value, 'p0'); assert.equal(btns[0].text.text, 'Commessa P0');
+  var ids = btns.map(function(b) { return b.action_id; });
+  assert.equal(new Set(ids).size, 4, 'action_id univoci nel blocco, altrimenti Slack rifiuta il DM: ' + ids.join(','));
+  ids.forEach(function(id) { assert.match(id, /^daily_quick_project(_\d+)?$/); });
   assert.deepEqual(await dsv2.quickProjectButtons('U1', { context: { recentProjectsFor: async function() { return []; } }, db: deps.db }), []);
 });
 
@@ -108,4 +111,39 @@ test('stima consumata: sparisce dalla memoria E dallo stato persistito (un riavv
   d.clearPendingEstimate('U9');
   assert.equal(sd.stime.U9, undefined, 'via dallo stato persistito');
   assert.equal(d.getPendingEstimate('U9', '2026-09-12'), null, 'e nemmeno la memoria la ripesca');
+});
+
+test('richiesta daily: se Slack rifiuta il DM con i bottoni rapidi, arriva comunque il modulo semplice', async function() {
+  var dsv2 = require('../src/handlers/dailyStandupV2');
+  var recent = [{ id: 'p0', hours: 6 }, { id: 'p1', hours: 2 }];
+  var quickDeps = { context: { recentProjectsFor: async function() { return recent; } }, db: { getProject: async function(id) { return { id: id, name: 'Commessa ' + id }; } } };
+  var sent = [];
+  var fakeApp = { client: { chat: { postMessage: async function(m) {
+    var hasQuick = (m.blocks || []).some(function(b) { return b.type === 'actions' && b.elements.some(function(el) { return /^daily_quick_project/.test(el.action_id); }); });
+    if (hasQuick) { var e = new Error('An API error occurred: invalid_blocks'); throw e; }
+    sent.push(m);
+  } } } };
+  var inattesa = new Set();
+  await dsv2.sendDailyRequestTo({ id: 'U_CLAUDIA', name: 'Claudia Petrino' }, false, { app: fakeApp, inattesa: inattesa, quickDeps: quickDeps });
+  assert.equal(sent.length, 1, 'il modulo semplice parte dopo il rifiuto');
+  assert.equal(sent[0].channel, 'U_CLAUDIA');
+  assert.ok(sent[0].blocks.some(function(b) { return b.type === 'actions' && b.elements[0].action_id === 'open_daily_modal'; }), 'c\'è il bottone Compila daily');
+  assert.ok(!sent[0].blocks.some(function(b) { return b.type === 'actions' && /^daily_quick_project/.test(b.elements[0].action_id); }), 'senza bottoni rapidi');
+  assert.ok(inattesa.has('U_CLAUDIA'));
+
+  // Senza bottoni rapidi un errore resta un errore (nessun secondo tentativo cieco).
+  var boom = { client: { chat: { postMessage: async function() { throw new Error('channel_not_found'); } } } };
+  await assert.rejects(dsv2.sendDailyRequestTo({ id: 'U_X', name: 'X' }, false, { app: boom, inattesa: new Set(), quickDeps: { context: { recentProjectsFor: async function() { return []; } }, db: quickDeps.db } }), /channel_not_found/);
+});
+
+test('invii falliti alle 16:00: gli admin ricevono in DM chi non ha avuto la richiesta e perché', async function() {
+  var dsv2 = require('../src/handlers/dailyStandupV2');
+  var sent = [];
+  var n = await dsv2.notifySendFailures([{ id: 'U_CLAUDIA', name: 'Claudia', error: 'An API error occurred: invalid_blocks' }], '2026-09-14', {
+    roles: [{ slack_user_id: 'U_ANT', role: 'admin' }, { slack_user_id: 'U_X', role: 'member' }],
+    app: { client: { chat: { postMessage: async function(m) { sent.push(m); } } } },
+  });
+  assert.equal(n, 1); assert.equal(sent[0].channel, 'U_ANT');
+  assert.match(sent[0].text, /non è partita per 1 persona[\s\S]*<@U_CLAUDIA>: An API error occurred: invalid_blocks[\s\S]*manda la richiesta daily/);
+  assert.equal(await dsv2.notifySendFailures([], '2026-09-14', { roles: [], app: {} }), 0);
 });
