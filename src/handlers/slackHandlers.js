@@ -1118,7 +1118,8 @@ app.action('daily_estimate_confirm', async function(args) {
 
 // Bottone rapido "commessa X" nel DM del daily: il modulo si apre con la
 // prima riga già intestata alla commessa; la persona mette ore e dettaglio.
-app.action('daily_quick_project', async function(args) {
+// daily_quick_project_0..3: un id per bottone (Slack li vuole univoci nel blocco).
+app.action(/^daily_quick_project(_\d+)?$/, async function(args) {
   await args.ack();
   var action = args.action || (args.body.actions && args.body.actions[0]) || {};
   var label = action.text && action.text.text ? String(action.text.text) : '';

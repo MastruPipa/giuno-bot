@@ -46,8 +46,9 @@ function oggi() {
 // a standupInAttesa così anche una risposta testuale in DM viene riconosciuta.
 // persistInAttesa=true (invii fuori cron) salva subito lo stato: il cron lo
 // fa già in blocco a fine loop.
-async function sendDailyRequestTo(utente, persistInAttesa) {
-  var standupInAttesa = getStandupInAttesa();
+async function sendDailyRequestTo(utente, persistInAttesa, deps) {
+  deps = deps || {};
+  var standupInAttesa = deps.inattesa || getStandupInAttesa();
   standupInAttesa.add(utente.id);
   if (persistInAttesa) {
     try {
@@ -60,8 +61,23 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
   var nome = (utente.name || '').split(' ')[0] || 'ciao';
   // Senza tracce per la stima, la scorciatoia: le commesse recenti della
   // persona come bottoni; un tap apre il modulo con la riga già intestata.
-  var quick = await quickProjectButtons(utente.id);
-  await app.client.chat.postMessage({
+  var quick = await quickProjectButtons(utente.id, deps.quickDeps);
+  var client = (deps.app || app).client;
+  try {
+    await client.chat.postMessage(dailyRequestMessage(utente, nome, quick));
+  } catch(e) {
+    if (!quick.length) throw e;
+    // I bottoni rapidi sono un extra: se Slack rifiuta il messaggio (blocchi
+    // non validi, nome di commessa strano) il modulo deve arrivare lo stesso.
+    // 14/9: al primo giro con i bottoni il DM non è arrivato a qualcuno e
+    // nessuno se n'è accorto fino alla domanda in #daily.
+    logger.warn('[DAILY-V2] DM con bottoni rapidi rifiutato per', utente.id + ':', e.message, '— rimando il modulo semplice');
+    await client.chat.postMessage(dailyRequestMessage(utente, nome, []));
+  }
+}
+
+function dailyRequestMessage(utente, nome, quick) {
+  return {
     channel: utente.id,
     text: 'Ciao ' + nome + ', è il momento del daily!',
     blocks: [
@@ -87,10 +103,12 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
         }],
       },
     ]),
-  });
+  };
 }
 
 // Bottoni con le commesse recenti della persona (max 4): value = project id.
+// action_id diverso per ogni bottone: Slack chiede id univoci dentro lo stesso
+// blocco e con id ripetuti può rifiutare l'intero messaggio (invalid_blocks).
 async function quickProjectButtons(userId, deps) {
   deps = deps || {};
   try {
@@ -100,7 +118,7 @@ async function quickProjectButtons(userId, deps) {
     for (var i = 0; i < recent.length && out.length < 4; i++) {
       var p = await (deps.db || db).getProject(recent[i].id);
       if (!p || !p.name) continue;
-      out.push({ type: 'button', text: { type: 'plain_text', text: String(p.name).substring(0, 30), emoji: true }, action_id: 'daily_quick_project', value: String(p.id) });
+      out.push({ type: 'button', text: { type: 'plain_text', text: String(p.name).substring(0, 30), emoji: true }, action_id: 'daily_quick_project_' + out.length, value: String(p.id) });
     }
     return out;
   } catch(e) { logger.debug('[DAILY-V2] bottoni rapidi saltati:', e.message); return []; }
@@ -132,6 +150,7 @@ async function sendDailyRequests() {
     var standupInAttesa = getStandupInAttesa();
 
     var precompilati = 0;
+    var falliti = [];
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
@@ -155,15 +174,41 @@ async function sendDailyRequests() {
         inviati++;
       } catch(e) {
         logger.error('[DAILY-V2] Errore invio a', utente.id + ':', e.message);
+        falliti.push({ id: utente.id, name: utente.name, error: e.message });
       }
     }
     logger.info('[DAILY-V2] Daily precompilati:', precompilati, 'su', inviati);
     sd.inattesa = Array.from(standupInAttesa);
     await db.saveStandup(sd);
     logger.info('[DAILY-V2] Richieste inviate a', inviati, 'utenti.');
+    if (falliti.length) {
+      try { await notifySendFailures(falliti, todayStr); }
+      catch(e) { logger.warn('[DAILY-V2] avviso invii falliti non mandato:', e.message); }
+    }
   } finally {
     await releaseCronLock('daily_standup_v2_send');
   }
+}
+
+// Se il DM delle 16:00 non parte per qualcuno, gli admin lo sanno subito in
+// DM: prima restava solo nei log di Railway e alle 18:00 la persona risultava
+// "mancante" senza aver mai ricevuto la richiesta.
+async function notifySendFailures(failed, dateStr, deps) {
+  deps = deps || {};
+  if (!failed || !failed.length) return 0;
+  var roles = deps.roles || await require('../../rbac').getAllRoles();
+  var admins = roles.filter(function(r) { return r.role === 'admin'; }).map(function(r) { return r.slack_user_id; });
+  if (!admins.length) return 0;
+  var lines = ['*Daily del ' + dateStr + ': la richiesta delle 16:00 non è partita per ' + failed.length + (failed.length === 1 ? ' persona' : ' persone') + ':*'];
+  failed.forEach(function(f) { lines.push('• <@' + f.id + '>: ' + String(f.error || 'errore sconosciuto').substring(0, 160)); });
+  lines.push('_Per rimandarla: "manda la richiesta daily a <nome>" qui in DM. La persona può comunque scrivermi il daily in DM o postarlo in #daily._');
+  var client = (deps.app || app).client;
+  var sent = 0;
+  for (var a = 0; a < admins.length; a++) {
+    try { await client.chat.postMessage({ channel: admins[a], text: lines.join('\n') }); sent++; }
+    catch(e) { logger.debug('[DAILY-V2] avviso invii falliti a ' + admins[a] + ' fallito:', e.message); }
+  }
+  return sent;
 }
 
 // ─── 17:30 — Push to missing responders ──────────────────────────────────────
@@ -835,6 +880,7 @@ module.exports = {
   classifyDailyText: classifyDailyText,
   sendDailyRequests: sendDailyRequests,
   sendDailyRequestTo: sendDailyRequestTo,
+  notifySendFailures: notifySendFailures,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
   respondedFromDb: respondedFromDb,
