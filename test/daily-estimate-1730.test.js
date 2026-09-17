@@ -110,3 +110,23 @@ test('sendDailyRequestWithEstimate: con tracce manda la stima e mette la persona
   assert.deepEqual(r2, { estimate: false });
   assert.match(sent[0].text, /è il momento del daily!/);
 });
+
+test('trigger_daily_request: risponde subito e manda il DM in background (la stima può superare il turno)', async function() {
+  var workflowTools = require('../src/tools/workflowTools');
+  var slackService = require('../src/services/slackService');
+  var origSend = dsv2.sendDailyRequestWithEstimate;
+  var origGet = slackService.getUtenti;
+  var started = [];
+  var release;
+  dsv2.sendDailyRequestWithEstimate = function(target) { started.push(target.id); return new Promise(function(res) { release = function() { res({ estimate: true }); }; }); };
+  slackService.getUtenti = async function() { return [{ id: 'U_ANT', name: 'Antonio' }]; };
+  try {
+    var t0 = Date.now();
+    var res = await workflowTools.execute('trigger_daily_request', {}, 'U_ANT', 'admin');
+    assert.ok(Date.now() - t0 < 500, 'non aspetta la stima');
+    assert.equal(res.success, true); assert.equal(res.in_background, true); assert.equal(res.sent_to, 'U_ANT');
+    assert.match(res.nota, /arriva da solo/);
+    assert.deepEqual(started, ['U_ANT']);
+    release();
+  } finally { dsv2.sendDailyRequestWithEstimate = origSend; slackService.getUtenti = origGet; }
+});
