@@ -517,17 +517,17 @@ async function estimateDaily(userId, dateStr, deps) {
     logger.info('[DAILY-ESTIMATE] nessuna traccia per', userId, dateStr);
     return null;
   }
-  var client = deps.client || new (require('@anthropic-ai/sdk'))();
+  var utility = require('../services/utilityModel');
   var res = await withTimeout(function() {
-    return client.messages.create({
-      model: MODELS.UTILITY, max_tokens: 900, system: SYSTEM_PROMPT,
+    return utility.create({
+      max_tokens: 2000, system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildPrompt(evidence) }],
-    });
+    }, 'daily_estimate', { client: deps.client });
   }, MODEL_TIMEOUT_MS, 'estimate.model');
-  var text = (res.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('');
+  var text = utility.textOf(res);
   var m = text.match(/\{[\s\S]*\}/);
   var parsed = m ? safeParse('DAILY-ESTIMATE', m[0], null) : null;
-  if (!parsed) return null;
+  if (!parsed) { logger.warn('[DAILY-ESTIMATE] nessun JSON nella risposta per', userId, dateStr, '(' + text.length + ' caratteri, stop ' + (res && res.stop_reason) + ')'); return null; }
 
   var { normalizeParsed } = require('../services/dailyParser');
   var structured = normalizeParsed(parsed);
@@ -597,17 +597,17 @@ async function amendEstimate(structured, instruction, deps) {
   instruction = String(instruction || '').trim();
   if (!structured || !instruction) return null;
   var current = { oggi: structured.oggi || [], domani: structured.domani || [], blocchi: structured.blocchi || null };
-  var client = deps.client || new (require('@anthropic-ai/sdk'))();
+  var utility = require('../services/utilityModel');
   var res = await withTimeout(function() {
-    return client.messages.create({
-      model: MODELS.UTILITY, max_tokens: 900, system: AMEND_SYSTEM_PROMPT,
+    return utility.create({
+      max_tokens: 2000, system: AMEND_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: 'DAILY ATTUALE:\n' + JSON.stringify(current) + '\n\nMODIFICA CHIESTA DALLA PERSONA:\n' + instruction.substring(0, 600) }],
-    });
+    }, 'daily_amend', { client: deps.client });
   }, MODEL_TIMEOUT_MS, 'estimate.amend');
-  var text = (res.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('');
+  var text = utility.textOf(res);
   var m = text.match(/\{[\s\S]*\}/);
   var parsed = m ? safeParse('DAILY-ESTIMATE-AMEND', m[0], null) : null;
-  if (!parsed) return null;
+  if (!parsed) { logger.warn('[DAILY-ESTIMATE] modifica a parole: nessun JSON nella risposta (' + text.length + ' caratteri)'); return null; }
   var updated = require('../services/dailyParser').normalizeParsed(parsed);
   if (!updated) return null;
   try { await require('../services/projectMatcher').enrichStructured(updated, { date: deps.date, userId: deps.userId }); } catch(e) { logger.debug('[DAILY-ESTIMATE] amend project match:', e.message); }

@@ -1065,7 +1065,60 @@ il roster in DB; `trigger_daily_request` non dipende più da quella lista
 (`users.info`, o il solo id) e manda il DM in background, perché la
 ricostruzione può superare i 55 secondi del turno.
 
-## 33. Da fare
+## 33. Le stime non funzionavano dal 10/9: il thinking di Sonnet 5 mangiava il budget
+
+Antonio (17/9, sera): "possiamo analizzare e capire il problema? Giuno ha
+detto che non ha stime di Gianna e Claudia". Con i log di Railway (collegati
+oggi) e Supabase il quadro è questo.
+
+**Cosa dicevano i log.** Alle 17:30 il cron nuovo è partito regolarmente:
+"Daily precompilati: 0 su 8". Alle 18:16 i tre trigger a mano: tutti
+"modulo". In tutta la giornata nessuna riga `[DAILY-ESTIMATE]`: né
+successo, né "nessuna traccia", né errore. Circa 20 secondi a persona:
+il modello veniva chiamato e rispondeva, e il codice scartava la risposta
+in silenzio. Stesso schema nel parser del daily scritto a mano di Antonio
+(zero task, zero ore) e nel consolidamento memorie ("reading 'trim' of
+undefined" per ogni utente). Le diagnosi delle 18:30 mostravano che
+Claudia e Gianna avevano calendario, Drive, ricerca Slack ed email pieni:
+"nessuna traccia" era falso.
+
+**La causa.** Dal 10/9 il modello utility è `claude-sonnet-5`, che ragiona
+(thinking adattivo) di default. Le 21 chiamate utility avevano budget da
+60 a 1500 token: il modello li consumava ragionando e non arrivava mai al
+testo. Contenuto senza blocco `text`, JSON non trovato, `return null` senza
+log. I recap del 15 e 16/9 ("nessuna traccia" per 4 e 6 persone) erano lo
+stesso bug.
+
+**Cosa cambia.**
+1. `src/services/utilityModel.js`: un solo punto per le chiamate utility.
+   Thinking spento dove il modello lo accetta (`thinkingOffParams` in
+   `config/models.js`: Sonnet 5, Opus 5, 4.6-4.8; effort basso su Fable),
+   risposta vuota o troncata loggata con funzione, modello e stop_reason,
+   costo tracciato. Tutte le 21 chiamate passano da qui (stima e modifica
+   del daily, parser, memorie, riassunti, dossier, retrospettiva, note
+   Gemini, aggancio commesse, briefing, welcome, App Home). Budget della
+   stima 900 → 2000, del parser 1500 → 2500, timeout del parser 20 → 30 s.
+2. **Costi per funzione.** `api_usage` ha la colonna `feature` (migrazione
+   applicata): chat, daily_estimate, daily_parser, memory_consolidation,
+   ecc. Le letture dalla cache costano un decimo, le scritture 1,25: prima
+   la chat era contata tutta a prezzo pieno e le utility non erano contate.
+   `get_api_costs` restituisce anche `by_feature` e `by_model`.
+3. **Recap che ricostruisce.** Alle 18:30, per chi manca e non ha una
+   stima in memoria, Giuno la costruisce lì per lì: quattro deploy oggi
+   avevano svuotato la memoria. Colonna `standup_data.stime` applicata
+   (era rimasta in sospeso dal 12/9).
+4. **Lock del promemoria.** Alle 18:00 il push è stato saltato per un lock
+   `daily_push` di origine ignota. Ora lo skip dice chi tiene il lock e
+   fino a quando, e il TTL del push è 5 minuti.
+
+Non spiegato: il lock `daily_push` delle 18:00. Con la diagnostica nuova
+la prossima volta si vede.
+
+Nota sul primo giorno: il DM delle 17:30 ad Antonio era arrivato (17:30:54,
+un messaggio a blocchi) ma non l'aveva visto; alle 18:02 il trigger è
+fallito su `users.list` (sezione 32).
+
+## 34. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

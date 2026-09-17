@@ -87,9 +87,9 @@ function matchByVocabulary(text, recentIds, activities) {
 
 async function askModel(prompt) {
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('./utilityModel').client('project_context');
   var res = await withTimeout(function() {
-    return client.messages.create({ model: MODELS.UTILITY, max_tokens: 60,
+    return client.messages.create({ max_tokens: 60,
       system: 'Devi dire a quale commessa (cliente/progetto) appartiene un testo scritto da una persona di un\'agenzia creativa. Rispondi SOLO con il nome ESATTO di una commessa della lista, oppure NONE se non è evidente. Mai tirare a indovinare: in dubbio, NONE.',
       messages: [{ role: 'user', content: prompt }] });
   }, LLM_TIMEOUT_MS, 'projectContext.llm');

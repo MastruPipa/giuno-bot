@@ -38,8 +38,20 @@ function supportsEffort(model) {
   return /^claude-(opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|fable|mythos)/.test(String(model || ''));
 }
 
+// Parametri per una chiamata utility SENZA ragionamento: Sonnet 5 e Opus 5
+// ragionano di default e con budget piccoli non arrivano a scrivere la
+// risposta. Dove "disabled" è accettato lo si manda; su Fable/Mythos (sempre
+// acceso) si abbassa l'effort; Haiku 4.5 non ragiona se non glielo chiedi.
+function thinkingOffParams(model) {
+  var m = String(model || '');
+  if (/^claude-(sonnet-5|opus-5|opus-4-[678]|sonnet-4-6)/.test(m)) return { thinking: { type: 'disabled' } };
+  if (/^claude-(fable|mythos)/.test(m)) return { output_config: { effort: 'low' } };
+  return {};
+}
+
 module.exports = {
   MODELS: MODELS,
+  thinkingOffParams: thinkingOffParams,
   PRIMARY_EFFORT: PRIMARY_EFFORT,
   REFUSAL_FALLBACK_ENABLED: REFUSAL_FALLBACK_ENABLED,
   REFUSAL_FALLBACK_BETA: REFUSAL_FALLBACK_BETA,

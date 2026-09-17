@@ -577,14 +577,12 @@ async function execute(toolName, input, userId) {
       var docText = extractDocText(doc.data.body.content);
       var docTitle = doc.data.title;
 
-      var client = require('../services/anthropicService').client;
-      var docSummaryRes = await client.messages.create({
-        model: MODELS.UTILITY,
+      var docSummaryRes = await require('../services/utilityModel').create({
         max_tokens: 500,
         system: 'Sei un assistente che riassume documenti in italiano. Fai un riassunto strutturato: scopo del documento, punti chiave, conclusioni. Max 12 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questo documento "' + docTitle + '":\n\n' + docText.substring(0, 8000) }],
-      });
-      var docSummary = docSummaryRes.content[0].text;
+      }, 'doc_summary');
+      var docSummary = require('../services/utilityModel').textOf(docSummaryRes);
 
       var saveToMemory = input.save_to_memory !== false;
       if (saveToMemory) {

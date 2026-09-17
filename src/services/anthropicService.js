@@ -31,6 +31,7 @@ var modelsConfig = require('../config/models');
 var mcpToolsets = require('./mcpToolsets');
 var toolPacks = require('../tools/toolPacks');
 var actionLog = require('./db/actionLog');
+var utilityModel = require('./utilityModel');
 
 // Tool falliti (eccezione o risultato {error}): ultimi 300, per la
 // retrospettiva serale. In memoria: si perde al riavvio, va bene.
@@ -271,15 +272,14 @@ async function compressConversation(messages, convKey) {
     : 'Riassumi questa conversazione in modo conciso, mantenendo: decisioni prese, info importanti su clienti/progetti, task assegnati, preferenze utente emerse, aggiornamenti CRM menzionati.\n\n' + transcript;
 
   try {
-    var res = await client.messages.create({
-      model: MODELS.UTILITY,
+    var res = await utilityModel.create({
       max_tokens: 600,
       system: 'Riassumi questa conversazione di un\'agenzia di marketing. Il riassunto deve essere UTILE per riprendere il discorso domani.\n' +
         'Mantieni: nomi clienti/persone, cifre esatte, decisioni prese, azioni da fare, scadenze, problemi aperti.\n' +
         'Formato: frasi complete, non bullet point. Come se raccontassi a un collega "ieri abbiamo parlato di...".\n' +
         'NON includere: saluti, conferme banali, dettagli tecnici sul bot. Max 150 parole.',
       messages: [{ role: 'user', content: summaryPrompt }],
-    });
+    }, 'conversation_summary');
     var summaryText = extractText(res).trim();
     var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + summaryText + ']';
     logger.info('[COMPRESS] Conversazione compressa:', toSummarize.length, 'messaggi → riassunto');
@@ -345,8 +345,7 @@ async function maybeUpdateDmSummary(userId, messages) {
   }).join('\n');
 
   try {
-    var res = await client.messages.create({
-      model: MODELS.UTILITY,
+    var res = await utilityModel.create({
       max_tokens: 600,
       system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
         'Produci TRE blocchi in italiano, in questo formato ESATTO:\n\n' +
@@ -359,7 +358,7 @@ async function maybeUpdateDmSummary(userId, messages) {
         'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team. ' +
         'Quando citi altri membri del team usa il tag <@U...> preso dal ROSTER. Non confondere i nomi (Peppe ≠ Giusy, Claudia ≠ Clà di un cliente).',
       messages: [{ role: 'user', content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + transcript }],
-    });
+    }, 'dm_summary');
     var raw = extractText(res).trim();
     if (!raw) return;
 
@@ -489,15 +488,14 @@ async function autoLearn(userId, userMessage, botReply, context) {
         return '- ' + String(m).substring(0, 220);
       }).join('\n') + '\n\n---\n';
     }
-    var analysisRes = await client.messages.create({
-      model: MODELS.UTILITY,
+    var analysisRes = await utilityModel.create({
       max_tokens: 900,
       system: AUTO_LEARN_SYSTEM,
       messages: [{ role: 'user', content:
         known +
         (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1600) + '\n\n---\n' : '') +
         'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 1000) + '\n\nGIUNO: ' + (botReply || '').substring(0, 800) }],
-    });
+    }, 'auto_learn');
 
     var analysisText = extractText(analysisRes).trim();
     var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
@@ -733,7 +731,7 @@ async function callAnthropicWithRetry(params) {
         var cacheRead = usage.cache_read_input_tokens || 0;
         var cacheWrite = usage.cache_creation_input_tokens || 0;
         costTracker.trackCall('anthropic', params.model || 'unknown',
-          (usage.input_tokens || 0) + cacheRead + cacheWrite, usage.output_tokens || 0);
+          usage.input_tokens || 0, usage.output_tokens || 0, { feature: 'chat', cacheRead: cacheRead, cacheWrite: cacheWrite });
         if (cacheRead || cacheWrite) {
           logger.debug('[API] cache — read:', cacheRead, 'write:', cacheWrite, 'uncached:', usage.input_tokens || 0);
         }

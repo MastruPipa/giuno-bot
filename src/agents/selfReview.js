@@ -164,7 +164,7 @@ async function runSelfReview(opts) {
     logger.info('[SELF-REVIEW] ' + dateStr + ': giornata pulita, niente da proporre');
     return { date: dateStr, signals: signals, review: null, text: null, notified: 0 };
   }
-  var client = deps.client || require('../services/anthropicService').client;
+  var client = deps.client || require('../services/utilityModel').client('self_review');
   var res = await client.messages.create({ model: opts.model || MODELS.UTILITY, max_tokens: 1800, system: SYSTEM, messages: [{ role: 'user', content: buildPrompt(signals) }] });
   var text = (res.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('\n');
   var review = parseReview(text);

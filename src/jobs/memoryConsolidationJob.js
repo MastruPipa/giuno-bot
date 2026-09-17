@@ -54,7 +54,7 @@ async function runConsolidation() {
     stable.forEach(function(m) { addToGroup(m, 'stable'); });
 
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('memory_consolidation');
 
     var entities = Object.keys(groups);
     for (var ei = 0; ei < entities.length; ei++) {
@@ -88,7 +88,7 @@ async function runConsolidation() {
           }],
         });
 
-        var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+        var match = require('../services/utilityModel').textOf(res).trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
         if (!match) continue;
         var result = safeParse('MEM-CONSOLIDATION', match[0], null);
         if (result.skip) continue;
