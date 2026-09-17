@@ -3,6 +3,7 @@
 // Runs nightly via cron or manually via /giuno studia.
 
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -20,7 +21,7 @@ var { safeParse } = require('../utils/safeCall');
 async function classifyDocument(fileName, content) {
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('doc_classify');
     var res = await client.messages.create({
       model: MODELS.FAST,
       max_tokens: 300,
@@ -33,7 +34,7 @@ async function classifyDocument(fileName, content) {
         'relevance=bassa: template vuoti, doc interni generici, < 200 char utili.',
       messages: [{ role: 'user', content: 'File: "' + fileName + '"\n\n' + content }],
     });
-    var text = res.content[0].text.trim();
+    var text = _textOf(res).trim();
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     return JSON.parse(jsonMatch[0]);
@@ -213,7 +214,7 @@ async function indexDrive(userId, report) {
 async function classifySlackThread(channelName, threadText) {
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('thread_classify');
     var res = await client.messages.create({
       model: MODELS.FAST,
       max_tokens: 400,
@@ -226,7 +227,7 @@ async function classifySlackThread(channelName, threadText) {
         dates.dateContextIt(),
       messages: [{ role: 'user', content: 'Canale: #' + channelName + '\n\n' + threadText }],
     });
-    var text = res.content[0].text.trim();
+    var text = _textOf(res).trim();
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     return safeParse('KB-ENGINE', jsonMatch[0], null);

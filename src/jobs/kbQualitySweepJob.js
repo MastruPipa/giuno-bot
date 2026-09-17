@@ -1,6 +1,7 @@
 // ─── KB Quality Sweep Job ────────────────────────────────────────────────────
 // Deduplicates and scores KB entries. Monthly, 1st Monday 5:00 AM.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -67,7 +68,7 @@ async function runQualitySweep() {
 
     if (autoLearn && autoLearn.length > 0) {
       var Anthropic = require('@anthropic-ai/sdk');
-      var client = new Anthropic();
+      var client = require('../services/utilityModel').client('kb_quality_sweep');
 
       // Batch: send 10 at a time
       for (var bi = 0; bi < autoLearn.length; bi += 10) {
@@ -86,7 +87,7 @@ async function runQualitySweep() {
             }],
           });
 
-          var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
+          var match = _textOf(res).trim().replace(/```json|```/g, '').match(/\[[\s\S]*\]/);
           if (match) {
             var scores = safeParse('KB-SWEEP', match[0], null);
             if (!scores) continue;

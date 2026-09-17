@@ -422,6 +422,12 @@ app.message(async function(args) {
   var dailyV2Estimate = require('./dailyStandupV2');
   if (dailyV2Estimate.getPendingEstimate(message.user, dailyV2Estimate.oggi())) {
     var estimateReply = dailyV2Estimate.classifyEstimateReply(message.text);
+    // "ok" nudo: vale come approvazione solo se l'ultimo messaggio di Giuno
+    // qui era la proposta; se in mezzo c'è stata una conversazione, è una
+    // risposta a quella (17/9: "ok" a un consiglio → daily sovrascritto).
+    if (estimateReply === 'approve_bare') {
+      estimateReply = (await dailyV2Estimate.lastBotMessageIsProposal(message.channel, message.ts)) ? 'approve' : null;
+    }
     if (estimateReply === 'approve') {
       var approved = false;
       try { approved = await dailyV2Estimate.confirmEstimate(message.user); } catch(e) { logger.error('[DAILY-ESTIMATE] approvazione a parole fallita:', e.message); }

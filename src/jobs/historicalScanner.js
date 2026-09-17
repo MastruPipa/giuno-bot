@@ -3,6 +3,7 @@
 // Run via "/giuno avvia scan storico" or weekly cron.
 
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -54,7 +55,7 @@ async function generateSummary(messages, channelMeta) {
 
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('historical_scanner');
     var res = await client.messages.create({
       model: CONFIG.SUMMARY_MODEL,
       max_tokens: 512,
@@ -67,7 +68,7 @@ async function generateSummary(messages, channelMeta) {
         'Se non c\'è nulla di utile: {"worth_saving":false}'
       }],
     });
-    var raw = res.content[0].text.trim().replace(/```json|```/g, '').trim();
+    var raw = _textOf(res).trim().replace(/```json|```/g, '').trim();
     var match = raw.match(/\{[\s\S]*\}/);
     return match ? safeParse('SCANNER.parse', match[0], null) : null;
   } catch(e) {

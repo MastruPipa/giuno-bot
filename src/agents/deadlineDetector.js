@@ -7,6 +7,7 @@
 // "reminder sballati").
 
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -52,7 +53,7 @@ async function detectAndSaveDeadlines(userId, text, channelId) {
   if (!hasDeadline) return;
 
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('../services/utilityModel').client('deadline_detector');
   var res = await client.messages.create({
     model: MODELS.FAST,
     max_tokens: 200,
@@ -70,7 +71,7 @@ async function detectAndSaveDeadlines(userId, text, channelId) {
     messages: [{ role: 'user', content: text.substring(0, 500) }],
   });
 
-  var jsonMatch = res.content[0].text.match(/\{[\s\S]*\}/);
+  var jsonMatch = _textOf(res).match(/\{[\s\S]*\}/);
   if (!jsonMatch) return;
 
   var parsed;
