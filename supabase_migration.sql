@@ -462,3 +462,9 @@ CREATE INDEX IF NOT EXISTS project_activities_project ON project_activities (pro
 -- Le proposte delle 16:00 vivevano in memoria: un deploy tra le 16:00 e le
 -- 18:00 le cancellava. Ora stanno qui (userId → { date, structured }).
 ALTER TABLE standup_data ADD COLUMN IF NOT EXISTS stime JSONB NOT NULL DEFAULT '{}';
+
+-- ─── 2026-09-17: costi API per funzione ─────────────────────────────────────
+-- Ogni chiamata al modello finisce in api_usage con il nome della funzione
+-- (chat, daily_estimate, daily_parser, memory_consolidation, ...): prima le
+-- 21 chiamate utility non venivano contate. Idempotente.
+ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS feature TEXT NOT NULL DEFAULT 'chat';

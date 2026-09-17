@@ -12,7 +12,7 @@ var logger = require('../utils/logger');
 var { safeParse } = require('../utils/safeCall');
 var { withTimeout } = require('../utils/timeout');
 
-var PARSE_TIMEOUT_MS = 20000;
+var PARSE_TIMEOUT_MS = 30000;
 
 // Il daily unico arriva alle 16:00: "oggi" = lavoro FATTO (consuntivo),
 // "domani" = piano. Chi scrive col vecchio schema ("cosa hai fatto ieri")
@@ -77,20 +77,18 @@ async function parseDailyText(rawText) {
   var text = (rawText || '').trim();
   if (text.length < 10) return null;
   try {
-    var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var utility = require('./utilityModel');
     var res = await withTimeout(function() {
-      return client.messages.create({
-        model: MODELS.UTILITY,
-        max_tokens: 1500,
+      return utility.create({
+        max_tokens: 2500,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: text.substring(0, 4000) }],
-      });
+      }, 'daily_parser');
     }, PARSE_TIMEOUT_MS, 'dailyParser.parse');
 
-    var out = (res.content && res.content[0] && res.content[0].text || '').trim();
+    var out = utility.textOf(res).trim();
     var jsonMatch = out.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+    if (!jsonMatch) { logger.warn('[DAILY-PARSER] Nessun JSON nella risposta (' + out.length + ' caratteri): daily salvato solo come testo'); return null; }
     var parsed = safeParse('DAILY-PARSER', jsonMatch[0], null);
     var normalized = normalizeParsed(parsed);
     if (normalized) {

@@ -144,14 +144,13 @@ async function buildHomeBlocks(userId) {
 
       // Generate a natural paragraph with Haiku
       var Anthropic = require('@anthropic-ai/sdk');
-      var homeClient = new Anthropic();
+      var homeClient = require('../services/utilityModel').client('app_home');
       var snapshotRes = await homeClient.messages.create({
-        model: MODELS.UTILITY,
         max_tokens: 150,
         system: 'Scrivi 2-3 frasi sullo stato attuale dell\'agenzia basandoti sui dati. Tono: colloquiale, come un collega che ti aggiorna al volo. No elenchi, no bullet point, no titoli. Solo un paragrafo discorsivo. Se non ci sono dati significativi, scrivi una frase generica sul momento.',
         messages: [{ role: 'user', content: 'Dati agenzia oggi:\n' + JSON.stringify(agencyData).substring(0, 500) }],
       });
-      var snapshot = snapshotRes.content[0].text.trim();
+      var snapshot = require('../services/utilityModel').textOf(snapshotRes).trim();
       if (snapshot && snapshot.length > 20) {
         blocks.push(section('*Come va l\'agenzia*\n' + snapshot));
         blocks.push(divider());

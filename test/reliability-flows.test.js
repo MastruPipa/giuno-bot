@@ -16,12 +16,13 @@ function load(file, stubs) {
   return mod.exports;
 }
 const quiet = {info(){},warn(){},error(){},debug(){}};
-test('daily free text calls SDK and returns normalized work',async () => {
+test('daily free text calls the utility model and returns normalized work',async () => {
   let calls=0;
-  function SDK() {this.messages={create:async () => {
-    calls++; return {content:[{text:JSON.stringify({oggi:[{task:'Design progetto',hours:2}],domani:[]})}]};
-  }};}
-  const parser=load('src/services/dailyParser.js',{'@anthropic-ai/sdk':SDK,'../utils/logger':quiet});
+  // Dal 17/9 il parser passa dal modulo utility (thinking spento, costo tracciato).
+  const utility={create:async (req,feature) => {
+    calls++; assert.equal(feature,'daily_parser'); return {content:[{type:'text',text:JSON.stringify({oggi:[{task:'Design progetto',hours:2}],domani:[]})}]};
+  }, textOf:r => r.content.map(b => b.text).join('')};
+  const parser=load('src/services/dailyParser.js',{'./utilityModel':utility,'../utils/logger':quiet});
   const result=await parser.parseDailyText('Ho lavorato due ore al design del progetto');
   assert.equal(calls,1);
   assert.equal(result.oggi[0].hours,2);

@@ -223,7 +223,7 @@ async function buildDossier(project, opts) {
   opts = opts || {};
   var deps = opts.deps || {};
   var dossiers = deps.dossiers || _dossiers();
-  var client = deps.client || require('../services/anthropicService').client;
+  var client = deps.client || require('../services/utilityModel').client('project_dossier');
   var previous = opts.previous !== undefined ? opts.previous : await dossiers.getDossier(project.id);
   var sources = opts.sources || await collectSources(project, deps);
   if (!hasUsableSources(sources)) return null;

@@ -81,10 +81,9 @@ async function llmMatch(unmatchedTexts, catalog, recentIds) {
   var ordered = catalog.filter(function(p) { return recentSet[p.id]; }).concat(catalog.filter(function(p) { return !recentSet[p.id]; }));
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('./utilityModel').client('project_matcher');
     var res = await withTimeout(function() {
       return client.messages.create({
-        model: MODELS.UTILITY,
         max_tokens: 800,
         system: 'Associa ogni task al progetto/cliente giusto della lista, se evidente. ' +
           'Rispondi SOLO con JSON: {"matches": {"<indice task>": "<nome progetto ESATTO dalla lista>"}}. ' +

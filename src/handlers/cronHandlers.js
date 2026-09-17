@@ -608,10 +608,8 @@ async function inviaOnboardingPersonalizzato(slackUserId) {
 
     var roleCtx = getRoleSystemPrompt(role);
 
-    var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('welcome_google');
     var response = await client.messages.create({
-      model: MODELS.UTILITY,
       max_tokens: 450,
       system:
         'Sei Giuno, assistente interno di Katania Studio, agenzia digitale di Catania.\n' +
@@ -626,7 +624,7 @@ async function inviaOnboardingPersonalizzato(slackUserId) {
         'Se la mansione non è nota, basati sul ruolo di accesso e sul contesto aziendale.',
       messages: [{ role: 'user', content: 'Dati utente:\n' + userCtx + '\nContesto ruolo:\n' + roleCtx }],
     });
-    var msg = response.content[0].text;
+    var msg = require('../services/utilityModel').textOf(response);
     await app.client.chat.postMessage({ channel: slackUserId, text: msg });
     logger.info('[ONBOARDING] Messaggio generato e inviato a', slackUserId, '| ruolo:', role);
   } catch(e) {

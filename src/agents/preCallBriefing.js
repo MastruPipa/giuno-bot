@@ -197,7 +197,7 @@ async function buildBriefing(userId, event) {
   // Generate briefing with LLM — no raw dumps, only useful info
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var llmClient = new Anthropic();
+    var llmClient = require('../services/utilityModel').client('precall_briefing');
     var res = await llmClient.messages.create({
       model: MODELS.UTILITY,
       max_tokens: 300,

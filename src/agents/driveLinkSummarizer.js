@@ -53,7 +53,7 @@ async function autoSummarizeDriveLinks(userId, text, channelId, threadTs) {
   var { app } = require('../services/slackService');
   var { extractDocText } = require('../tools/driveTools');
   var Anthropic = require('@anthropic-ai/sdk');
-  var anthropicClient = new Anthropic();
+  var anthropicClient = require('../services/utilityModel').client('drive_link_summary');
 
   // Get channel context for tagging
   var channelMap = db.getChannelMapCache();
@@ -160,7 +160,7 @@ async function autoSummarizeDriveLinks(userId, text, channelId, threadTs) {
             'Se è una presentazione: tema, struttura, messaggi chiave.',
           messages: [{ role: 'user', content: 'Titolo: "' + title + '"\nTipo: ' + fileType + '\n\nContenuto:\n' + contentText }],
         });
-        summary = summaryRes.content[0].text.trim();
+        summary = require('../services/utilityModel').textOf(summaryRes).trim();
       } catch(e) {
         summary = contentText.substring(0, 200);
         logger.warn('[DRIVE-READER] Summary LLM error:', e.message);

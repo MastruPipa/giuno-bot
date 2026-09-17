@@ -803,13 +803,12 @@ async function execute(toolName, input, userId, userRole) {
         messagesText += userName + ': ' + m.text + '\n';
       }
 
-      var summaryRes = await getAnthropic().messages.create({
-        model: MODELS.UTILITY,
+      var summaryRes = await require('../services/utilityModel').create({
         max_tokens: 500,
         system: 'Sei un assistente che riassume conversazioni Slack in italiano. Fai un riassunto breve e strutturato: argomenti principali, decisioni prese, azioni da fare. Max 10 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questa conversazione dal canale #' + input.channel_name + ' (ultime ' + hours + ' ore, ' + msgs.length + ' messaggi):\n\n' + messagesText.substring(0, 12000) }],
-      });
-      var summary = summaryRes.content[0].text;
+      }, 'channel_summary');
+      var summary = require('../services/utilityModel').textOf(summaryRes);
       return { channel: input.channel_name, hours: hours, messages_count: msgs.length, summary: summary };
     } catch(e) { return { error: 'Errore: ' + e.message }; }
   }
@@ -838,13 +837,12 @@ async function execute(toolName, input, userId, userRole) {
         threadText += tmName + ': ' + tm.text + '\n';
       }
 
-      var threadSummaryRes = await getAnthropic().messages.create({
-        model: MODELS.UTILITY,
+      var threadSummaryRes = await require('../services/utilityModel').create({
         max_tokens: 400,
         system: 'Sei un assistente che riassume thread Slack in italiano. Riassunto breve: contesto, punti chiave, conclusione/decisione. Max 8 righe. ' + SLACK_FORMAT_RULES,
         messages: [{ role: 'user', content: 'Riassumi questo thread Slack (' + threadMsgs.length + ' messaggi):\n\n' + threadText.substring(0, 12000) }],
-      });
-      return { messages_count: threadMsgs.length, summary: threadSummaryRes.content[0].text };
+      }, 'thread_summary');
+      return { messages_count: threadMsgs.length, summary: require('../services/utilityModel').textOf(threadSummaryRes) };
     } catch(e) { return { error: 'Errore: ' + e.message }; }
   }
 

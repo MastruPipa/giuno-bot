@@ -885,12 +885,19 @@ async function publishDailySummary() {
     });
     var missingUsers = enabledUsers.filter(function(u) { return !risposte[u.id]; });
 
-    // Chi ha una stima in sospeso la riceve come daily stimato (marcato,
-    // senza consuntivo); resta comunque nell'appello dei mancanti.
+    // Chi ha una stima in sospeso la riceve come daily stimato (marcato);
+    // resta comunque nell'appello dei mancanti. Senza stima in sospeso la si
+    // ricostruisce QUI: il 17/9 quattro deploy avevano svuotato la memoria
+    // e il recap ha detto "nessuna traccia" a persone con la giornata piena.
     var estimatedUsers = [];
     if (ESTIMATES_ENABLED) {
       for (var ei = 0; ei < missingUsers.length; ei++) {
         var est = getPendingEstimate(missingUsers[ei].id, todayStr);
+        if (!est) {
+          try { est = await buildEstimateFor(missingUsers[ei], todayStr); }
+          catch(e) { logger.warn('[DAILY-V2] stima al recap fallita per', missingUsers[ei].id + ':', e.message); }
+          if (est) logger.info('[DAILY-V2] stima ricostruita al recap per', missingUsers[ei].id);
+        }
         if (!est) continue;
         try {
           if (await saveEstimateAsEntry(missingUsers[ei], todayStr, est)) estimatedUsers.push(missingUsers[ei]);
@@ -994,7 +1001,7 @@ function scheduleDailyJobs(cron) {
   // Mon-Fri — promemoria a chi non ha risposto
   cron.schedule(cronExprFor(DAILY_TIMES.push), function() {
     return pushMissingResponders(1);
-  }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 15 });
+  }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 5 });
 
   // Mon-Fri — recap: stime pubblicate, appello dei mancanti
   cron.schedule(cronExprFor(DAILY_TIMES.recap), function() {

@@ -111,7 +111,7 @@ async function scanMeetingRecaps() {
 
             // Summarize with LLM
             var Anthropic = require('@anthropic-ai/sdk');
-            var client = new Anthropic();
+            var client = require('../services/utilityModel').client('meeting_recap');
             var summaryRes = await client.messages.create({
               model: MODELS.UTILITY,
               max_tokens: 300,
@@ -121,7 +121,7 @@ async function scanMeetingRecaps() {
               messages: [{ role: 'user', content: 'Oggetto: ' + subject + '\nDa: ' + from + '\n\n' + bodyText.substring(0, 3000) }],
             });
 
-            var summary = summaryRes.content[0].text.trim();
+            var summary = require('../services/utilityModel').textOf(summaryRes).trim();
             if (isSkipResponse(summary)) continue;
 
             // Save to KB
@@ -235,7 +235,7 @@ async function scanMeetingRecaps() {
           // Summarize with LLM
           try {
             var Anthropic = require('@anthropic-ai/sdk');
-            var client = new Anthropic();
+            var client = require('../services/utilityModel').client('meeting_recap');
             var summaryRes = await client.messages.create({
               model: MODELS.UTILITY,
               max_tokens: 300,
@@ -243,7 +243,7 @@ async function scanMeetingRecaps() {
               messages: [{ role: 'user', content: 'Meeting: ' + eventTitle + '\n\n' + notesContent.substring(0, 2500) }],
             });
 
-            var summary = summaryRes.content[0].text.trim();
+            var summary = require('../services/utilityModel').textOf(summaryRes).trim();
             if (isSkipResponse(summary)) continue;
 
             var kbContent = '[RECAP MEETING] ' + eventTitle + ' (' + (calEvent.start.dateTime || calEvent.start.date || '') + ')\n' + summary;
