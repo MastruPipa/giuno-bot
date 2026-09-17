@@ -1118,7 +1118,21 @@ Nota sul primo giorno: il DM delle 17:30 ad Antonio era arrivato (17:30:54,
 un messaggio a blocchi) ma non l'aveva visto; alle 18:02 il trigger è
 fallito su `users.list` (sezione 32).
 
-## 34. Da fare
+## 34. Il "domani" della stima viene dal calendario del giorno dopo
+
+Antonio (17/9, dopo la fix): "funziona ma mancano gli eventi del giorno
+dopo". La stima leggeva solo il calendario di oggi e il prompt diceva di
+riempire "domani" solo da piano settimanale o messaggi: quasi sempre vuoto.
+
+Ora `collectEvidence` legge anche il calendario del prossimo giorno
+lavorativo (`nextWorkingDay`: venerdì → lunedì): quello della persona se ha
+Google collegato, altrimenti gli inviti negli admin. Le riunioni entrano
+nel prompt come "CALENDARIO DI DOMANI (data)" con orario e durata, e la
+regola del modello è: una riga in "domani" per ogni riunione, con la sua
+durata, più piano settimanale e messaggi; niente inventato. Fonte
+"calendario di domani" nella riga delle fonti.
+
+## 35. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

@@ -231,3 +231,19 @@ test('review Codex: una riunione che nomina un cliente va al cliente, non alle a
   assert.match(prompt, /Preventivo Acme — 30 min, 1 partecipanti \[progetto: Sito\]/);
   assert.match(prompt, /Riunione di management — 60 min, 1 partecipanti \[progetto: Management e direzione\]/);
 });
+
+test('domani: le riunioni del prossimo giorno lavorativo (inviti negli admin) entrano nel prompt per la sezione "domani"', async function() {
+  assert.equal(est.nextWorkingDay('2026-09-17'), '2026-09-18');
+  assert.equal(est.nextWorkingDay('2026-09-18'), '2026-09-21', 'venerdì → lunedì');
+  var prompt;
+  var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'Daily team', hours: 0, minutes: 15 }], domani: [{ task: 'Punto Scuola di Content con Starloom', hours: 1, minutes: 0 }], blocchi: null, confidence: 'alta' }) }] }; } } };
+  var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: async function() { return null; } };
+  var dayContext = { users: [{ id: 'U1', name: 'Antonio Paratore', email: 'antonio@k.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} },
+    adminEvents: [{ title: 'Daily meeting team', start: '2026-09-17T09:30:00+02:00', minutes: 15, attendees: ['antonio@k.it'] }],
+    adminEventsTomorrow: [{ title: 'Punto Scuola di Content con Starloom', start: '2026-09-18T09:00:00+02:00', minutes: 60, attendees: ['antonio@k.it'] }, { title: 'Riunione di altri', start: '2026-09-18T11:00:00+02:00', minutes: 30, attendees: ['x@k.it'] }] };
+  var out = await est.estimateDaily('U1', '2026-09-17', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null });
+  assert.match(prompt, /CALENDARIO DI DOMANI \(2026-09-18, per la sezione "domani"\):\n- Punto Scuola di Content con Starloom — 60 min alle 09:00, 1 partecipanti/);
+  assert.ok(!/Riunione di altri/.test(prompt), 'solo gli inviti della persona');
+  assert.ok(out.estimate.sources.indexOf('calendario di domani') !== -1);
+  assert.equal(out.domani[0].task, 'Punto Scuola di Content con Starloom');
+});

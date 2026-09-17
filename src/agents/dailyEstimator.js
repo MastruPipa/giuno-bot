@@ -51,6 +51,12 @@ function previousWorkingDay(dateStr) {
   do { d.setUTCDate(d.getUTCDate() - 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
   return d.toISOString().substring(0, 10);
 }
+// Il "domani" del daily: il prossimo giorno lavorativo (venerdì → lunedì).
+function nextWorkingDay(dateStr) {
+  var d = new Date(dateStr + 'T12:00:00Z');
+  do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return d.toISOString().substring(0, 10);
+}
 
 // Inizio/fine del giorno (Europe/Rome) in ISO con offset, per Drive/Calendar/Slack.
 function romeDayBounds(dateStr) {
@@ -85,6 +91,8 @@ async function dayContext(dateStr, deps) {
   var scanners = await pickScanners(deps);
   await safeCall('ESTIMATE.day.drive', async function() { var r = await collectDriveActivity(dateStr, scanners, deps); ctx.driveByEmail = r.byEmail; ctx.driveByName = r.byName; ctx.driveEvents = r.events; });
   await safeCall('ESTIMATE.day.admin_calendar', async function() { ctx.adminEvents = await collectAdminCalendar(dateStr, scanners, deps); });
+  // Le riunioni del giorno dopo alimentano il "domani" (Antonio, 17/9: "mancano gli eventi del giorno dopo").
+  await safeCall('ESTIMATE.day.admin_calendar_tomorrow', async function() { ctx.adminEventsTomorrow = await collectAdminCalendar(nextWorkingDay(dateStr), scanners, deps); });
   // Registro delle posizioni: cartella → progetto, canale → progetto
   await safeCall('ESTIMATE.day.locations', async function() {
     var loc = require('../services/projectLocations');
@@ -234,7 +242,7 @@ async function collectEvidence(userId, dateStr, deps) {
   deps = deps || {};
   var db = deps.db || require('../../supabase');
   var app = deps.app || require('../services/slackService').app;
-  var evidence = { date: dateStr, sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], slack: [], channels: [], drive: [], emails: [], sent: [], sessions: [], calibration: null, activities: [] };
+  var evidence = { date: dateStr, tomorrow: nextWorkingDay(dateStr), sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], calendar_tomorrow: [], slack: [], channels: [], drive: [], emails: [], sent: [], sessions: [], calibration: null, activities: [] };
   var ctx = await dayContext(dateStr, deps);
   var me = findUser(ctx, userId);
   var myEmail = me && me.email ? emailKey(me.email) : null;
@@ -294,6 +302,26 @@ async function collectEvidence(userId, dateStr, deps) {
     if (evidence.calendar.length) evidence.sources.push('calendario (inviti)');
   }
 
+  // 2b-bis. Calendario di DOMANI → piano del giorno dopo (calendario proprio, altrimenti inviti negli admin)
+  await safeCall('ESTIMATE.calendar_tomorrow', async function() {
+    var calendarTools = require('../tools/calendarTools');
+    var res = await withTimeout(function() {
+      return calendarTools.execute('find_event', { date_from: evidence.tomorrow + 'T00:00:00', date_to: evidence.tomorrow + 'T23:59:59' }, userId);
+    }, SOURCE_TIMEOUT_MS, 'estimate.calendar_tomorrow');
+    if (!res || res.error || !Array.isArray(res.events) || res.events.length === 0) return;
+    evidence.calendar_tomorrow = res.events.slice(0, 12).map(function(e) {
+      var start = e.start ? new Date(e.start) : null;
+      var end = e.end ? new Date(e.end) : null;
+      var mins = (start && end && !isNaN(start) && !isNaN(end)) ? Math.round((end - start) / 60000) : null;
+      return { title: e.title, start: e.start, minutes: mins, attendees: (e.attendees || []).length };
+    });
+  });
+  if (!evidence.calendar_tomorrow.length && myEmail && (ctx.adminEventsTomorrow || []).length) {
+    evidence.calendar_tomorrow = ctx.adminEventsTomorrow.filter(function(e) { return e.attendees.indexOf(myEmail) !== -1; }).slice(0, 12)
+      .map(function(e) { return { title: e.title, start: e.start, minutes: e.minutes, attendees: e.attendees.length }; });
+  }
+  if (evidence.calendar_tomorrow.length) evidence.sources.push('calendario di domani');
+
   // 2c. Documenti su Drive creati/modificati oggi dalla persona (output prodotti)
   var mine = unionBy(myEmail && ctx.driveByEmail[myEmail], myName && ctx.driveByName[myName], itemKey);
   if (mine.length) {
@@ -341,6 +369,7 @@ async function collectEvidence(userId, dateStr, deps) {
   var catalogForCal = deps.catalog || ctx.catalog || [];
   if (!deps.catalog && !ctx.catalog) { try { catalogForCal = await matcherSvc.getCatalog(); ctx.catalog = catalogForCal; } catch(_) {} }
   evidence.calendar.forEach(function(e) { if (!e.project) { var r = matcherSvc.resolveTask(e.title, catalogForCal); if (r) e.project = r.name; } });
+  evidence.calendar_tomorrow.forEach(function(e) { if (!e.project) { var r = matcherSvc.resolveTask(e.title, catalogForCal); if (r) e.project = r.name; } });
 
   // 2f. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
@@ -447,7 +476,7 @@ var SYSTEM_PROMPT =
   '- Il numero dei messaggi non misura il lavoro: conta il tema e l\'output, non il volume.\n' +
   '- Se c\'è uno STORICO DELLE STIME per la persona, correggi le durate dedotte nella direzione indicata.\n' +
   '- "project": quando una traccia porta l\'indicazione [progetto: X] (cartella, canale o file di quel progetto), copia X nel campo project del task; altrimenti null. Non dedurre il progetto dal solo nome se c\'è un\'indicazione di posizione diversa.\n' +
-  '- "domani": solo se emerge da piano settimanale o messaggi; altrimenti lista vuota.\n' +
+  '- "domani": una riga per ogni riunione del CALENDARIO DI DOMANI (titolo e durata del calendario, in hours/minutes), più ciò che emerge dal piano settimanale o dai messaggi; senza nulla di tutto questo, lista vuota. Non inventare attività per domani.\n' +
   '- "blocchi": solo se un messaggio lo dice esplicitamente.\n' +
   '- confidence "alta" solo con calendario o documenti che confermano; "media" con messaggi o email; "bassa" se hai solo piano/settimanale o se le durate sono dedotte.\n' +
   '- Se le tracce non bastano per nessun task: {"oggi":[],"domani":[],"blocchi":null,"confidence":"bassa","note":"..."}.';
@@ -467,6 +496,11 @@ function buildPrompt(evidence) {
   if (evidence.calendar.length) {
     parts.push('CALENDARIO DI OGGI:\n' + evidence.calendar.map(function(e) {
       return '- ' + (e.title || '(senza titolo)') + (e.minutes ? ' — ' + e.minutes + ' min' : '') + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '') + (e.project ? ' [progetto: ' + e.project + ']' : '');
+    }).join('\n'));
+  }
+  if (evidence.calendar_tomorrow && evidence.calendar_tomorrow.length) {
+    parts.push('CALENDARIO DI DOMANI (' + (evidence.tomorrow || 'prossimo giorno lavorativo') + ', per la sezione "domani"):\n' + evidence.calendar_tomorrow.map(function(e) {
+      return '- ' + (e.title || '(senza titolo)') + (e.minutes ? ' — ' + e.minutes + ' min' : '') + (e.start ? ' alle ' + String(e.start).slice(11, 16) : '') + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '') + (e.project ? ' [progetto: ' + e.project + ']' : '');
     }).join('\n'));
   }
   if (evidence.drive && evidence.drive.length) {
@@ -655,6 +689,7 @@ module.exports = {
   collectSlackChannelActivity: collectSlackChannelActivity,
   collectDriveActivity: collectDriveActivity,
   collectAdminCalendar: collectAdminCalendar,
+  nextWorkingDay: nextWorkingDay,
   collectEvidence: collectEvidence,
   hasUsableEvidence: hasUsableEvidence,
   buildPrompt: buildPrompt,
