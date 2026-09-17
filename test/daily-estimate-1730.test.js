@@ -130,3 +130,45 @@ test('trigger_daily_request: risponde subito e manda il DM in background (la sti
     release();
   } finally { dsv2.sendDailyRequestWithEstimate = origSend; slackService.getUtenti = origGet; }
 });
+
+test('users.list: cache di 5 minuti, lista vecchia se Slack non risponde, roster in DB senza cache', async function() {
+  var svc = require('../src/services/slackService');
+  var calls = 0;
+  var okApp = { client: { users: { list: async function() { calls++; return { members: [{ id: 'U1', real_name: 'Paolo', profile: { email: 'p@k.it' } }] }; } } } };
+  var koApp = { client: { users: { list: async function() { calls++; throw new Error('socket hang up'); } } } };
+  svc.invalidateUsersCache();
+  var t = 1000;
+  var now = function() { return t; };
+  assert.equal((await svc.listMembers({ app: okApp, now: now })).length, 1); assert.equal(calls, 1);
+  assert.equal((await svc.listMembers({ app: okApp, now: now })).length, 1); assert.equal(calls, 1, 'seconda lettura dalla cache');
+  t += 6 * 60000;
+  var stale = await svc.listMembers({ app: koApp, now: now });
+  assert.equal(stale[0].id, 'U1', 'Slack giù: vale la lista vecchia');
+  assert.ok(calls >= 2);
+  svc.invalidateUsersCache();
+  var fromRoster = await svc.listMembers({ app: koApp, now: now, teamDb: { getTeamRoster: function() { return [{ slack_user_id: 'U_ANT', canonical_name: 'Antonio Katania' }]; } } });
+  assert.deepEqual(fromRoster.map(function(u) { return u.id + ':' + u.real_name; }), ['U_ANT:Antonio Katania']);
+  svc.invalidateUsersCache();
+  await assert.rejects(svc.listMembers({ app: koApp, now: now, teamDb: { getTeamRoster: function() { return []; } } }), /socket hang up/);
+  svc.invalidateUsersCache();
+});
+
+test('trigger_daily_request: se users.list fallisce si va avanti con users.info o col solo id', async function() {
+  var workflowTools = require('../src/tools/workflowTools');
+  var svc = require('../src/services/slackService');
+  var origSend = dsv2.sendDailyRequestWithEstimate;
+  var origGet = svc.getUtenti;
+  var targets = [];
+  dsv2.sendDailyRequestWithEstimate = async function(target) { targets.push(target); return { estimate: false }; };
+  svc.getUtenti = async function() { throw new Error('SLACK.users.list timeout'); };
+  svc.app.client.users = { info: async function(a) { return { user: { real_name: 'Antonio Katania', profile: { email: 'a@k.it' } } }; } };
+  try {
+    var res = await workflowTools.execute('trigger_daily_request', {}, 'U_ANT', 'admin');
+    assert.equal(res.success, true);
+    assert.deepEqual(targets, [{ id: 'U_ANT', name: 'Antonio Katania', email: 'a@k.it' }]);
+    svc.app.client.users = { info: async function() { throw new Error('boom'); } };
+    var res2 = await workflowTools.execute('trigger_daily_request', {}, 'U_ANT', 'admin');
+    assert.equal(res2.success, true);
+    assert.deepEqual(targets[1], { id: 'U_ANT', name: '' });
+  } finally { dsv2.sendDailyRequestWithEstimate = origSend; svc.getUtenti = origGet; delete svc.app.client.users; }
+});

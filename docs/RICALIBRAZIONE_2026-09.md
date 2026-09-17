@@ -1056,6 +1056,15 @@ la STIMA con i tre bottoni, e solo senza tracce il modulo
 (`sendDailyRequestWithEstimate`): "mandami la stima del daily" o "non mi è
 arrivato il daily" la fanno arrivare subito, a chiunque.
 
+Alle 18:02 il secondo tentativo è fallito su `users.list`: "la chiamata a
+Slack va in timeout (due tentativi)". `users.list` è lenta e contingentata
+(Tier 2, 20 chiamate al minuto) e il daily la chiama decine di volte tra
+invio, stime e promemoria. Ora `slackService.listMembers` la tiene in cache
+per 5 minuti, con Slack giù usa l'ultima lista buona e senza nemmeno quella
+il roster in DB; `trigger_daily_request` non dipende più da quella lista
+(`users.info`, o il solo id) e manda il DM in background, perché la
+ricostruzione può superare i 55 secondi del turno.
+
 ## 33. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
