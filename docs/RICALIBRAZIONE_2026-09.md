@@ -949,7 +949,40 @@ ADD COLUMN IF NOT EXISTS stime JSONB NOT NULL DEFAULT '{}'`); collegare
 Google da un admin; invitare Giuno nei canali dove lavorano Paolo e Gianna;
 `SLACK_USER_TOKEN`, `FIGMA_TOKEN`, `FIGMA_TEAM_ID` su Railway.
 
-## 30. Da fare
+## 30. Il daily scritto a mano, postato su richiesta
+
+Antonio (17/9): "devi fare in modo che Giuno posti il mio daily se glielo
+scrivo manualmente chiedendo di postarlo". Un DM come "Giuno, posta questo
+daily: oggi ho fatto…" non arrivava da nessuna parte: le euristiche del
+daily testuale (`classifyDailyText`) lo scartavano come richiesta al bot
+(inizia con "giuno,"), il modello riceveva il messaggio ma non aveva un
+tool per pubblicare un daily, e la strada del daily in DM vale comunque
+solo tra le 16:00 e le 18:00 (`standupInAttesa`).
+
+1. **Riconoscimento della richiesta** (`dailyStandupV2.extractDailyFromRequest`).
+   Se la prima riga (fino ai due punti o a capo) o l'ultima riga del
+   messaggio contiene "daily" e un verbo tra posta/pubblica/registra/
+   manda/metti/inserisci/carica/invia, e il resto sembra un daily, il resto
+   è il daily. "Manda il daily a Marco" resta una richiesta di test, "hai
+   postato il mio daily?" resta una domanda.
+2. **In DM, senza modello** (`slackHandlers.js`, prima del blocco
+   `standupInAttesa`). Il corpo va in `handleDailyResponse`, la stessa
+   strada del daily testuale: parser AI, aggancio commesse,
+   `standup_entries`, consuntivo, post in #daily. Vale a qualsiasi ora.
+   Risposta: "Fatto: daily di oggi registrato e pubblicato in #daily".
+3. **In #daily con il tag** ("@Giuno posta il mio daily: …"): si registra
+   con `recordChannelDaily` senza ripubblicare, come il daily taggato puro.
+4. **Tool `post_daily`** (`standupTools.js`, pacchetto `team_admin`, che
+   già si accende sulla parola "daily"). Copre le forme che le euristiche
+   non prendono ("postalo" riferito al messaggio prima, il daily dentro
+   una conversazione): il modello passa il testo così com'è, il tool lo
+   registra a nome di chi scrive; solo un admin può intestarlo a un altro
+   con `user_id`. Il prompt gli dice di chiedere il testo se manca, non di
+   compilarlo lui.
+
+Test: `test/daily-post-on-request.test.js`. Niente migrazioni.
+
+## 31. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

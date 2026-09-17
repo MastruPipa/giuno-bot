@@ -154,10 +154,15 @@ app.event('app_mention', async function(args) {
       var dailyV2ForMention = require('./dailyStandupV2');
       if (event.channel === dailyV2ForMention.DAILY_CHANNEL_ID && !event.thread_ts) {
         var dailyClass = dailyV2ForMention.classifyDailyText(text);
-        if (dailyClass.isDaily && !dailyClass.isRequest) {
+        // Daily puro, oppure daily con la richiesta esplicita di registrarlo
+        // ("@Giuno posta il mio daily: …"): in canale è già pubblico, si
+        // registra e basta.
+        var mentionDailyBody = (dailyClass.isDaily && !dailyClass.isRequest)
+          ? text : dailyV2ForMention.extractDailyFromRequest(text);
+        if (mentionDailyBody) {
           var capturedMention = false;
           try {
-            capturedMention = await dailyV2ForMention.recordChannelDaily(event.user, text, event.channel);
+            capturedMention = await dailyV2ForMention.recordChannelDaily(event.user, mentionDailyBody, event.channel);
           } catch(e) { logger.warn('[STANDUP-V2] cattura daily da mention fallita:', e.message); }
           if (capturedMention) {
             try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
@@ -385,6 +390,30 @@ app.message(async function(args) {
       if (campaignHit.consumed) return;
     }
   } catch(e) { logger.debug('[CAMPAIGN] registerReply:', e.message); }
+
+  // Daily scritto a mano con la richiesta esplicita di postarlo ("Giuno, posta
+  // questo daily: …", oppure il daily seguito da "pubblicalo in #daily"): si
+  // registra e si pubblica subito, a qualsiasi ora, senza passare dal modello.
+  // Prima la classificazione lo scartava come richiesta (inizia con "giuno,")
+  // e il modello non aveva un tool per pubblicarlo: restava senza esito.
+  var dailyV2OnRequest = require('./dailyStandupV2');
+  var requestedDailyBody = dailyV2OnRequest.extractDailyFromRequest(message.text);
+  if (requestedDailyBody) {
+    var requestedSaved = false;
+    try {
+      requestedSaved = await dailyV2OnRequest.handleDailyResponse(message.user, requestedDailyBody);
+    } catch(e) {
+      logger.error('[STANDUP-V2] daily su richiesta fallito:', e.message);
+    }
+    await app.client.chat.postMessage({
+      channel: message.channel,
+      text: requestedSaved
+        ? 'Fatto: daily di oggi registrato e pubblicato in #daily ✅'
+        : 'Non sono riuscito a pubblicare il daily — riprova con il bottone *✏️ Compila daily* o avvisa Antonio.',
+    });
+    logger.info('[STANDUP-V2] Daily su richiesta esplicita da:', message.user, requestedSaved ? '(ok)' : '(fallito)');
+    return;
+  }
 
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.

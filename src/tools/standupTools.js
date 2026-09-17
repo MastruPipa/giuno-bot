@@ -59,6 +59,24 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'post_daily',
+    description: 'Registra e pubblica in #daily il daily che l\'utente ha scritto a mano nel messaggio, quando chiede di ' +
+      'postarlo/pubblicarlo/registrarlo ("posta il mio daily", "pubblicalo in #daily", "ecco il daily di oggi, ' +
+      'registralo", "postalo" riferito al daily scritto nel messaggio prima). Passa in text SOLO il daily (cosa ha ' +
+      'fatto oggi con le ore, cosa farà domani, blocchi), senza la frase di richiesta: viene salvato come daily di ' +
+      'OGGI a nome della persona, le ore entrano nel consuntivo e il testo viene pubblicato in #daily. Non inventare ' +
+      'né completare il daily: se il messaggio non lo contiene, chiedilo. Per conto di chi scrive; solo un admin può ' +
+      'indicare user_id per registrarlo a nome di un altro.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Il testo del daily così come l\'ha scritto la persona (senza la richiesta).' },
+        user_id: { type: 'string', description: 'Slack ID della persona a cui intestare il daily (solo admin; default: chi scrive).' },
+      },
+      required: ['text'],
+    },
+  },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -309,22 +327,50 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
 
-async function execute(toolName, input) {
+async function execute(toolName, input, userId, userRole) {
+  input = input || {};
   if (toolName === 'query_standup') {
     try {
-      return await queryStandup(input || {});
+      return await queryStandup(input);
     } catch(e) {
       logger.error('[STANDUP-TOOL] error:', e.message);
       return { error: 'Errore query standup: ' + e.message };
     }
   }
+  if (toolName === 'post_daily') return postDaily(input, userId, userRole);
   return { error: 'Tool sconosciuto in standupTools: ' + toolName };
+}
+
+// ─── post_daily ───────────────────────────────────────────────────────────────
+// Il daily scritto a mano in chat, pubblicato su richiesta. Stessa strada del
+// daily testuale in DM (handleDailyResponse: parser AI, aggancio commesse,
+// standup_entries, consuntivo, post in #daily), ma raggiungibile dal modello
+// quando la richiesta non è riconosciuta dalle euristiche dell'handler.
+async function postDaily(input, userId, userRole) {
+  var text = String(input.text || '').trim();
+  if (text.length < 10) return { error: 'Testo del daily mancante o troppo corto: passa il daily così come l\'ha scritto la persona.' };
+  var target = input.user_id || userId;
+  if (!target || target === 'system') return { error: 'Nessuna persona a cui intestare il daily: specifica user_id.' };
+  if (input.user_id && input.user_id !== userId && userRole !== 'admin') {
+    return { error: 'Solo un admin può registrare il daily a nome di un altro.' };
+  }
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    var saved = await dailyV2.handleDailyResponse(target, text);
+    if (!saved) return { error: 'Daily non registrato: riprova o usa il bottone "✏️ Compila daily".' };
+    return { success: true, user_id: target, date: dailyV2.oggi(),
+      message: 'Daily di oggi registrato e pubblicato in #daily' + (target !== userId ? ' a nome di <@' + target + '>' : '') + '.' };
+  } catch(e) {
+    logger.error('[STANDUP-TOOL] post_daily:', e.message);
+    return { error: 'Errore nel registrare il daily: ' + e.message };
+  }
 }
 
 module.exports = {
   definitions: definitions,
   execute: execute,
   queryStandup: queryStandup,
+  postDaily: postDaily,
   aggregateStandupRows: aggregateStandupRows,
   workdaysBetween: workdaysBetween,
 };

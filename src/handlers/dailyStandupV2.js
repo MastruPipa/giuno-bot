@@ -462,6 +462,42 @@ function classifyDailyText(txt) {
   return { isDaily: isDaily, isRequest: isRequest };
 }
 
+// Daily scritto a mano CON la richiesta esplicita di postarlo ("Giuno, posta
+// questo daily: …", "ecco il mio daily, pubblicalo in #daily:", oppure il
+// daily seguito da "postalo come daily"). classifyDailyText lo scarta come
+// richiesta (inizia con "giuno,") e il modello non aveva modo di pubblicarlo.
+// Ritorna il corpo del daily senza la frase di richiesta, o null.
+var DAILY_REQUEST_VERB = /\b(post\w*|pubblic\w*|registr\w*|mand\w*|mett\w*|inser\w*|caric\w*|invi\w*)\b/i;
+var DAILY_REQUEST_WORD = /\bdaily\b|\bstandup\b/i;
+// "manda il daily a Marco" è una richiesta di test (trigger_daily_request), non un daily.
+var DAILY_REQUEST_FOR_OTHERS = /\b(a|ad|per)\s+(<@[A-Z0-9]+>|[A-ZÀ-Ü][a-zà-ü]+)\b/;
+
+function looksLikeDailyRequestLine(line) {
+  line = (line || '').trim();
+  if (!line || line.length > 140) return false;
+  return DAILY_REQUEST_WORD.test(line) && DAILY_REQUEST_VERB.test(line) && !DAILY_REQUEST_FOR_OTHERS.test(line);
+}
+
+function extractDailyFromRequest(txt) {
+  txt = String(txt || '').replace(/\r/g, '').trim();
+  if (!txt) return null;
+  var body = null;
+  // Richiesta in testa: tutto fino al primo ":" o a capo, poi il daily.
+  var head = txt.match(/^([^\n:]{1,140})[:\n]\s*([\s\S]+)$/);
+  if (head && looksLikeDailyRequestLine(head[1])) body = head[2];
+  // Richiesta in coda: ultima riga ("postalo come daily", "puoi pubblicarlo in #daily?").
+  if (!body) {
+    var tail = txt.match(/^([\s\S]+)\n([^\n]{1,140})$/);
+    if (tail && looksLikeDailyRequestLine(tail[2])) body = tail[1];
+  }
+  if (!body) return null;
+  body = body.trim();
+  if (body.length < 10) return null;
+  var cls = classifyDailyText(body);
+  if (!cls.isDaily) return null;
+  return body;
+}
+
 // La entry esistente di (utente, giorno) ha già task strutturati? Serve per il
 // merge non distruttivo: un daily testuale che arriva DOPO il modale non deve
 // degradare la entry a solo raw_text.
@@ -878,6 +914,7 @@ module.exports = {
   handleDailyResponse: handleDailyResponse,
   recordChannelDaily: recordChannelDaily,
   classifyDailyText: classifyDailyText,
+  extractDailyFromRequest: extractDailyFromRequest,
   sendDailyRequests: sendDailyRequests,
   sendDailyRequestTo: sendDailyRequestTo,
   notifySendFailures: notifySendFailures,
