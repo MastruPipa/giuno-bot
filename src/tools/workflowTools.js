@@ -98,7 +98,7 @@ var definitions = [
   {
     name: 'trigger_daily_request',
     description: 'Invia SUBITO il DM di richiesta daily (bottone "✏️ Compila daily") a un utente, fuori dal cron ' +
-      'delle 16:00 e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
+      'pomeridiano e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
       'di test", "fammi provare il daily", "manda la richiesta daily a X". Solo admin.',
     input_schema: {
       type: 'object',
@@ -110,7 +110,7 @@ var definitions = [
   {
     name: 'trigger_checkin_request',
     description: 'LEGACY: invia il DM del vecchio check-in ore separato (bottone "⏱ Traccia le ore"). Il consuntivo ' +
-      'ora è integrato nel daily unico delle 16:00 (usa trigger_daily_request per testarlo); questo tool serve solo ' +
+      'ora è integrato nel daily unico pomeridiano (usa trigger_daily_request per testarlo); questo tool serve solo ' +
       'per correzioni manuali una tantum del consuntivo di una data. Solo admin.',
     input_schema: {
       type: 'object',

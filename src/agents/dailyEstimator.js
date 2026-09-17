@@ -16,11 +16,11 @@
 //      se c'è SLACK_USER_TOKEN, la ricerca globale;
 //   5. email inviate e ricevute oggi (solo se il Google della persona è collegato).
 // Le fonti mancanti si saltano in silenzio: la stima dice da cosa deriva.
-// Le fonti di giornata (Drive, Figma, canali, calendari admin) si leggono una
+// Le fonti di giornata (Drive, canali, calendari admin) si leggono una
 // volta per corsa e valgono per tutte le persone.
 //
 // Le ORE non le indovina il modello: ogni artefatto ha un orario (revisioni
-// Drive, versioni Figma, messaggi, riunioni) e src/agents/activitySessions.js
+// Drive, messaggi, riunioni) e src/agents/activitySessions.js
 // li raggruppa in sessioni di lavoro per persona; il modello dà un nome alle
 // sessioni e distribuisce le loro durate sui task. Le correzioni della persona
 // (src/services/estimateCalibration.js) dicono se per lei tendiamo a stimare
@@ -76,7 +76,7 @@ async function dayContext(dateStr, deps) {
   var now = Date.now();
   if (_day.date === dateStr && _day.ctx && (now - _day.at) < DAY_CACHE_MS) return _day.ctx;
   var app = deps.app || require('../services/slackService').app;
-  var ctx = { users: [], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, figmaByEmail: {}, figmaByName: {}, figmaEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
+  var ctx = { users: [], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
   await safeCall('ESTIMATE.day.users', async function() {
     var svc = deps.slackService || require('../services/slackService');
     ctx.users = await withTimeout(function() { return svc.getUtenti(); }, SOURCE_TIMEOUT_MS, 'estimate.users');
@@ -84,9 +84,8 @@ async function dayContext(dateStr, deps) {
   await safeCall('ESTIMATE.day.slack_channels', async function() { ctx.slackByUser = await collectSlackChannelActivity(app, dateStr); });
   var scanners = await pickScanners(deps);
   await safeCall('ESTIMATE.day.drive', async function() { var r = await collectDriveActivity(dateStr, scanners, deps); ctx.driveByEmail = r.byEmail; ctx.driveByName = r.byName; ctx.driveEvents = r.events; });
-  await safeCall('ESTIMATE.day.figma', async function() { var f = await collectFigmaActivity(dateStr, deps); ctx.figmaByEmail = f.byEmail; ctx.figmaByName = f.byName; ctx.figmaEvents = f.events; });
   await safeCall('ESTIMATE.day.admin_calendar', async function() { ctx.adminEvents = await collectAdminCalendar(dateStr, scanners, deps); });
-  // Registro delle posizioni: cartella → progetto, canale → progetto, file Figma → progetto
+  // Registro delle posizioni: cartella → progetto, canale → progetto
   await safeCall('ESTIMATE.day.locations', async function() {
     var loc = require('../services/projectLocations');
     var locRowsAll = deps.locations !== undefined ? null : await loc.loadRegistry();
@@ -205,47 +204,6 @@ function unionBy(a, b, keyFn) {
 function itemKey(x) { return (x.kind || x.type || '') + '|' + (x.name || '') + '|' + (x.modified_at || ''); }
 function eventKey(x) { return (x.kind || '') + '|' + (x.at || '') + '|' + (x.name || x.channel || ''); }
 
-// File Figma modificati oggi e le loro versioni (autore + ora). Serve
-// FIGMA_TOKEN (personal access token) e FIGMA_TEAM_ID; senza, si salta.
-async function collectFigmaActivity(dateStr, deps) {
-  var token = (deps.env || process.env).FIGMA_TOKEN;
-  var teamId = (deps.env || process.env).FIGMA_TEAM_ID;
-  var out = { byEmail: {}, byName: {}, events: { byEmail: {}, byName: {} }, files: [] };
-  if (!token || !teamId) return out;
-  var doFetch = deps.fetch || global.fetch;
-  var b = romeDayBounds(dateStr);
-  var startMs = Date.parse(b.start), endMs = Date.parse(b.end);
-  async function api(path) {
-    var res = await withTimeout(function() { return doFetch('https://api.figma.com/v1' + path, { headers: { 'X-Figma-Token': token } }); }, SOURCE_TIMEOUT_MS, 'estimate.figma');
-    if (!res.ok) throw new Error('Figma ' + res.status + ' su ' + path);
-    return res.json();
-  }
-  var projects = ((await api('/teams/' + encodeURIComponent(teamId) + '/projects')).projects || []).slice(0, 40);
-  var files = [];
-  for (var i = 0; i < projects.length; i++) {
-    try {
-      var pf = (await api('/projects/' + projects[i].id + '/files')).files || [];
-      pf.forEach(function(f) { var t = Date.parse(f.last_modified); if (t >= startMs && t < endMs) files.push({ key: f.key, name: f.name, project: projects[i].name, project_id: String(projects[i].id), last_modified: f.last_modified }); });
-    } catch(e) { logger.debug('[DAILY-ESTIMATE] figma project ' + projects[i].name + ':', e.message); }
-  }
-  for (var j = 0; j < files.length && j < 40; j++) {
-    var f = files[j];
-    var link = 'https://www.figma.com/file/' + f.key;
-    try {
-      var versions = ((await api('/files/' + f.key + '/versions')).versions || []).filter(function(v) { var t = Date.parse(v.created_at); return t >= startMs && t < endMs; });
-      versions.forEach(function(v) {
-        var u = v.user || {};
-        var item = { name: f.name, project: f.project, figma_project_id: f.project_id, file_key: f.key, type: 'figma', modified_at: v.created_at, link: link };
-        var ev = { at: v.created_at, kind: 'figma', name: f.name, link: link, figma_project_id: f.project_id, file_key: f.key };
-        if (u.email) { var ek = emailKey(u.email); (out.byEmail[ek] = out.byEmail[ek] || []); if (!out.byEmail[ek].some(function(x) { return x.name === f.name; })) out.byEmail[ek].push(item); (out.events.byEmail[ek] = out.events.byEmail[ek] || []).push(ev); }
-        if (u.handle) { var nk = nameKey(u.handle); (out.byName[nk] = out.byName[nk] || []); if (!out.byName[nk].some(function(x) { return x.name === f.name; })) out.byName[nk].push(item); (out.events.byName[nk] = out.events.byName[nk] || []).push(ev); }
-      });
-      out.files.push(f);
-    } catch(e) { logger.debug('[DAILY-ESTIMATE] figma versions ' + f.name + ':', e.message); }
-  }
-  return out;
-}
-
 // Eventi di oggi nei calendari degli admin: chi è invitato (email) li eredita
 // anche senza avere collegato il proprio Google.
 async function collectAdminCalendar(dateStr, scanners, deps) {
@@ -276,7 +234,7 @@ async function collectEvidence(userId, dateStr, deps) {
   deps = deps || {};
   var db = deps.db || require('../../supabase');
   var app = deps.app || require('../services/slackService').app;
-  var evidence = { date: dateStr, sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], slack: [], channels: [], drive: [], figma: [], emails: [], sent: [], sessions: [], calibration: null, activities: [] };
+  var evidence = { date: dateStr, sources: [], plan_yesterday: [], weekly_plan: [], calendar: [], slack: [], channels: [], drive: [], emails: [], sent: [], sessions: [], calibration: null, activities: [] };
   var ctx = await dayContext(dateStr, deps);
   var me = findUser(ctx, userId);
   var myEmail = me && me.email ? emailKey(me.email) : null;
@@ -370,20 +328,12 @@ async function collectEvidence(userId, dateStr, deps) {
     if (rows.length) evidence.activities = rows;
   });
 
-  // 2e. File Figma con versioni salvate oggi dalla persona
-  var fig = unionBy(myEmail && ctx.figmaByEmail && ctx.figmaByEmail[myEmail], myName && ctx.figmaByName && ctx.figmaByName[myName], itemKey);
-  if (fig.length) {
-    evidence.figma = fig.slice(0, 15);
-    evidence.sources.push('file Figma');
-  }
-
-  // 2f. Progetto per POSIZIONE (registro cartelle/canali/Figma) su documenti, messaggi e file
+  // 2e. Progetto per POSIZIONE (registro cartelle/canali) su documenti e messaggi
   var locations = ctx.locations || null;
   var lookup = require('../services/projectLocations').lookup;
   function projectOf(kind, ref) { var p = locations && ref ? lookup(locations, kind, ref) : null; return p && p.name ? p.name : null; }
   evidence.drive.forEach(function(d) { d.project = d.project || projectOf('drive_folder', d.folder); });
   evidence.channels.forEach(function(m) { m.project = m.project || projectOf('slack_channel', m.channel_id); });
-  evidence.figma.forEach(function(d) { d.project_hint = projectOf('figma_file', d.file_key) || projectOf('figma_project', d.figma_project_id) || null; });
   evidence.locationRows = ctx.locationRows || [];
   // Riunioni: prima il cliente/commessa nel titolo ("Riunione con Antonio per Elios" → Elios),
   // poi le attività trasversali (daily, management, team building…); altrimenti nessun tag.
@@ -392,19 +342,17 @@ async function collectEvidence(userId, dateStr, deps) {
   if (!deps.catalog && !ctx.catalog) { try { catalogForCal = await matcherSvc.getCatalog(); ctx.catalog = catalogForCal; } catch(_) {} }
   evidence.calendar.forEach(function(e) { if (!e.project) { var r = matcherSvc.resolveTask(e.title, catalogForCal); if (r) e.project = r.name; } });
 
-  // 2g. Sessioni di lavoro dai timestamp di tutto quanto sopra
+  // 2f. Sessioni di lavoro dai timestamp di tutto quanto sopra
   var sessions = require('./activitySessions');
   var events = [];
   var dEv = ctx.driveEvents || { byEmail: {}, byName: {} };
-  var fEv = ctx.figmaEvents || { byEmail: {}, byName: {} };
   unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('drive_folder', e.folder) })); });
-  unionBy(myEmail && fEv.byEmail[myEmail], myName && fEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('figma_file', e.file_key) || projectOf('figma_project', e.figma_project_id) })); });
   chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null, project: m.project || null }); });
   evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes, project: e.project || null }); });
   evidence.sessions = sessions.buildSessions(events);
   if (evidence.sessions.length) evidence.sources.push('sessioni di lavoro');
 
-  // 2h. Storico delle correzioni della persona
+  // 2g. Storico delle correzioni della persona
   await safeCall('ESTIMATE.calibration', async function() {
     var cal = deps.calibration !== undefined ? deps.calibration : await require('../services/estimateCalibration').getCalibration(userId);
     if (cal) evidence.calibration = cal;
@@ -473,7 +421,6 @@ async function explainMissing(userId, dateStr, deps) {
   if (!evidence.drive.length) why.push(scanners.length ? 'Drive: nessun file suo oggi (letto con il Google di ' + scanners.length + ' admin)' + (me && me.email ? '' : ', e senza email Slack non lo riconosco') : 'Drive: nessun admin con Google, non leggibile');
   if (!evidence.channels.length) why.push('canali: nessun messaggio suo oggi nei canali dove c\'è Giuno');
   if (!evidence.slack.length) why.push(env.SLACK_USER_TOKEN ? 'ricerca Slack: nessun messaggio suo oggi' : 'ricerca Slack: SLACK_USER_TOKEN mancante, vedo solo i canali con Giuno');
-  if (!evidence.figma.length) why.push(env.FIGMA_TOKEN && env.FIGMA_TEAM_ID ? 'Figma: nessuna versione sua oggi' : 'Figma: FIGMA_TOKEN/FIGMA_TEAM_ID non configurati');
   if (!evidence.emails.length && !evidence.sent.length) why.push(mine ? 'email: nessuna oggi' : 'email: Google non collegato');
   if (!evidence.plan_yesterday.length) why.push('nessun "domani" nel daily precedente');
   if (!evidence.weekly_plan.length) why.push('nessun piano settimanale');
@@ -482,7 +429,7 @@ async function explainMissing(userId, dateStr, deps) {
 
 function hasUsableEvidence(evidence) {
   if (!evidence) return false;
-  return ['plan_yesterday', 'weekly_plan', 'calendar', 'slack', 'channels', 'drive', 'figma', 'emails', 'sent'].some(function(k) { return Array.isArray(evidence[k]) && evidence[k].length > 0; });
+  return ['plan_yesterday', 'weekly_plan', 'calendar', 'slack', 'channels', 'drive', 'emails', 'sent'].some(function(k) { return Array.isArray(evidence[k]) && evidence[k].length > 0; });
 }
 
 // ─── Stima col modello ───────────────────────────────────────────────────────
@@ -494,7 +441,7 @@ var SYSTEM_PROMPT =
   '{"oggi":[{"task":"descrizione breve","hours":N,"minutes":N,"project":"nome del progetto o null","basis":"da dove viene"}],"domani":[{"task":"...","hours":0,"minutes":0,"project":null}],"blocchi":null,"confidence":"alta|media|bassa","note":"una frase su cosa manca"}\n' +
   'Regole:\n' +
   '- Ogni task in "oggi" deve avere una traccia concreta (riunione in calendario, documento creato o modificato su Drive, allegato o messaggio Slack, email inviata, piano scritto ieri). Niente task inventati.\n' +
-  '- Se ci sono SESSIONI DI LAVORO ricostruite dai timestamp, le ore vengono da lì: la somma delle durate dei task deve avvicinarsi al totale delle sessioni, e ogni sessione va attribuita al task che le sue tracce indicano (documento, file Figma, canale, riunione). Le sessioni non coperte da alcuna traccia leggibile diventano un task generico sul progetto del canale o del file.\n' +
+  '- Se ci sono SESSIONI DI LAVORO ricostruite dai timestamp, le ore vengono da lì: la somma delle durate dei task deve avvicinarsi al totale delle sessioni, e ogni sessione va attribuita al task che le sue tracce indicano (documento, canale, riunione). Le sessioni non coperte da alcuna traccia leggibile diventano un task generico sul progetto del canale o del file.\n' +
   '- Ore: OGNI task in "oggi" ha una durata stimata, mai 0. Riunioni: la durata del calendario. Documento creato oggi: 2h (presentazioni, fogli, video) o 1h (doc brevi); documento solo modificato: 1h. Email inviata o scambio Slack su un tema: 30 min; supporto/troubleshooting: 1h. Task dal piano di ieri: le ore pianificate. Raggruppa le tracce dello stesso tema in un solo task.\n' +
   '- Totale "oggi" mai sopra 8 ore: se lo superi, riduci in proporzione. Preferisci poche righe solide a molte righe deboli.\n' +
   '- Il numero dei messaggi non misura il lavoro: conta il tema e l\'output, non il volume.\n' +
@@ -525,11 +472,6 @@ function buildPrompt(evidence) {
   if (evidence.drive && evidence.drive.length) {
     parts.push('DOCUMENTI SU DRIVE CREATI O MODIFICATI OGGI DALLA PERSONA (output prodotti):\n' + evidence.drive.map(function(d) {
       return '- ' + d.name + ' (' + (d.type || 'file') + (d.created_today ? ', creato oggi' : ', modificato') + (d.modified_at ? ' alle ' + String(d.modified_at).slice(11, 16) : '') + ')' + (d.project ? ' [progetto: ' + d.project + ']' : '');
-    }).join('\n'));
-  }
-  if (evidence.figma && evidence.figma.length) {
-    parts.push('FILE FIGMA CON VERSIONI SALVATE OGGI DALLA PERSONA:\n' + evidence.figma.map(function(d) {
-      return '- ' + d.name + (d.project ? ' (progetto Figma: ' + d.project + ')' : '') + (d.project_hint ? ' [progetto: ' + d.project_hint + ']' : '');
     }).join('\n'));
   }
   if (evidence.sessions && evidence.sessions.length) {
@@ -637,6 +579,47 @@ async function estimateDaily(userId, dateStr, deps) {
   return structured;
 }
 
+// ─── Modifica a parole della proposta ────────────────────────────────────────
+// "aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la revisione":
+// il modello riscrive la stima applicando SOLO quella modifica. Le ore dette
+// dalla persona sono reali, non stime: niente tetto, niente minimo.
+var AMEND_SYSTEM_PROMPT =
+  'Hai il daily di un membro di un\'agenzia creativa italiana, ricostruito da Giuno, in JSON. La persona chiede una modifica a parole. ' +
+  'Applica SOLO quella modifica e restituisci il daily completo aggiornato, nello stesso formato JSON, senza inventare altro e senza togliere ciò che non è stato chiesto di togliere.\n' +
+  'Formato: {"oggi":[{"task":"...","hours":N,"minutes":N,"project":"nome o null"}],"domani":[{"task":"...","hours":N,"minutes":N,"project":null}],"blocchi":null|"testo"}\n' +
+  'Regole: "aggiungi X" → nuova riga in "oggi" (o in "domani" se parla di domani) con le ore dette, altrimenti 30 minuti. ' +
+  '"togli/rimuovi X" → via la riga che corrisponde. "X erano Nh" / "X non era 2h ma 3" → cambia le ore di quella riga. ' +
+  '"blocco: …" o "mi blocca …" → campo blocchi. Le ore dette dalla persona vanno prese alla lettera. ' +
+  'Rispondi SOLO con il JSON.';
+
+async function amendEstimate(structured, instruction, deps) {
+  deps = deps || {};
+  instruction = String(instruction || '').trim();
+  if (!structured || !instruction) return null;
+  var current = { oggi: structured.oggi || [], domani: structured.domani || [], blocchi: structured.blocchi || null };
+  var client = deps.client || new (require('@anthropic-ai/sdk'))();
+  var res = await withTimeout(function() {
+    return client.messages.create({
+      model: MODELS.UTILITY, max_tokens: 900, system: AMEND_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: 'DAILY ATTUALE:\n' + JSON.stringify(current) + '\n\nMODIFICA CHIESTA DALLA PERSONA:\n' + instruction.substring(0, 600) }],
+    });
+  }, MODEL_TIMEOUT_MS, 'estimate.amend');
+  var text = (res.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('');
+  var m = text.match(/\{[\s\S]*\}/);
+  var parsed = m ? safeParse('DAILY-ESTIMATE-AMEND', m[0], null) : null;
+  if (!parsed) return null;
+  var updated = require('../services/dailyParser').normalizeParsed(parsed);
+  if (!updated) return null;
+  try { await require('../services/projectMatcher').enrichStructured(updated, { date: deps.date, userId: deps.userId }); } catch(e) { logger.debug('[DAILY-ESTIMATE] amend project match:', e.message); }
+  updated.estimate = Object.assign({}, structured.estimate || {}, {
+    amended_at: new Date().toISOString(),
+    amendments: ((structured.estimate && structured.estimate.amendments) || []).concat([instruction.substring(0, 200)]),
+    note: 'corretto dalla persona a parole',
+  });
+  logger.info('[DAILY-ESTIMATE] stima modificata a parole per', deps.userId || '?', '→', updated.oggi.length, 'task oggi');
+  return updated;
+}
+
 // ─── Testo ───────────────────────────────────────────────────────────────────
 
 function fmtDur(t) {
@@ -672,11 +655,11 @@ module.exports = {
   collectSlackChannelActivity: collectSlackChannelActivity,
   collectDriveActivity: collectDriveActivity,
   collectAdminCalendar: collectAdminCalendar,
-  collectFigmaActivity: collectFigmaActivity,
   collectEvidence: collectEvidence,
   hasUsableEvidence: hasUsableEvidence,
   buildPrompt: buildPrompt,
   estimateDaily: estimateDaily,
+  amendEstimate: amendEstimate,
   formatEstimateBody: formatEstimateBody,
   explainMissing: explainMissing,
   formatSourcesLine: formatSourcesLine,

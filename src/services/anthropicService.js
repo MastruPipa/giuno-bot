@@ -45,7 +45,7 @@ function getToolFailures(sinceIso) { return _toolFailures.filter(function(f) { r
 var SIDE_EFFECT_TOOLS = new Set(['send_dm', 'send_campaign', 'cancel_campaign', 'send_email', 'reply_email', 'forward_email', 'send_draft', 'create_event', 'update_event', 'delete_event', 'add_attendees',
   'share_file', 'edit_doc', 'create_doc', 'edit_slides', 'create_sheet', 'write_sheet', 'create_folder', 'move_file', 'rename_file', 'upload_file', 'pin_message', 'unpin_message', 'set_channel_topic', 'invite_to_channel', 'create_poll',
   'create_lead', 'update_lead', 'delete_lead', 'attio_create_record', 'attio_update_record', 'attio_add_note', 'create_project', 'update_project', 'allocate_resource', 'log_hours', 'log_time',
-  'team_member_joined', 'team_member_left', 'send_google_link', 'set_reminder', 'remember_this', 'add_to_kb', 'trigger_daily_request', 'trigger_checkin_request', 'trigger_planner_request', 'refresh_project_dossier']);
+  'team_member_joined', 'team_member_left', 'send_google_link', 'set_reminder', 'remember_this', 'add_to_kb', 'trigger_daily_request', 'trigger_checkin_request', 'trigger_planner_request', 'post_daily', 'refresh_project_dossier']);
 
 function _hhmm(iso) { try { return new Date(iso).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' }); } catch(_) { return ''; } }
 
@@ -140,6 +140,7 @@ var SYSTEM_PROMPT =
   'Se un tool fallisce, prova un\'altra via (Slack → email → KB → Drive) prima di arrenderti. ' +
   'Trascrizioni/recap meeting (Gemini notes): prima KB, poi le TUE email, poi find_emails sui colleghi che erano alla call; cerca per subject del meeting o "meeting notes". ' +
   '#daily (C05846AEV6D): contiene messaggi bot → read_channel con include_bots=true. ' +
+  '"Posta/pubblica/registra il mio daily" con il daily scritto nel messaggio (o in quello prima) → post_daily con il testo così com\'è: lo salva come daily di oggi e lo pubblica in #daily. Senza il testo del daily, chiedilo: non compilarlo tu. ' +
   '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
   'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +
   'Non dire "ho fatto X" se non hai chiamato il tool. ' +

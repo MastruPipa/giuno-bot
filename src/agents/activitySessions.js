@@ -1,12 +1,12 @@
 // ─── Sessioni di lavoro ricostruite dai timestamp ────────────────────────────
 // Ogni artefatto della giornata ha un orario: una revisione di un documento su
-// Drive, una versione di un file Figma, un messaggio in un canale, una
+// Drive, un messaggio in un canale, una
 // riunione con inizio e fine. Messi in fila per persona formano blocchi di
 // lavoro: le pause sopra GAP_MINUTES spezzano il blocco. La durata di una
 // sessione esce dai dati, non dal modello; il modello serve solo a darle un
 // nome. Il numero di eventi non pesa: contano gli estremi temporali.
 //
-// Evento: { at: ISO, kind: 'drive'|'figma'|'slack'|'calendar', name, link,
+// Evento: { at: ISO, kind: 'drive'|'slack'|'calendar', name, link,
 //           minutes (solo calendario: durata reale), channel }
 
 'use strict';
@@ -76,7 +76,6 @@ function formatSessions(sessions, offsetMinutes) {
       var tag = r.project ? ' [progetto: ' + r.project + ']' : '';
       if (r.kind === 'slack') return '#' + r.channel + ' (' + r.count + ' messaggi)' + tag;
       if (r.kind === 'calendar') return 'riunione "' + r.name + '"' + tag;
-      if (r.kind === 'figma') return 'Figma "' + r.name + '" (' + r.count + ' versioni)' + tag;
       return 'Drive "' + r.name + '" (' + r.count + ' modifiche)' + tag;
     });
     return '- ' + hhmm(Date.parse(s.start), offsetMinutes) + '–' + hhmm(Date.parse(s.end), offsetMinutes) + ' (' + fmtMinutes(s.minutes) + '): ' + parts.join('; ');
