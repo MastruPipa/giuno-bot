@@ -43,6 +43,8 @@ var PACKS = [
     match: /\b(team|roster|entrat\w|uscit\w|andat\w via|lasciat\w|nuovo membro|collega google|google|feedback|daily|planner|check-?in|standup|cost\w|preferenz\w|notific\w|routine|campagn\w|sollecit\w|profilo|presenza|attivit\w del team)\b/i },
   { name: 'slack_admin', label: 'pin, sondaggi, topic, inviti, file, emoji, reaction, gruppi', tools: ['create_poll', 'get_pinned_messages', 'pin_message', 'unpin_message', 'search_files', 'upload_file', 'get_slack_profile', 'list_usergroups', 'set_channel_topic', 'invite_to_channel', 'get_reactions', 'list_emoji', 'get_channel_map'],
     match: /\b(pin\w*|fissat\w|sondaggi\w|poll|topic|argomento del canale|invit\w|file|allegat\w|carica|emoji|reaction|reazion\w|gruppo|usergroup|mappa canali)\b/i },
+  { name: 'daily_estimate', label: 'modificare o approvare la proposta di daily in attesa', tools: ['daily_estimate_amend', 'daily_estimate_approve'],
+    match: /\b(daily|stima|proposta|approv\w*|conferm\w*|togli\w*|lev\w*|aggiung\w*|rimuov\w*|sostitu\w*|corregg\w*|voce|riga|meeting|riunione)\b/i },
   { name: 'memory_admin', label: 'gestire memorie, KB, contatti e relazioni', tools: ['list_memories', 'delete_memory', 'delete_from_kb', 'get_entity_relationships', 'search_drive_index', 'save_contact', 'search_contacts'],
     match: /\b(memori\w|ricord\w*|dimentic\w*|cancell\w*|elimin\w*|kb|knowledge|relazion\w|collegament\w|contatt\w|rubrica|indice)\b/i },
 ];

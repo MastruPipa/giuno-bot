@@ -38,10 +38,11 @@ test('classifyEstimateReply: approvazione a parole, modifica a parole, il resto 
   ['approvo', 'confermo', 'Approvo così'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'approve', t); });
   // "ok" nudo: approvazione solo se l'ultimo messaggio di Giuno era la proposta (lo decide il handler).
   ['ok', 'Ok!', 'va bene così', 'sì', 'perfetto 👍'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'approve_bare', t); });
-  ['aggiungi 1h di call con Elios', 'la grafica erano 3h', 'togli la revisione', 'leva il meeting di fondazione per il sud che è saltato', 'non ho fatto la call', 'in più ho fatto 1h di preventivo Acme',
-    'manca la call con Gambino 1h', 'puoi aggiungere 30 min di mail?', 'Giuno, togli la revisione'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'amend', t); });
-  // Daily intero, domande, richieste esplicite di posting: non sono risposte alla proposta.
-  ['Oggi: grafiche 3h\nDomani: PED', 'quando esce il recap?', 'ciao giuno, cosa mi consigli?', 'posta il daily: oggi grafiche 3h e call 1h', ''].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), null, JSON.stringify(t)); });
+  // Le correzioni le capisce il modello dal contesto (tool daily_estimate_amend): qui non sono classificate.
+  ['aggiungi 1h di call con Elios', 'togli la revisione', 'leva il meeting di fondazione per il sud che è saltato', 'togli quella cosa',
+    'Oggi: grafiche 3h\nDomani: PED', 'quando esce il recap?', 'posta il daily: oggi grafiche 3h e call 1h', ''].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), null, JSON.stringify(t)); });
+  assert.equal(dsv2.classifyDailyText('Oggi: grafiche 3h\nDomani: PED').isStructured, true);
+  assert.equal(dsv2.classifyDailyText('aggiungi 1h di call con Elios').isStructured, false);
 });
 
 test('amendEstimate: il modello applica la modifica, la stima tiene fonti e storico delle modifiche', async function() {
@@ -183,4 +184,35 @@ test('lastBotMessageIsProposal: vero solo se l\'ultimo messaggio di Giuno nel DM
   assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: mk([advice, proposal]) }), false, 'in mezzo c\'è la risposta a una domanda');
   assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: mk([{ user: 'U_ANT', text: 'leva il meeting' }, proposal]) }), true, 'i messaggi dell\'utente non contano');
   assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: { client: { conversations: { history: async function() { throw new Error('boom'); } } } } }), false);
+});
+
+test('pendingProposalSection: la proposta in sospeso entra nel contesto del modello con le istruzioni sui tool', function() {
+  var today = dsv2.oggi();
+  assert.equal(dsv2.pendingProposalSection('U_NOBODY'), null);
+  dsv2.rememberPendingEstimate('U_ANT', today, { oggi: [{ task: 'Meet Fondazione con il Sud', hours: 0, minutes: 30 }], domani: [], blocchi: null, estimate: { sources: ['calendario'], generated_at: 'g' } });
+  try {
+    var sec = dsv2.pendingProposalSection('U_ANT');
+    assert.match(sec, /PROPOSTA DI DAILY IN ATTESA[\s\S]*Meet Fondazione con il Sud 30min[\s\S]*daily_estimate_amend[\s\S]*daily_estimate_approve/);
+  } finally { dsv2.clearPendingEstimate('U_ANT'); }
+});
+
+test('tool daily_estimate_amend / daily_estimate_approve: passano dalla proposta in sospeso; approvare con un daily vero già presente chiede conferma', async function() {
+  var standupTools = require('../src/tools/standupTools');
+  var today = dsv2.oggi();
+  var origAmend = dsv2.amendPendingEstimate, origConfirm = dsv2.confirmEstimate, origExisting = dsv2.getExistingEntry;
+  var calls = [];
+  dsv2.amendPendingEstimate = async function(u, instr) { calls.push(['amend', u, instr]); return { oggi: [{ task: 'Daily team', hours: 0, minutes: 15 }], domani: [], blocchi: null, estimate: {} }; };
+  dsv2.confirmEstimate = async function(u) { calls.push(['confirm', u]); return true; };
+  dsv2.getExistingEntry = async function() { return { source: 'dm', oggi_tasks: [{ task: 'x' }] }; };
+  try {
+    assert.match((await standupTools.execute('daily_estimate_amend', { instruction: 'togli la voce Meet' }, 'U_ANT', 'admin')).error, /Nessuna proposta/);
+    dsv2.rememberPendingEstimate('U_ANT', today, { oggi: [{ task: 'Meet Fondazione con il Sud', hours: 0, minutes: 30 }, { task: 'Daily team', hours: 0, minutes: 15 }], domani: [], blocchi: null, estimate: { generated_at: 'g' } });
+    var r = await standupTools.execute('daily_estimate_amend', { instruction: 'togli la voce Meet Fondazione con il Sud 30min' }, 'U_ANT', 'admin');
+    assert.equal(r.success, true); assert.match(r.proposal, /Daily team 15min/); assert.deepEqual(calls[0], ['amend', 'U_ANT', 'togli la voce Meet Fondazione con il Sud 30min']);
+    var a = await standupTools.execute('daily_estimate_approve', {}, 'U_ANT', 'admin');
+    assert.equal(a.requires_confirmation, true); assert.match(a.message, /SOSTITUISCE/);
+    assert.equal(calls.filter(function(c) { return c[0] === 'confirm'; }).length, 0, 'senza conferma non approva');
+    var a2 = await standupTools.execute('daily_estimate_approve', { replace_existing: true }, 'U_ANT', 'admin');
+    assert.equal(a2.success, true); assert.deepEqual(calls[calls.length - 1], ['confirm', 'U_ANT']);
+  } finally { dsv2.amendPendingEstimate = origAmend; dsv2.confirmEstimate = origConfirm; dsv2.getExistingEntry = origExisting; dsv2.clearPendingEstimate('U_ANT'); }
 });
