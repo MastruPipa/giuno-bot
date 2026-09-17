@@ -54,15 +54,48 @@ async function slackCall(label, fn, options) {
 // opts.includeInactive: anche chi è uscito dal team (active=false nel roster)
 // ma ha ancora l'account Slack. Serve solo per un destinatario nominato
 // esplicitamente; i giri collettivi (daily, planner, "tutti") lo escludono.
+// users.list è lenta e contingentata (Tier 2, 20/min): il daily la chiama
+// decine di volte tra invio, stime e promemoria, e il 17/9 alle 18:00 andava
+// in timeout ("mi mandi la stima?" → "la chiamata a Slack va in timeout").
+// Cache di 5 minuti; se Slack non risponde si usa l'ultima lista buona
+// (anche vecchia), e senza nemmeno quella il roster in DB.
+var USERS_CACHE_MS = 5 * 60000;
+var _usersCache = { at: 0, members: null };
+
+async function listMembers(deps) {
+  deps = deps || {};
+  var now = deps.now ? deps.now() : Date.now();
+  var ttl = deps.cacheMs != null ? deps.cacheMs : USERS_CACHE_MS;
+  if (_usersCache.members && (now - _usersCache.at) < ttl) return _usersCache.members;
+  try {
+    var client = (deps.app || app).client;
+    var res = await slackCall('SLACK.users.list', function() {
+      return client.users.list();
+    }, { timeoutMs: deps.timeoutMs || 5000, retries: 2 });
+    _usersCache = { at: now, members: res.members || [] };
+    return _usersCache.members;
+  } catch(e) {
+    if (_usersCache.members) {
+      logger.warn('[SLACK-USERS] users.list fallita (' + e.message + '): uso la lista di ' + Math.round((now - _usersCache.at) / 60000) + ' min fa');
+      return _usersCache.members;
+    }
+    var roster = [];
+    try { roster = (deps.teamDb || require('./db/team')).getTeamRoster() || []; } catch(_) {}
+    if (!roster.length) throw e;
+    logger.warn('[SLACK-USERS] users.list fallita (' + e.message + ') e nessuna lista in cache: uso il roster in DB (' + roster.length + ')');
+    return roster.map(function(r) { return { id: r.slack_user_id, real_name: r.canonical_name, profile: { email: r.email || null } }; });
+  }
+}
+
+function invalidateUsersCache() { _usersCache = { at: 0, members: null }; }
+
 async function getUtenti(opts) {
   opts = opts || {};
-  var res = await slackCall('SLACK.users.list', function() {
-    return app.client.users.list();
-  }, { timeoutMs: 5000, retries: 2 });
+  var members = await listMembers(opts.deps);
 
   var isInactive = function() { return false; };
   try { var teamDb = require('./db/team'); if (teamDb.isTeamMemberInactive) isInactive = teamDb.isTeamMemberInactive; } catch(_) {}
-  return (res.members || [])
+  return members
     .filter(function(u) { return !u.is_bot && u.id !== 'USLACKBOT' && !u.deleted && (opts.includeInactive || !isInactive(u.id)); })
     .map(function(u) {
       return {
@@ -153,6 +186,8 @@ function getChannelMapEntry(channelId) {
 }
 
 module.exports = {
+  listMembers: listMembers,
+  invalidateUsersCache: invalidateUsersCache,
   app: app,
   getUtenti: getUtenti,
   resolveSlackMentions: resolveSlackMentions,

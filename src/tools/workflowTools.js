@@ -154,9 +154,20 @@ async function execute(toolName, input, userId, userRole) {
     try {
       var targetId = input.user_id || userId;
       if (!targetId || targetId === 'system') return { error: 'Nessun destinatario: specifica user_id.' };
-      var { getUtenti } = require('../services/slackService');
-      var allUsers = await getUtenti();
-      var target = allUsers.find(function(u) { return u.id === targetId; }) || { id: targetId, name: '' };
+      // Il destinatario non deve dipendere da users.list (lenta, contingentata):
+      // lista in cache o roster, altrimenti users.info, altrimenti solo l'id.
+      var target = { id: targetId, name: '' };
+      try {
+        var { getUtenti } = require('../services/slackService');
+        var allUsers = await getUtenti();
+        target = allUsers.find(function(u) { return u.id === targetId; }) || target;
+      } catch(e) {
+        logger.warn('[TRIGGER] getUtenti fallita (' + e.message + '): provo users.info');
+        try {
+          var info = await require('../services/slackService').app.client.users.info({ user: targetId });
+          if (info && info.user) target = { id: targetId, name: info.user.real_name || info.user.name || '', email: (info.user.profile && info.user.profile.email) || null };
+        } catch(e2) { logger.warn('[TRIGGER] users.info fallita (' + e2.message + '): procedo con il solo id'); }
+      }
 
       if (toolName === 'trigger_daily_request') {
         var dailyV2 = require('../handlers/dailyStandupV2');
