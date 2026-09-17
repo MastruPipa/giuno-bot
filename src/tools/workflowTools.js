@@ -160,11 +160,21 @@ async function execute(toolName, input, userId, userRole) {
 
       if (toolName === 'trigger_daily_request') {
         var dailyV2 = require('../handlers/dailyStandupV2');
-        var sentDaily = await dailyV2.sendDailyRequestWithEstimate(target);
-        return { success: true, sent_to: target.id, tipo: 'daily', stima: sentDaily.estimate,
-          nota: sentDaily.estimate
-            ? 'DM con la stima del daily inviato (bottoni Approvo / Modifico nel modulo / Compilo da zero; si può correggere anche a parole in DM).'
-            : 'Nessuna traccia di giornata per la stima: inviato il DM col bottone "✏️ Compila daily". Vale anche una risposta testuale in DM.' };
+        // Ricostruire la stima (Drive, calendari, canali, modello) può durare
+        // più del turno di conversazione (55s): 17/9, "Ci sto mettendo
+        // troppo" ad Antonio. Si parte in background e si risponde subito;
+        // il DM arriva da solo, con la stima o col modulo.
+        dailyV2.sendDailyRequestWithEstimate(target).then(function(r) {
+          logger.info('[TRIGGER-DAILY] DM inviato a', target.id, r && r.estimate ? '(stima)' : '(modulo)');
+        }).catch(function(e) {
+          logger.error('[TRIGGER-DAILY] invio fallito per', target.id + ':', e.message);
+          var client = require('../services/slackService').app.client;
+          client.chat.postMessage({ channel: target.id, text: 'Non sono riuscito a mandarti il daily (' + String(e.message).substring(0, 120) + '). Riprova tra poco o scrivimi il daily qui in testo.' }).catch(function() {});
+        });
+        return { success: true, sent_to: target.id, tipo: 'daily', in_background: true,
+          nota: 'Sto ricostruendo la giornata: il DM arriva da solo entro un paio di minuti, con la stima e i bottoni ' +
+            'Approvo / Modifico nel modulo / Compilo da zero se ci sono tracce, altrimenti col bottone "✏️ Compila daily". ' +
+            'Rispondi alla persona che sta arrivando, senza promettere altro.' };
       }
 
       if (toolName === 'trigger_planner_request') {
