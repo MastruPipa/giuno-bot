@@ -60,6 +60,26 @@ var definitions = [
     },
   },
   {
+    name: 'daily_estimate_amend',
+    description: 'Modifica la PROPOSTA DI DAILY IN ATTESA (la stima ricostruita da Giuno, nel contesto) secondo quello che chiede l\'utente e gliela rimanda in DM con i bottoni. ' +
+      'Usalo per "togli X", "leva quella cosa", "aggiungi 1h di call con Y", "la seconda voce erano 2h", "senza il meeting saltato": scrivi in instruction un\'istruzione precisa e autonoma, con il nome della voce così com\'è nella proposta e le ore, risolvendo tu i riferimenti impliciti dal contesto. ' +
+      'Dopo il tool rispondi con una riga sola: la proposta aggiornata è già arrivata con i bottoni.',
+    input_schema: {
+      type: 'object',
+      properties: { instruction: { type: 'string', description: 'La modifica, precisa: es. "togli la voce Meet Fondazione con il Sud 30min" oppure "aggiungi Call con Elios 1h in oggi".' } },
+      required: ['instruction'],
+    },
+  },
+  {
+    name: 'daily_estimate_approve',
+    description: 'Approva la PROPOSTA DI DAILY IN ATTESA: diventa il daily di oggi dell\'utente (salvato, ore nel consuntivo, pubblicato in #daily). ' +
+      'Usalo quando l\'utente la approva ("va bene così", "approvala", "ok la stima"). Se esiste già un daily vero di oggi, il tool si ferma e te lo dice: chiedi conferma prima di richiamarlo con replace_existing=true.',
+    input_schema: {
+      type: 'object',
+      properties: { replace_existing: { type: 'boolean', description: 'true solo dopo che l\'utente ha confermato di voler sostituire il daily già registrato oggi.' } },
+    },
+  },
+  {
     name: 'post_daily',
     description: 'Registra e pubblica in #daily il daily che l\'utente ha scritto a mano nel messaggio, quando chiede di ' +
       'postarlo/pubblicarlo/registrarlo ("posta il mio daily", "pubblicalo in #daily", "ecco il daily di oggi, ' +
@@ -338,7 +358,44 @@ async function execute(toolName, input, userId, userRole) {
     }
   }
   if (toolName === 'post_daily') return postDaily(input, userId, userRole);
+  if (toolName === 'daily_estimate_amend') return amendEstimateTool(input, userId);
+  if (toolName === 'daily_estimate_approve') return approveEstimateTool(input, userId);
   return { error: 'Tool sconosciuto in standupTools: ' + toolName };
+}
+
+// ─── daily_estimate_amend / daily_estimate_approve ───────────────────────────
+// La proposta in sospeso la modifica e la approva il modello, che ha il
+// contesto della chat: "togli quella cosa" diventa un'istruzione precisa.
+async function amendEstimateTool(input, userId) {
+  var instruction = String(input.instruction || '').trim();
+  if (!instruction) return { error: 'Manca l\'istruzione di modifica.' };
+  if (!userId || userId === 'system') return { error: 'Nessun utente.' };
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    if (!dailyV2.getPendingEstimate(userId, dailyV2.oggi())) return { error: 'Nessuna proposta di daily in attesa per oggi: la persona può compilare il daily con il bottone o scriverlo in testo.' };
+    var updated = await dailyV2.amendPendingEstimate(userId, instruction);
+    if (!updated) return { error: 'Modifica non applicata: riprova con un\'istruzione più precisa (nome della voce e ore).' };
+    var estimator = require('../agents/dailyEstimator');
+    return { success: true, proposal: estimator.formatEstimateBody(updated),
+      nota: 'Proposta aggiornata già inviata in DM con i bottoni Approvo / Modifico / Compilo da zero. Rispondi con una riga sola, senza ripetere la proposta.' };
+  } catch(e) { return { error: 'Errore nella modifica: ' + e.message }; }
+}
+
+async function approveEstimateTool(input, userId) {
+  if (!userId || userId === 'system') return { error: 'Nessun utente.' };
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    var todayStr = dailyV2.oggi();
+    if (!dailyV2.getPendingEstimate(userId, todayStr)) return { error: 'Nessuna proposta di daily in attesa per oggi.' };
+    var existing = await dailyV2.getExistingEntry(userId, todayStr);
+    if (existing && existing.source && existing.source !== 'estimate' && !input.replace_existing) {
+      return { requires_confirmation: true,
+        message: 'Oggi esiste già un daily vero (fonte: ' + existing.source + '). Approvare la stima lo SOSTITUISCE, ore comprese. Chiedi conferma all\'utente e richiama il tool con replace_existing=true solo se dice sì.' };
+    }
+    var ok = await dailyV2.confirmEstimate(userId);
+    if (!ok) return { error: 'Approvazione non riuscita: la proposta non è più valida.' };
+    return { success: true, message: 'Stima approvata: è il daily di oggi, pubblicato in #daily, ore nel consuntivo.' };
+  } catch(e) { return { error: 'Errore nell\'approvazione: ' + e.message }; }
 }
 
 // ─── post_daily ───────────────────────────────────────────────────────────────

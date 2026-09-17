@@ -383,26 +383,35 @@ async function sendEstimateProposal(utente, structured, opts, deps) {
 // Risposta testuale alla proposta in DM: approvazione a parole, oppure una
 // modifica ("aggiungi…", "togli…", "erano 3h") da applicare alla stima.
 // null = non è una risposta alla proposta (daily intero, o altro).
-// Approvazione ESPLICITA (vale sempre) e approvazione NUDA ("ok", "sì", "va
-// bene"): la seconda vale solo se l'ultimo messaggio di Giuno nel DM è la
-// proposta. Il 17/9 Antonio ha scritto "ok" a una risposta di Giuno e la
-// stima ha sovrascritto il daily buono.
+// Solo le approvazioni sono deterministiche: ESPLICITA ("approvo",
+// "confermo") vale sempre; NUDA ("ok", "sì", "va bene") solo se l'ultimo
+// messaggio di Giuno nel DM è la proposta (il 17/9 un "ok" a un consiglio ha
+// sovrascritto il daily buono). Le correzioni ("togli quella cosa", "la
+// seconda voce erano 2h") le capisce il modello dal contesto e le applica
+// con il tool daily_estimate_amend: l'elenco di verbi di prima non reggeva
+// ("leva il meeting…" non era previsto).
 var APPROVE_EXPLICIT_RE = /^(approv[oa]t?[oa]?|conferm[oa]t?[oa]?|confermo cos[iì]|approvo cos[iì]|approva(la)?|conferma(la)?)[\s!.👍✅]*$/i;
 var APPROVE_BARE_RE = /^(ok(ay)?|va bene|vabbe'?|s[iì]|yes|perfetto|giusto|corretto|esatto|tutto (ok|giusto|corretto)|(va bene|ok) cos[iì]|cos[iì] va bene)[\s!.👍✅]*$/i;
-var AMEND_RE = /^(aggiung\w*|togli\w*|lev\w*|rimuov\w*|elimin\w*|cancell\w*|cambi\w*|modific\w*|sostitu\w*|corregg\w*|spost\w*|mett\w*|rimett\w*|manca\w*|in pi[uù]|anche|più|meno|no[,:\s]|non (ho|era|erano|c'?era|c'?erano|è|sono)|invece|(la|il|le|i|lo|gli|quella|quello|quelle|quelli)\b[^\n]{0,60}\b(era|erano|sono|è|non)\b|ci (aggiungi|metti|togli|levi)|puoi (aggiungere|togliere|levare|mettere|cambiare|correggere))/i;
 
 function classifyEstimateReply(txt) {
   txt = String(txt || '').trim();
   if (!txt) return null;
   if (APPROVE_EXPLICIT_RE.test(txt)) return 'approve';
   if (APPROVE_BARE_RE.test(txt)) return 'approve_bare';
-  if (txt.length > 400) return null;
-  // Un daily strutturato ("Oggi: … Domani: …") sostituisce la proposta per intero.
-  if (/^\s*\*?(oggi|domani|ieri|blocchi)\*?\s*:/im.test(txt)) return null;
-  // "Giuno, aggiungi…" / "per favore togli…" contano come la modifica nuda.
-  var bare = txt.replace(/^(ciao|ehi|hey)?\s*giuno[,:!\s]*/i, '').replace(/^per favore[,\s]*/i, '').trim();
-  if (AMEND_RE.test(bare)) return 'amend';
   return null;
+}
+
+// La proposta in sospeso, per il contesto del modello: così "togli quella
+// cosa" o "la seconda erano 2h" hanno un riferimento e finiscono nel tool.
+function pendingProposalSection(userId, deps) {
+  var todayStr = oggi();
+  var structured = getPendingEstimate(userId, todayStr);
+  if (!structured) return null;
+  var estimator = (deps && deps.estimator) || require('../agents/dailyEstimator');
+  return 'PROPOSTA DI DAILY IN ATTESA (inviata all\'utente in DM con i bottoni Approvo / Modifico / Compilo da zero; data ' + todayStr + '):\n' +
+    estimator.formatEstimateBody(structured) + '\n' +
+    'Se l\'utente chiede di cambiarla (togliere, aggiungere, correggere ore o nomi, anche con riferimenti impliciti come "quella cosa", "la seconda", "il meeting saltato") → daily_estimate_amend con un\'istruzione precisa che nomina la voce e le ore. ' +
+    'Se la approva → daily_estimate_approve. Non riscrivere la proposta nel testo: il tool la rimanda già con i bottoni. Non fingere di aver modificato senza chiamare il tool.';
 }
 
 // L'ultimo messaggio di Giuno nel DM (prima di quello dell'utente) è la
@@ -566,7 +575,7 @@ function classifyDailyText(txt) {
   var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
   var hasQuestionMark = /[?¿]/.test(txt);
   var isRequest = startsLikeRequest || (hasQuestionMark && !looksStructured);
-  return { isDaily: isDaily, isRequest: isRequest };
+  return { isDaily: isDaily, isRequest: isRequest, isStructured: looksStructured };
 }
 
 // Daily scritto a mano CON la richiesta esplicita di postarlo ("Giuno, posta
@@ -1029,6 +1038,8 @@ module.exports = {
   estimateProposalMessage: estimateProposalMessage,
   sendEstimateProposal: sendEstimateProposal,
   classifyEstimateReply: classifyEstimateReply,
+  pendingProposalSection: pendingProposalSection,
+  getExistingEntry: getExistingEntry,
   lastBotMessageIsProposal: lastBotMessageIsProposal,
   amendPendingEstimate: amendPendingEstimate,
   scheduleDailyJobs: scheduleDailyJobs,

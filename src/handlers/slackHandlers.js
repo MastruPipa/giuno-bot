@@ -436,14 +436,8 @@ app.message(async function(args) {
         : 'Non sono riuscito a registrarlo: riprova con il bottone *✅ Approvo* o compila il daily.' });
       return;
     }
-    if (estimateReply === 'amend') {
-      var amended = null;
-      try { amended = await dailyV2Estimate.amendPendingEstimate(message.user, message.text); } catch(e) { logger.error('[DAILY-ESTIMATE] modifica a parole fallita:', e.message); }
-      if (!amended) {
-        await app.client.chat.postMessage({ channel: message.channel, text: 'Non sono riuscito ad applicare la modifica. Riprova con parole diverse, oppure correggi nel modulo con *✏️ Modifico nel modulo*.' });
-      }
-      return;
-    }
+    // Le correzioni ("togli quella cosa") vanno al modello, che ha la
+    // proposta nel contesto e il tool daily_estimate_amend.
   }
 
   // Standup replies (V2 — routes through dailyStandupV2)
@@ -458,8 +452,13 @@ app.message(async function(args) {
       // Euristiche condivise con la cattura da canale/mention (una sola copia,
       // vive in dailyStandupV2.classifyDailyText).
       var dmDailyClass = require('./dailyStandupV2').classifyDailyText(txt);
+      // Con una proposta in sospeso, solo un daily STRUTTURATO ("Oggi: …")
+      // la sostituisce per intero: "aggiungi 1h di call con Elios" somiglia a
+      // un daily ma è una correzione, e la gestisce il modello col tool.
+      var pendingForDm = require('./dailyStandupV2').getPendingEstimate(message.user, dailyV2Oggi);
+      var dmIsDaily = dmDailyClass.isDaily && (!pendingForDm || dmDailyClass.isStructured);
 
-      if (!dmDailyClass.isRequest && dmDailyClass.isDaily) {
+      if (!dmDailyClass.isRequest && dmIsDaily) {
         var dailyStandupV2 = require('./dailyStandupV2');
         var saved = false;
         try {

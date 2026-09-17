@@ -1165,7 +1165,29 @@ Da fare per Antonio: il daily di oggi va rimandato ("posta il daily: …" con
 il testo delle 17:31, che è in #daily): il parser ora funziona e le ore
 entrano nel consuntivo al posto della stima.
 
-## 36. Da fare
+## 36. Le correzioni alla stima le capisce il modello dal contesto
+
+Antonio (17/9, sera): "dovrebbe capire la chat: se dico 'togli quella cosa'
+dovrebbe capirlo dal contesto". Giusto. Il percorso deterministico a verbi
+(sezione 32) era nato per due timori (una correzione scambiata per un
+daily, il turno da 55 secondi) ma non reggeva il linguaggio vero.
+
+Ora, quando c'è una proposta in sospeso:
+- il modello la vede nel contesto ("PROPOSTA DI DAILY IN ATTESA: …",
+  `dailyStandupV2.pendingProposalSection`) con le istruzioni sui tool;
+- il pacchetto `daily_estimate` viene caricato d'ufficio
+  (`extraPacks` in `selectForTurn`): `daily_estimate_amend(instruction)`
+  applica la modifica via `amendPendingEstimate` e rimanda la proposta con
+  i bottoni; `daily_estimate_approve` la approva, e se oggi esiste già un
+  daily vero si ferma e chiede conferma (`replace_existing`);
+- in DM restano deterministiche solo le approvazioni ("approvo" sempre;
+  "ok" solo se l'ultimo messaggio di Giuno era la proposta); e con una
+  proposta in sospeso solo un daily STRUTTURATO ("Oggi: …") la sostituisce
+  per intero: "aggiungi 1h di call" va al modello, non nel daily.
+
+Tempi: turno del modello più la chiamata utility per la modifica, 15-30 s.
+
+## 37. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
