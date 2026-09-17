@@ -11,16 +11,16 @@ test('buildSessions: eventi vicini formano una sessione, pause > 45 min la spezz
     { at: '2026-09-10T09:30:00Z', kind: 'slack', channel: 'proj' },
     { at: '2026-09-10T10:10:00Z', kind: 'drive', name: 'Doc A' },
     { at: '2026-09-10T12:00:00Z', kind: 'calendar', name: 'Call cliente', minutes: 45 },
-    { at: '2026-09-10T12:30:00Z', kind: 'figma', name: 'Layout' },
+    { at: '2026-09-10T12:30:00Z', kind: 'drive', name: 'Layout' },
     { at: '2026-09-10T16:00:00Z', kind: 'slack', channel: 'proj' },
   ]);
   assert.equal(out.length, 3);
   assert.equal(out[0].minutes, 70); assert.equal(out[0].events, 3);
   assert.deepEqual(out[0].refs.map(function(r) { return r.kind + ':' + (r.name || r.channel) + ':' + r.count; }), ['drive:Doc A:2', 'slack:proj:1']);
-  assert.equal(out[1].minutes, 45, 'la riunione dura 45 anche se Figma cade dentro');
+  assert.equal(out[1].minutes, 45, 'la riunione dura 45 anche se una modifica cade dentro');
   assert.equal(out[2].minutes, 15, 'minimo 15 minuti');
   assert.equal(s.totalMinutes(out), 130);
-  assert.match(s.formatSessions(out, 120), /^- 11:00–12:10 \(1h10min\): Drive "Doc A" \(2 modifiche\); #proj \(1 messaggi\)\n- 14:00–14:45 \(45min\): riunione "Call cliente"; Figma "Layout" \(1 versioni\)/);
+  assert.match(s.formatSessions(out, 120), /^- 11:00–12:10 \(1h10min\): Drive "Doc A" \(2 modifiche\); #proj \(1 messaggi\)\n- 14:00–14:45 \(45min\): riunione "Call cliente"; Drive "Layout" \(1 modifiche\)/);
   assert.deepEqual(s.buildSessions([{ at: 'boh' }]), []);
 });
 

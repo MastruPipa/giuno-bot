@@ -290,7 +290,7 @@ async function notifyMissingEstimates(users, dateStr, deps) {
     try { why = await estimator.explainMissing(users[i].id, dateStr, deps.estimatorDeps); } catch(e) { why = ['diagnosi non disponibile: ' + e.message]; }
     lines.push('• *' + (users[i].name || users[i].id) + '*: ' + (why.length ? why.join('; ') : 'nessuna fonte vuota registrata'));
   }
-  lines.push('_Le fonti si sbloccano così: Google collegato da un admin (Drive e inviti per tutti), Giuno invitato nei canali di lavoro, `SLACK_USER_TOKEN` e `FIGMA_TOKEN` su Railway._');
+  lines.push('_Le fonti si sbloccano così: Google collegato da un admin (Drive e inviti per tutti), Giuno invitato nei canali di lavoro, `SLACK_USER_TOKEN` su Railway._');
   var client = (deps.app || app).client;
   var sent = 0;
   for (var a = 0; a < admins.length; a++) {

@@ -982,7 +982,32 @@ solo tra le 16:00 e le 18:00 (`standupInAttesa`).
 
 Test: `test/daily-post-on-request.test.js`. Niente migrazioni.
 
-## 31. Da fare
+## 31. Figma esce dal contesto quotidiano delle persone
+
+Antonio (17/9): "leviamo anche Figma dal contesto quotidiano delle
+persone?". Sì. La fonte non è mai stata attiva (`FIGMA_TOKEN` e
+`FIGMA_TEAM_ID` mai impostati) e la sua unica traccia visibile era la riga
+"Figma: FIGMA_TOKEN/FIGMA_TEAM_ID non configurati" nella diagnosi delle
+18:00 agli admin, ogni giorno, per ogni persona senza stima.
+
+Tolto dall'estimatore (`src/agents/dailyEstimator.js`): la raccolta delle
+versioni dei file del team (`collectFigmaActivity`), i campi Figma del
+contesto di giornata, la sezione "FILE FIGMA CON VERSIONI SALVATE OGGI"
+nel prompt, gli eventi Figma nelle sessioni di lavoro, la voce nella
+diagnosi e il suggerimento su `FIGMA_TOKEN` nel DM agli admin. Le sessioni
+(`activitySessions.js`) non conoscono più il tipo `figma`. Le fonti del
+daily stimato restano: piano di ieri e settimanale, calendario, Drive,
+canali Slack, ricerca Slack, email.
+
+Resta com'è il registro delle posizioni di progetto
+(`projectLocations.js`, tabella `project_locations`): i tipi `figma_project`
+e `figma_file` sono nel vincolo della tabella e nel comando admin
+`/giuno admin progetti posizione`, e riguardano le commesse, non la
+giornata delle persone. Senza token il rebuild li salta già. Niente
+migrazioni. Se `FIGMA_TOKEN`/`FIGMA_TEAM_ID` sono su Railway si possono
+togliere.
+
+## 32. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
