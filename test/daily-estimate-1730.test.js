@@ -91,3 +91,22 @@ test('amendPendingEstimate: aggiorna la stima in sospeso e rimanda la proposta; 
     assert.match(sent[0].text, /Call Elios 1h/);
   } finally { dsv2.clearPendingEstimate('U_PAOLO'); }
 });
+
+test('sendDailyRequestWithEstimate: con tracce manda la stima e mette la persona in attesa; senza tracce il modulo', async function() {
+  var sent = [];
+  var fakeApp = { client: { chat: { postMessage: async function(m) { sent.push(m); } } } };
+  var saved = [];
+  var fakeDb = { getStandupCache: function() { return { oggi: dsv2.oggi(), risposte: {}, stime: {} }; }, saveStandup: async function(sd) { saved.push(sd); }, getProject: async function() { return null; } };
+  var inattesa = new Set();
+  var structured = { oggi: [{ task: 'Grafiche Elfo', hours: 2, minutes: 0 }], domani: [], blocchi: null, estimate: { sources: ['canali'], confidence: 'media', generated_at: 'g' } };
+  var r = await dsv2.sendDailyRequestWithEstimate({ id: 'U_ANT', name: 'Antonio Katania' }, { app: fakeApp, db: fakeDb, inattesa: inattesa, buildEstimateFor: async function() { return structured; } });
+  assert.deepEqual(r, { estimate: true });
+  assert.ok(inattesa.has('U_ANT')); assert.deepEqual(saved[0].inattesa, ['U_ANT']);
+  assert.match(sent[0].blocks[0].text.text, /Ciao \*Antonio\*, è il momento del daily/);
+  assert.equal(sent[0].blocks[4].elements[0].text.text, '✅ Approvo');
+
+  sent.length = 0;
+  var r2 = await dsv2.sendDailyRequestWithEstimate({ id: 'U_ANT', name: 'Antonio Katania' }, { app: fakeApp, db: fakeDb, inattesa: inattesa, buildEstimateFor: async function() { return null; }, quickDeps: { context: { recentProjectsFor: async function() { return []; } } } });
+  assert.deepEqual(r2, { estimate: false });
+  assert.match(sent[0].text, /è il momento del daily!/);
+});
