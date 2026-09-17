@@ -316,6 +316,33 @@ async function notifyMissingEstimates(users, dateStr, deps) {
   return sent;
 }
 
+// Invio on-demand come lo farebbe il cron: prima la stima (se ci sono
+// tracce), altrimenti il modulo. Usato dal tool admin trigger_daily_request
+// ("mandami la stima del daily") quando il cron è passato o è stato saltato.
+async function sendDailyRequestWithEstimate(utente, deps) {
+  deps = deps || {};
+  var todayStr = oggi();
+  var proposed = null;
+  if (ESTIMATES_ENABLED) {
+    try { proposed = await (deps.buildEstimateFor || buildEstimateFor)(utente, todayStr); }
+    catch(e) { logger.warn('[DAILY-V2] stima on-demand fallita per', utente.id + ':', e.message); }
+  }
+  if (proposed) {
+    var standupInAttesa = deps.inattesa || getStandupInAttesa();
+    standupInAttesa.add(utente.id);
+    try {
+      var sd = (deps.db || db).getStandupCache();
+      if (sd.oggi !== todayStr) { sd.oggi = todayStr; sd.risposte = {}; }
+      sd.inattesa = Array.from(standupInAttesa);
+      await (deps.db || db).saveStandup(sd);
+    } catch(e) { logger.warn('[DAILY-V2] persist inattesa (stima on-demand) fallito:', e.message); }
+    await sendEstimateProposal(utente, proposed, { mode: 'daily' }, deps);
+    return { estimate: true };
+  }
+  await sendDailyRequestTo(utente, true, deps);
+  return { estimate: false };
+}
+
 async function buildEstimateFor(utente, dateStr) {
   var estimator = require('../agents/dailyEstimator');
   var structured = await estimator.estimateDaily(utente.id, dateStr);
@@ -992,6 +1019,8 @@ module.exports = {
   extractDailyFromRequest: extractDailyFromRequest,
   sendDailyRequests: sendDailyRequests,
   sendDailyRequestTo: sendDailyRequestTo,
+  buildEstimateFor: buildEstimateFor,
+  sendDailyRequestWithEstimate: sendDailyRequestWithEstimate,
   notifySendFailures: notifySendFailures,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,

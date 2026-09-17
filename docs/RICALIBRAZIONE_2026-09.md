@@ -1049,6 +1049,13 @@ Da fare dopo il merge: controllare `TRACKING_EXCLUDED_NAMES` su Railway
 (se presente, togliere "antonio"); verificare che per Antonio
 `standup_enabled` non sia a false nelle preferenze.
 
+Primo giorno (17/9): la PR è andata su `main` alle 17:25 e il cron delle
+17:30 è scattato sull'istanza vecchia (o è stato saltato dal riavvio):
+Antonio non ha ricevuto nulla. Da qui `trigger_daily_request` manda prima
+la STIMA con i tre bottoni, e solo senza tracce il modulo
+(`sendDailyRequestWithEstimate`): "mandami la stima del daily" o "non mi è
+arrivato il daily" la fanno arrivare subito, a chiunque.
+
 ## 33. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
