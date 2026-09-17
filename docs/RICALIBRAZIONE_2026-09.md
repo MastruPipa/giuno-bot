@@ -1007,7 +1007,49 @@ giornata delle persone. Senza token il rebuild li salta già. Niente
 migrazioni. Se `FIGMA_TOKEN`/`FIGMA_TEAM_ID` sono su Railway si possono
 togliere.
 
-## 32. Da fare
+## 32. La stima alle 17:30 a tutti, Antonio compreso; si approva, si modifica o si rifà
+
+Antonio (17/9): "mi inserisci pure a me nella richiesta di daily e mi
+restituisci la stima che poi va approvata o modificata? Vorrei che
+arrivasse la stima a un certo orario a tutti, poi si chiede se aggiungere
+altro, modificare qualcosa, approvarla o compilare il bottone. Alle 17:30."
+
+1. **Orari** (`DAILY_TIMES` in `dailyStandupV2.js`): invio 17:30, promemoria
+   18:00, recap 18:30, lun-ven. Prima: 16:00 / 17:30 / 18:00. Il recap è
+   scivolato di mezz'ora per lasciare tempo di rispondere alla stima: alle
+   17:30 la giornata è chiusa e le tracce sono complete, ma trenta minuti
+   soli tra proposta e pubblicazione erano pochi. Override senza deploy:
+   `DAILY_SEND_AT`, `DAILY_PUSH_AT`, `DAILY_RECAP_AT` (HH:MM). I messaggi
+   ("il recap esce alle …") leggono gli stessi valori.
+2. **Antonio dentro.** `config/tracking.js` non esclude più "antonio": riceve
+   la stima come tutti, e la sua giornata entra nel consuntivo. Restano
+   fuori Gloria, Corrado e i numeri di servizio. Attenzione: se su Railway
+   c'è `TRACKING_EXCLUDED_NAMES`, vince quella lista e va aggiornata a mano.
+3. **Il messaggio delle 17:30** (`estimateProposalMessage`): la stima, poi
+   "Va bene così? Approva con il bottone, modifica nel modulo già
+   compilato, oppure scrivimi qui cosa aggiungere o cambiare", e tre
+   bottoni: *✅ Approvo* (la stima diventa il daily), *✏️ Modifico nel
+   modulo* (modulo precompilato), *📝 Compilo da zero* (modulo vuoto,
+   action `open_daily_modal_blank`).
+4. **Modifica a parole** (`classifyEstimateReply`, `amendPendingEstimate`,
+   `dailyEstimator.amendEstimate`). Con una proposta in sospeso, un DM come
+   "aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la
+   revisione", "non ho fatto la call" va al modello con la stima corrente
+   in JSON e la sola istruzione; il modello applica quella modifica e
+   Giuno rimanda la proposta aggiornata ("Ok Paolo, aggiornato così:") con
+   gli stessi bottoni. "ok", "va bene così", "approvo" a parole valgono
+   come il bottone. Questo controllo sta PRIMA del daily testuale: "aggiungi
+   1h di call" somiglia a un daily e prima sarebbe stato salvato così, al
+   posto di tutto il resto. Un daily strutturato ("Oggi: … Domani: …")
+   sostituisce ancora la proposta per intero.
+
+Test: `test/daily-estimate-1730.test.js`. Niente migrazioni.
+
+Da fare dopo il merge: controllare `TRACKING_EXCLUDED_NAMES` su Railway
+(se presente, togliere "antonio"); verificare che per Antonio
+`standup_enabled` non sia a false nelle preferenze.
+
+## 33. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

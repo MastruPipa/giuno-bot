@@ -135,7 +135,7 @@ test('richiesta daily: se Slack rifiuta il DM con i bottoni rapidi, arriva comun
   await assert.rejects(dsv2.sendDailyRequestTo({ id: 'U_X', name: 'X' }, false, { app: boom, inattesa: new Set(), quickDeps: { context: { recentProjectsFor: async function() { return []; } }, db: quickDeps.db } }), /channel_not_found/);
 });
 
-test('invii falliti alle 16:00: gli admin ricevono in DM chi non ha avuto la richiesta e perché', async function() {
+test('invii falliti all\'invio: gli admin ricevono in DM chi non ha avuto la richiesta e perché', async function() {
   var dsv2 = require('../src/handlers/dailyStandupV2');
   var sent = [];
   var n = await dsv2.notifySendFailures([{ id: 'U_CLAUDIA', name: 'Claudia', error: 'An API error occurred: invalid_blocks' }], '2026-09-14', {

@@ -579,6 +579,47 @@ async function estimateDaily(userId, dateStr, deps) {
   return structured;
 }
 
+// ─── Modifica a parole della proposta ────────────────────────────────────────
+// "aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la revisione":
+// il modello riscrive la stima applicando SOLO quella modifica. Le ore dette
+// dalla persona sono reali, non stime: niente tetto, niente minimo.
+var AMEND_SYSTEM_PROMPT =
+  'Hai il daily di un membro di un\'agenzia creativa italiana, ricostruito da Giuno, in JSON. La persona chiede una modifica a parole. ' +
+  'Applica SOLO quella modifica e restituisci il daily completo aggiornato, nello stesso formato JSON, senza inventare altro e senza togliere ciò che non è stato chiesto di togliere.\n' +
+  'Formato: {"oggi":[{"task":"...","hours":N,"minutes":N,"project":"nome o null"}],"domani":[{"task":"...","hours":N,"minutes":N,"project":null}],"blocchi":null|"testo"}\n' +
+  'Regole: "aggiungi X" → nuova riga in "oggi" (o in "domani" se parla di domani) con le ore dette, altrimenti 30 minuti. ' +
+  '"togli/rimuovi X" → via la riga che corrisponde. "X erano Nh" / "X non era 2h ma 3" → cambia le ore di quella riga. ' +
+  '"blocco: …" o "mi blocca …" → campo blocchi. Le ore dette dalla persona vanno prese alla lettera. ' +
+  'Rispondi SOLO con il JSON.';
+
+async function amendEstimate(structured, instruction, deps) {
+  deps = deps || {};
+  instruction = String(instruction || '').trim();
+  if (!structured || !instruction) return null;
+  var current = { oggi: structured.oggi || [], domani: structured.domani || [], blocchi: structured.blocchi || null };
+  var client = deps.client || new (require('@anthropic-ai/sdk'))();
+  var res = await withTimeout(function() {
+    return client.messages.create({
+      model: MODELS.UTILITY, max_tokens: 900, system: AMEND_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: 'DAILY ATTUALE:\n' + JSON.stringify(current) + '\n\nMODIFICA CHIESTA DALLA PERSONA:\n' + instruction.substring(0, 600) }],
+    });
+  }, MODEL_TIMEOUT_MS, 'estimate.amend');
+  var text = (res.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('');
+  var m = text.match(/\{[\s\S]*\}/);
+  var parsed = m ? safeParse('DAILY-ESTIMATE-AMEND', m[0], null) : null;
+  if (!parsed) return null;
+  var updated = require('../services/dailyParser').normalizeParsed(parsed);
+  if (!updated) return null;
+  try { await require('../services/projectMatcher').enrichStructured(updated, { date: deps.date, userId: deps.userId }); } catch(e) { logger.debug('[DAILY-ESTIMATE] amend project match:', e.message); }
+  updated.estimate = Object.assign({}, structured.estimate || {}, {
+    amended_at: new Date().toISOString(),
+    amendments: ((structured.estimate && structured.estimate.amendments) || []).concat([instruction.substring(0, 200)]),
+    note: 'corretto dalla persona a parole',
+  });
+  logger.info('[DAILY-ESTIMATE] stima modificata a parole per', deps.userId || '?', '→', updated.oggi.length, 'task oggi');
+  return updated;
+}
+
 // ─── Testo ───────────────────────────────────────────────────────────────────
 
 function fmtDur(t) {
@@ -618,6 +659,7 @@ module.exports = {
   hasUsableEvidence: hasUsableEvidence,
   buildPrompt: buildPrompt,
   estimateDaily: estimateDaily,
+  amendEstimate: amendEstimate,
   formatEstimateBody: formatEstimateBody,
   explainMissing: explainMissing,
   formatSourcesLine: formatSourcesLine,

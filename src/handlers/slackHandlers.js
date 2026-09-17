@@ -415,6 +415,31 @@ app.message(async function(args) {
     return;
   }
 
+  // Risposta a parole alla proposta di daily ("ok", "aggiungi 1h di call con
+  // Elios", "la grafica erano 3h"): approva o aggiorna la stima in sospeso e
+  // rimanda la proposta. Prima del daily testuale: "aggiungi 1h di call"
+  // sembra un daily e sarebbe stato salvato così, al posto di tutto il resto.
+  var dailyV2Estimate = require('./dailyStandupV2');
+  if (dailyV2Estimate.getPendingEstimate(message.user, dailyV2Estimate.oggi())) {
+    var estimateReply = dailyV2Estimate.classifyEstimateReply(message.text);
+    if (estimateReply === 'approve') {
+      var approved = false;
+      try { approved = await dailyV2Estimate.confirmEstimate(message.user); } catch(e) { logger.error('[DAILY-ESTIMATE] approvazione a parole fallita:', e.message); }
+      await app.client.chat.postMessage({ channel: message.channel, text: approved
+        ? 'Registrato come tuo daily ✅ — grazie. Se vuoi cambiare qualcosa, compila il daily e lo sostituisco.'
+        : 'Non sono riuscito a registrarlo: riprova con il bottone *✅ Approvo* o compila il daily.' });
+      return;
+    }
+    if (estimateReply === 'amend') {
+      var amended = null;
+      try { amended = await dailyV2Estimate.amendPendingEstimate(message.user, message.text); } catch(e) { logger.error('[DAILY-ESTIMATE] modifica a parole fallita:', e.message); }
+      if (!amended) {
+        await app.client.chat.postMessage({ channel: message.channel, text: 'Non sono riuscito ad applicare la modifica. Riprova con parole diverse, oppure correggi nel modulo con *✏️ Modifico nel modulo*.' });
+      }
+      return;
+    }
+  }
+
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
@@ -437,7 +462,7 @@ app.message(async function(args) {
           logger.error('[STANDUP-V2] handleDailyResponse ha throwato:', e.message);
         }
         if (saved) {
-          await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il recap uscirà alle 18:00 in #daily.' });
+          await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il recap uscirà alle ' + dailyStandupV2.DAILY_TIMES.recap + ' in #daily.' });
           logger.info('[STANDUP-V2] Risposta testuale ricevuta da:', message.user);
         } else {
           await app.client.chat.postMessage({ channel: message.channel, text: 'Non sono riuscito a registrare il daily — riprova con il bottone *✏️ Compila daily* o avvisa Antonio.' });
@@ -994,7 +1019,7 @@ var DURATA_OPTIONS = [
   { text: { type: 'plain_text', text: '8h' }, value: '8' },
 ];
 
-// Daily unico delle 16:00: FATTO OGGI (ore reali — alimentano anche il
+// Daily unico pomeridiano: FATTO OGGI (ore reali — alimentano anche il
 // consuntivo time_logs via project match) + DOMANI (piano) + BLOCCHI.
 // Sostituisce il vecchio daily mattutino (ieri/oggi) E il check-in serale.
 // Opzione di durata più vicina alle ore decimali della stima.
@@ -1163,6 +1188,19 @@ app.action(/^daily_quick_project(_\d+)?$/, async function(args) {
   } catch(e) {
     logger.error('[DAILY-MODAL] quick views.open fallita:', e && e.message);
     try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* ' + label + ' … (con le ore).' }); } catch(_) {}
+  }
+});
+
+// "Compilo da zero": il modulo vuoto anche se c'è una proposta in sospeso.
+app.action('open_daily_modal_blank', async function(args) {
+  await args.ack();
+  try {
+    await withTimeout(function() {
+      return app.client.views.open({ trigger_id: args.body.trigger_id, view: rebuildDailyModal({ oggi: 2, domani: 2 }) });
+    }, 2500, 'views.open daily blank');
+  } catch(e) {
+    logger.error('[DAILY-MODAL] blank views.open fallita:', e && e.message);
+    try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* … (con le ore), *Domani:* …' }); } catch(_) {}
   }
 });
 
