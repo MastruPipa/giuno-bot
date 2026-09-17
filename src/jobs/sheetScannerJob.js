@@ -1,6 +1,7 @@
 // ─── Sheet Scanner Job ───────────────────────────────────────────────────────
 // Scans registered Google Sheets, detects changes via MD5, generates AI summaries.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -43,7 +44,7 @@ async function generateSummary(rows, displayName, category) {
   var csv = rowsToCSV(rows).substring(0, 6000);
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('sheet_scanner');
     var res = await client.messages.create({
       model: CONFIG.MODEL, max_tokens: 512,
       messages: [{ role: 'user', content:
@@ -56,7 +57,7 @@ async function generateSummary(rows, displayName, category) {
         'Se dati irrilevanti: {"worth_saving":false}'
       }],
     });
-    var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+    var match = _textOf(res).trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
     return match ? safeParse('SHEET-SCANNER', match[0], null) : null;
   } catch(e) {
     logger.warn('[SHEET-SCAN] AI summary error:', e.message);

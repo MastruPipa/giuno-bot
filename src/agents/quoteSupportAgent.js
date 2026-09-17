@@ -1,6 +1,7 @@
 // ─── Quote Support Agent V2 ──────────────────────────────────────────────────
 // Fix: status accepted, fuzzy category, unified search, min effort enforcement
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -48,7 +49,7 @@ async function findSimilarQuotes(serviceCategory) {
 
 async function estimateEffort(message, rateCardData, similarQuotes) {
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('../services/utilityModel').client('quote_support');
   var rateInfo = '';
   if (rateCardData && rateCardData.resources) {
     rateInfo = 'RATE CARD:\n';
@@ -71,7 +72,7 @@ async function estimateEffort(message, rateCardData, similarQuotes) {
       'REGOLE: ore minime 2h/deliverable, includi PM (min 10%), rate default se mancanti: 35€/h junior, 50€/h senior, 65€/h director\n\n' + rateInfo + quotesInfo,
     messages: [{ role: 'user', content: message }],
   });
-  var match = res.content[0].text.trim().match(/\{[\s\S]*\}/);
+  var match = _textOf(res).trim().match(/\{[\s\S]*\}/);
   return match ? safeParse('QUOTE.parse', match[0], null) : null;
 }
 

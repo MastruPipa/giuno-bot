@@ -35,8 +35,10 @@ test('Antonio è dentro al daily; le altre esclusioni restano', function() {
 });
 
 test('classifyEstimateReply: approvazione a parole, modifica a parole, il resto no', function() {
-  ['ok', 'Ok!', 'va bene così', 'approvo', 'confermo', 'sì', 'perfetto 👍'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'approve', t); });
-  ['aggiungi 1h di call con Elios', 'la grafica erano 3h', 'togli la revisione', 'non ho fatto la call', 'in più ho fatto 1h di preventivo Acme',
+  ['approvo', 'confermo', 'Approvo così'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'approve', t); });
+  // "ok" nudo: approvazione solo se l'ultimo messaggio di Giuno era la proposta (lo decide il handler).
+  ['ok', 'Ok!', 'va bene così', 'sì', 'perfetto 👍'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'approve_bare', t); });
+  ['aggiungi 1h di call con Elios', 'la grafica erano 3h', 'togli la revisione', 'leva il meeting di fondazione per il sud che è saltato', 'non ho fatto la call', 'in più ho fatto 1h di preventivo Acme',
     'manca la call con Gambino 1h', 'puoi aggiungere 30 min di mail?', 'Giuno, togli la revisione'].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), 'amend', t); });
   // Daily intero, domande, richieste esplicite di posting: non sono risposte alla proposta.
   ['Oggi: grafiche 3h\nDomani: PED', 'quando esce il recap?', 'ciao giuno, cosa mi consigli?', 'posta il daily: oggi grafiche 3h e call 1h', ''].forEach(function(t) { assert.equal(dsv2.classifyEstimateReply(t), null, JSON.stringify(t)); });
@@ -171,4 +173,14 @@ test('trigger_daily_request: se users.list fallisce si va avanti con users.info 
     assert.equal(res2.success, true);
     assert.deepEqual(targets[1], { id: 'U_ANT', name: '' });
   } finally { dsv2.sendDailyRequestWithEstimate = origSend; svc.getUtenti = origGet; delete svc.app.client.users; }
+});
+
+test('lastBotMessageIsProposal: vero solo se l\'ultimo messaggio di Giuno nel DM ha il bottone Approvo', async function() {
+  var proposal = { bot_id: 'B1', blocks: [{ type: 'section' }, { type: 'actions', elements: [{ action_id: 'daily_estimate_confirm' }, { action_id: 'open_daily_modal' }] }] };
+  var advice = { bot_id: 'B1', text: 'Il mio consiglio: lascia perdere il DM con la stima.' };
+  var mk = function(msgs) { return { client: { conversations: { history: async function(a) { assert.equal(a.latest, '170.5'); return { messages: msgs }; } } } }; };
+  assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: mk([proposal]) }), true);
+  assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: mk([advice, proposal]) }), false, 'in mezzo c\'è la risposta a una domanda');
+  assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: mk([{ user: 'U_ANT', text: 'leva il meeting' }, proposal]) }), true, 'i messaggi dell\'utente non contano');
+  assert.equal(await dsv2.lastBotMessageIsProposal('D1', '170.5', { app: { client: { conversations: { history: async function() { throw new Error('boom'); } } } } }), false);
 });

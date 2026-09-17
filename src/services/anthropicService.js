@@ -141,6 +141,7 @@ var SYSTEM_PROMPT =
   'Se un tool fallisce, prova un\'altra via (Slack → email → KB → Drive) prima di arrenderti. ' +
   'Trascrizioni/recap meeting (Gemini notes): prima KB, poi le TUE email, poi find_emails sui colleghi che erano alla call; cerca per subject del meeting o "meeting notes". ' +
   '#daily (C05846AEV6D): contiene messaggi bot → read_channel con include_bots=true. ' +
+  require('../config/dailyTimes').describeFlow() + ' ' +
   '"Posta/pubblica/registra il mio daily" con il daily scritto nel messaggio (o in quello prima) → post_daily con il testo così com\'è: lo salva come daily di oggi e lo pubblica in #daily. Senza il testo del daily, chiedilo: non compilarlo tu. ' +
   '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
   'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +

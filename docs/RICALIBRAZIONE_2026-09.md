@@ -1118,7 +1118,54 @@ Nota sul primo giorno: il DM delle 17:30 ad Antonio era arrivato (17:30:54,
 un messaggio a blocchi) ma non l'aveva visto; alle 18:02 il trigger è
 fallito su `users.list` (sezione 32).
 
-## 34. Da fare
+## 34. Il "domani" della stima viene dal calendario del giorno dopo
+
+Antonio (17/9, dopo la fix): "funziona ma mancano gli eventi del giorno
+dopo". La stima leggeva solo il calendario di oggi e il prompt diceva di
+riempire "domani" solo da piano settimanale o messaggi: quasi sempre vuoto.
+
+Ora `collectEvidence` legge anche il calendario del prossimo giorno
+lavorativo (`nextWorkingDay`: venerdì → lunedì): quello della persona se ha
+Google collegato, altrimenti gli inviti negli admin. Le riunioni entrano
+nel prompt come "CALENDARIO DI DOMANI (data)" con orario e durata, e la
+regola del modello è: una riga in "domani" per ogni riunione, con la sua
+durata, più piano settimanale e messaggi; niente inventato. Fonte
+"calendario di domani" nella riga delle fonti.
+
+## 35. "ok" a una risposta non è un'approvazione; "leva" è una correzione; niente più `content[0].text`
+
+Alle 19:00 Antonio ha scritto "leva il meeting di fondazione per il sud che
+è saltato": il verbo non era tra quelli riconosciuti, il messaggio è andato
+al modello che ha risposto con un consiglio (sbagliato: "se non tocchi
+nulla non viene salvata"). Antonio ha risposto "ok" al consiglio e Giuno
+l'ha preso come approvazione della stima: il daily buono delle 17:31 è
+stato sovrascritto dalla stima.
+
+1. **Approvazione nuda** ("ok", "sì", "va bene", "perfetto") vale solo se
+   l'ultimo messaggio di Giuno nel DM è la proposta con i bottoni
+   (`lastBotMessageIsProposal`, una lettura di `conversations.history`).
+   "Approvo" e "confermo" valgono sempre.
+2. **Verbi di correzione**: aggiunti leva/levare, rimetti, "ci levi",
+   "puoi levare".
+3. **Il prompt conosce il flusso** (`config/dailyTimes.describeFlow`, dove
+   ora vivono anche gli orari): cosa succede alle 17:30, 18:00, 18:30, e
+   che approvare la stima sostituisce un daily già registrato.
+4. **`content[0].text` non esiste più** (segnalazione dai log del deploy
+   #159: il cron CONSOLIDATE falliva per tutti gli utenti perché con
+   Opus 5 il primo blocco è `thinking`). I 22 punti che lo leggevano
+   passano tutti da `utilityModel` (thinking spento, costo tracciato per
+   funzione) e leggono il testo con `textOf`. Priorità ad aggancio commesse
+   (`projectMatcher`, `projectContext`), dove l'errore era silenzioso.
+   Test con un blocco thinking davanti: `test/thinking-block-responses.test.js`.
+5. **Sync canali** (`channelProjectSyncJob`): un canale che Slack non lascia
+   leggere (oggi C06FP326WPP) non blocca più il sync né l'archiviazione; la
+   sua commessa resta com'è e il log lo elenca.
+
+Da fare per Antonio: il daily di oggi va rimandato ("posta il daily: …" con
+il testo delle 17:31, che è in #daily): il parser ora funziona e le ore
+entrano nel consuntivo al posto della stima.
+
+## 36. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

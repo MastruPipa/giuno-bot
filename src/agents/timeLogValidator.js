@@ -10,6 +10,7 @@
 // Vincolo Bolt: tutto il gate gira PRE-ack (la finestra è ~3s), quindi il
 // timeout di default è 2200ms.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -106,7 +107,7 @@ function mapToNames(byProjectId, projectsById) {
 async function callGiuno(payload) {
   if (_llmCaller) return _llmCaller(payload);
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('../services/utilityModel').client('timelog_validator');
   var res = await client.messages.create({
     model: MODEL,
     max_tokens: 300,
@@ -120,7 +121,7 @@ async function callGiuno(payload) {
       'sono anomalie da segnalare (es. pianificate 4h, consuntivate 16h → severity high).',
     messages: [{ role: 'user', content: JSON.stringify(payload) }],
   });
-  var text = res && res.content && res.content[0] ? res.content[0].text : '';
+  var text = _textOf(res);
   var match = text.match(/\{[\s\S]*\}/);
   return match ? JSON.parse(match[0]) : { verdict: 'ok', anomalies: [] };
 }

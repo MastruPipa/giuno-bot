@@ -13,23 +13,10 @@ var { acquireCronLock, releaseCronLock } = require('../../supabase');
 
 var DAILY_CHANNEL_ID = process.env.DAILY_CHANNEL_ID || 'C05846AEV6D';
 
-// Orari del daily (Europe/Rome, lun-ven). Dal 17/9/2026 la stima arriva a
-// tutti alle 17:30 (richiesta di Antonio): a quell'ora la giornata è fatta e
-// le tracce sono complete. Override senza deploy: DAILY_SEND_AT, DAILY_PUSH_AT,
-// DAILY_RECAP_AT in formato HH:MM.
-function timeFromEnv(name, fallback) {
-  var v = String(process.env[name] || '').trim();
-  return /^([01]?\d|2[0-3]):[0-5]\d$/.test(v) ? v : fallback;
-}
-var DAILY_TIMES = {
-  send: timeFromEnv('DAILY_SEND_AT', '17:30'),
-  push: timeFromEnv('DAILY_PUSH_AT', '18:00'),
-  recap: timeFromEnv('DAILY_RECAP_AT', '18:30'),
-};
-function cronExprFor(hhmm) {
-  var parts = hhmm.split(':');
-  return String(Number(parts[1])) + ' ' + String(Number(parts[0])) + ' * * 1-5';
-}
+// Orari del daily: src/config/dailyTimes.js (li legge anche il prompt).
+var dailyTimesConfig = require('../config/dailyTimes');
+var DAILY_TIMES = dailyTimesConfig.DAILY_TIMES;
+var cronExprFor = dailyTimesConfig.cronExprFor;
 
 // ─── Exclusions ──────────────────────────────────────────────────────────────
 // Persone che NON partecipano al daily (niente richiesta, niente push, niente
@@ -396,13 +383,19 @@ async function sendEstimateProposal(utente, structured, opts, deps) {
 // Risposta testuale alla proposta in DM: approvazione a parole, oppure una
 // modifica ("aggiungi…", "togli…", "erano 3h") da applicare alla stima.
 // null = non è una risposta alla proposta (daily intero, o altro).
-var APPROVE_RE = /^(ok(ay)?|va bene|vabbe'?|approv[oa]t?[oa]?|conferm[oa]t?[oa]?|s[iì]|yes|perfetto|giusto|corretto|esatto|tutto (ok|giusto|corretto)|(va bene|ok) cos[iì]|cos[iì] va bene|confermo cos[iì]|approvo cos[iì])[\s!.👍✅]*$/i;
-var AMEND_RE = /^(aggiung\w*|togli\w*|rimuov\w*|elimin\w*|cancell\w*|cambi\w*|modific\w*|sostitu\w*|corregg\w*|spost\w*|mett\w*|manca\w*|in pi[uù]|anche|più|meno|no[,:\s]|non (ho|era|erano|c'?era|c'?erano|è|sono)|invece|(la|il|le|i|lo|gli|quella|quello|quelle|quelli)\b[^\n]{0,60}\b(era|erano|sono|è|non)\b|ci (aggiungi|metti|togli)|puoi (aggiungere|togliere|mettere|cambiare|correggere))/i;
+// Approvazione ESPLICITA (vale sempre) e approvazione NUDA ("ok", "sì", "va
+// bene"): la seconda vale solo se l'ultimo messaggio di Giuno nel DM è la
+// proposta. Il 17/9 Antonio ha scritto "ok" a una risposta di Giuno e la
+// stima ha sovrascritto il daily buono.
+var APPROVE_EXPLICIT_RE = /^(approv[oa]t?[oa]?|conferm[oa]t?[oa]?|confermo cos[iì]|approvo cos[iì]|approva(la)?|conferma(la)?)[\s!.👍✅]*$/i;
+var APPROVE_BARE_RE = /^(ok(ay)?|va bene|vabbe'?|s[iì]|yes|perfetto|giusto|corretto|esatto|tutto (ok|giusto|corretto)|(va bene|ok) cos[iì]|cos[iì] va bene)[\s!.👍✅]*$/i;
+var AMEND_RE = /^(aggiung\w*|togli\w*|lev\w*|rimuov\w*|elimin\w*|cancell\w*|cambi\w*|modific\w*|sostitu\w*|corregg\w*|spost\w*|mett\w*|rimett\w*|manca\w*|in pi[uù]|anche|più|meno|no[,:\s]|non (ho|era|erano|c'?era|c'?erano|è|sono)|invece|(la|il|le|i|lo|gli|quella|quello|quelle|quelli)\b[^\n]{0,60}\b(era|erano|sono|è|non)\b|ci (aggiungi|metti|togli|levi)|puoi (aggiungere|togliere|levare|mettere|cambiare|correggere))/i;
 
 function classifyEstimateReply(txt) {
   txt = String(txt || '').trim();
   if (!txt) return null;
-  if (APPROVE_RE.test(txt)) return 'approve';
+  if (APPROVE_EXPLICIT_RE.test(txt)) return 'approve';
+  if (APPROVE_BARE_RE.test(txt)) return 'approve_bare';
   if (txt.length > 400) return null;
   // Un daily strutturato ("Oggi: … Domani: …") sostituisce la proposta per intero.
   if (/^\s*\*?(oggi|domani|ieri|blocchi)\*?\s*:/im.test(txt)) return null;
@@ -410,6 +403,24 @@ function classifyEstimateReply(txt) {
   var bare = txt.replace(/^(ciao|ehi|hey)?\s*giuno[,:!\s]*/i, '').replace(/^per favore[,\s]*/i, '').trim();
   if (AMEND_RE.test(bare)) return 'amend';
   return null;
+}
+
+// L'ultimo messaggio di Giuno nel DM (prima di quello dell'utente) è la
+// proposta con i bottoni? Serve per dare un senso a un "ok" nudo.
+async function lastBotMessageIsProposal(channelId, beforeTs, deps) {
+  deps = deps || {};
+  var client = ((deps.app) || app).client;
+  try {
+    var res = await client.conversations.history({ channel: channelId, latest: beforeTs, inclusive: false, limit: 5 });
+    var msgs = (res && res.messages) || [];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (!m.bot_id && !(m.subtype === 'bot_message')) continue;
+      var blocks = m.blocks || [];
+      return blocks.some(function(b) { return b.type === 'actions' && (b.elements || []).some(function(e) { return e.action_id === 'daily_estimate_confirm'; }); });
+    }
+  } catch(e) { logger.debug('[DAILY-V2] history per approvazione nuda non letta:', e.message); }
+  return false;
 }
 
 // Applica la modifica a parole alla stima in sospeso e rimanda la proposta.
@@ -1018,6 +1029,7 @@ module.exports = {
   estimateProposalMessage: estimateProposalMessage,
   sendEstimateProposal: sendEstimateProposal,
   classifyEstimateReply: classifyEstimateReply,
+  lastBotMessageIsProposal: lastBotMessageIsProposal,
   amendPendingEstimate: amendPendingEstimate,
   scheduleDailyJobs: scheduleDailyJobs,
   handleDailyResponse: handleDailyResponse,

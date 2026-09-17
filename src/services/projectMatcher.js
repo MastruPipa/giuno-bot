@@ -6,6 +6,7 @@
 // attivi; fallback LLM in un'unica chiamata batch solo per i task rimasti
 // senza match.
 'use strict';
+var { textOf: _textOf } = require('./utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -96,7 +97,7 @@ async function llmMatch(unmatchedTexts, catalog, recentIds) {
       });
     }, LLM_TIMEOUT_MS, 'projectMatcher.llm');
 
-    var out = (res.content && res.content[0] && res.content[0].text || '').trim();
+    var out = _textOf(res).trim();
     var jsonMatch = out.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return {};
     var parsed = safeParse('PROJECT-MATCH', jsonMatch[0], null);

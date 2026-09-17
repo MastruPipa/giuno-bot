@@ -2,6 +2,7 @@
 // Listens to ALL Slack messages, batches per channel, AI triage with Haiku.
 // Saves only valuable content (decisions, deadlines, prices, tasks, problems).
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -124,7 +125,7 @@ async function flushChannel(channelId) {
   // AI triage with Haiku
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('realtime_triage');
     var res = await client.messages.create({
       model: MODELS.FAST,
       max_tokens: 400,
@@ -137,7 +138,7 @@ async function flushChannel(channelId) {
       }],
     });
 
-    var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+    var match = _textOf(res).trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
     if (!match) return;
     var result = safeParse('RT-LISTENER', match[0], null);
     if (!result.worth_saving || !result.items || result.items.length === 0) return;
