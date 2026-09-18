@@ -95,3 +95,31 @@ verifiche, originali intatti, supplementi, stime separate, catene di merge,
 roster e rendering delle nuove viste. Anche suite completa prima del push.
 La verifica visiva automatica nel browser non è disponibile per la policy della
 sessione; il layout deriva dall'anteprima approvata e va ricontrollato dal vivo.
+
+
+## 18 settembre — account condiviso e decisione sulla bozza contratti
+
+La #135 è stata chiusa su richiesta: nessuno dei suoi job o delle sue tabelle
+viene rilasciato. L’account condiviso «Cellulare Aziendale» (`U09J3HK027R`)
+è escluso dalla lista persone e dai relativi conteggi, anche se riappare nel
+roster Slack. Record originali, ore e account Slack rimangono intatti.
+Corrado e Gloria restano visibili anche senza daily.
+
+Le informazioni contrattuali restano importanti per rispondere a «quanto lavoro
+abbiamo venduto e quanto ne stiamo utilizzando?». La dashboard dispone già di
+budget con fonte e perimetro, distinguendo proposte e budget verificati. Nel
+controllo del 18/9 non erano presenti budget nel database: chiudere #135 non
+rimuove dati contrattuali già utilizzati in produzione.
+
+Per un’eventuale integrazione successiva, conservare questi requisiti:
+- riferimento al contratto e alla revisione effettivamente accettata;
+- progetto canonico, deliverable inclusi e periodo di validità;
+- ore o giornate vendute, con conversione esplicita e documentata;
+- varianti approvate, fonti delle approvazioni e data dell’ultima verifica;
+- confronto con ore consuntive, evidenziando prima le lacune nei daily.
+
+Non dedurre ore dagli importi, non distribuire budget di ruolo sulle persone
+senza prova e non presentare le ore mancanti come margine residuo affidabile.
+La ricostruzione delle fonti potrà essere ripresa come intervento separato,
+partendo dai campi già esistenti e da un piccolo campione verificato. Questa
+correzione non avvia raccolte contrattuali o nuovi automatismi.
