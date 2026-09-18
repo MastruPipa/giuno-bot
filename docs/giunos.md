@@ -48,3 +48,50 @@ Vedi `docs/RICALIBRAZIONE_2026-09.md` §22: venduto sulla commessa (verificato o
 ## Attività (12 settembre 2026)
 
 Livello cliente → commessa → attività → microtask (`docs/RICALIBRAZIONE_2026-09.md` §25 e §27). L'adattatore legge `project_activities` se esiste; le ore per attività vengono dalle microtask dei daily e valgono solo se il daily torna con il consuntivo. Tabella commesse: pulsante "N attività" apre le righe a tendina. Scheda commessa: pannello "Attività" con microtask per persona. Scheda persona: pannello "Attività e microtask".
+
+## 18 settembre 2026 — UX operativa e confronto dei daily
+
+La navigazione approvata passa a Panoramica, Clienti e lavoro, Team, Stime e
+Qualità dei dati. Il team comprende il roster attivo anche senza registrazioni
+(Corrado e Gloria inclusi), più le persone con daily, ore o piani nel periodo.
+L'assenza di daily è esplicita; non è disponibilità libera o zero ore lavorate.
+Clienti, commesse, consegne e budget esistenti rimangono raggiungibili. Gli alias
+seguono tutta la catena `merged_into`; nessuna modifica a lifecycle o identità.
+
+La vista legge l'API autenticata esistente. Giorno, settimana, mese e trimestre
+sono dinamici; ricaricare consulta Supabase senza avviare sincronizzazioni, job
+Slack o modelli. La chiave rimane in memoria, mai nell'URL; Esci la elimina e
+chiude i dettagli. Il frontend non contiene copie di dati del team.
+
+`giunos_daily_reviews` conserva confronti puntuali con link ai messaggi Slack,
+nota, data della verifica e impronta SHA-256 del daily confrontato. Una verifica
+scade quando cambia l'originale; un daily aggiunto successivamente prevale sul
+supplemento. La tabella ha RLS ed è riservata al servizio. Migrazione idempotente
+aggiunta in coda e applicata al database il 18/9.
+
+Il confronto del canale daily 10–17/9 e dei thread ha prodotto 29 verifiche:
+14 testi confrontati, 6 correzioni di attribuzione nella vista, 4 supplementi,
+1 esclusione per data errata e 4 casi in conflitto. I supplementi comprendono
+Claudia 15/16, Paolo 16 e Giusy 10; quest'ultimo sostituisce nella sola vista
+il daily erroneamente datato 11. Nessuna somma duplicata con il registro.
+I 4 casi ambigui mantengono la versione originale con avviso e fonte.
+La correzione nel thread di Alessandra aggiunge lavoro previsto per il 18,
+non ore consuntive al 17. I blocchi multicliente restano indivisi.
+
+Le verifiche sono **consultive**: non cambiano `standup_entries`, `time_logs`,
+`projects` o le decisioni admin. Il recupero del registro e i problemi di
+acquisizione dei daily rimangono interventi separati. Non si deve lanciare un
+backfill sulla sola differenza numerica. Le pagine distinguono dichiarazioni,
+consuntivi, pianificazioni e stime non confermate, con i messaggi originali
+raggiungibili da Qualità dei dati → Fonti Slack.
+
+Le stime mostrano proposte salvate e coppie stima/dichiarazione, senza percentuali
+di accuratezza inventate. I tre confronti disponibili, distribuiti su tre persone,
+non attivano ancora la calibrazione individuale. Una conferma invariata non è
+una misura indipendente. La stima del daily non valuta l'effort di nuove task.
+
+Verifica: test di regressione su date corrette una sola volta, scadenza delle
+verifiche, originali intatti, supplementi, stime separate, catene di merge,
+roster e rendering delle nuove viste. Anche suite completa prima del push.
+La verifica visiva automatica nel browser non è disponibile per la policy della
+sessione; il layout deriva dall'anteprima approvata e va ricontrollato dal vivo.
