@@ -190,6 +190,9 @@ function buildSnapshot(raw,period,now=new Date()) {
   const activeIds=new Set((raw.projects||[]).filter(p=>isActiveProject(p,today)).map(p=>p.id));
   const projects=catalogue.filter(p=>activeIds.has(p.id));
   const peopleIds=new Set([...(raw.team_members||[]).filter(m=>m.active!==false).map(m=>m.slack_user_id),...logs.map(l=>l.person),...plans.map(l=>l.person),...(raw.standup_entries||[]).filter(e=>e.date>=period.start&&e.date<=cutoff&&e.source!=='estimate').map(e=>e.slack_user_id)]);
+  // Shared company phone, explicitly excluded from the people roster by the
+  // administrator. Keep its source records and project totals intact.
+  peopleIds.delete('U09J3HK027R');
   const people=[...peopleIds].map(id=>{
     const member=(raw.team_members||[]).find(m=>m.slack_user_id===id);
     const mine=logs.filter(l=>l.person===id);
