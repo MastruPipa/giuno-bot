@@ -170,3 +170,31 @@ test('channel sync: un canale illeggibile non blocca il sync né l\'archiviazion
   assert.ok(archiveArgs.includes('chan_C_BAD'),'la commessa del canale illeggibile resta fuori dall\'archiviazione');
   assert.ok(archiveArgs.includes('chan_C_OK'));
 });
+test('archiveStaleSyncedProjects: le commesse tenute attive da un admin (evidenza admin valida o tag fonte:admin) non si archiviano',async()=>{
+  const calls=[];
+  const rows=[
+    {id:'chan_A',name:'Angela Intelisano',tags:['channel-sync'],lifecycle_evidence:{kind:'admin',state:'active',valid_until:'2026-12-31'}},
+    {id:'chan_B',name:'Museo Civico Niscemi',tags:['channel-sync','fonte:admin'],lifecycle_evidence:null},
+    {id:'chan_C',name:'Vecchia commessa',tags:['channel-sync'],lifecycle_evidence:{kind:'admin',state:'active',valid_until:'2026-01-01'}},
+    {id:'chan_D',name:'Ferma',tags:['channel-sync'],lifecycle_evidence:{kind:'recap',valid_until:'2026-12-31'}},
+  ];
+  const builder=(op)=>{const q={_op:op,_args:[]};['like','eq','not','in','select','update'].forEach(m=>{q[m]=(...a)=>{q._args.push([m,...a]);return q;};});
+    q.then=(res)=>{calls.push(q);return res(op==='select'?{data:rows}:{data:q._args.find(a=>a[0]==='in')[2].map(id=>({id}))});};return q;};
+  const db=load('src/services/db/projects.js',{'./client':{useSupabase:true,logErr(){},getClient:()=>({from:()=>({select:(...a)=>{const q=builder('select');q._args.push(['select',...a]);return q;},update:(...a)=>{const q=builder('update');q._args.push(['update',...a]);return q;}})})},'../../utils/logger':quiet});
+  const n=await db.archiveStaleSyncedProjects('chan_%',['chan_X'],{today:'2026-09-17'});
+  assert.equal(n,2,'archiviate solo la scaduta e quella senza decisione admin');
+  const upd=calls.find(q=>q._op==='update');
+  assert.equal(upd._args.find(a=>a[0]==='in')[2].join(),'chan_C,chan_D');
+  assert.equal(db.isAdminProtected({tags:[],lifecycle_evidence:{kind:'admin',state:'active'}},'2026-09-17'),true,'admin senza scadenza vale');
+  assert.equal(db.isAdminProtected({tags:[],lifecycle_evidence:{kind:'admin',state:'closed',valid_until:'2099-01-01'}},'2026-09-17'),false);
+});
+test('consolidateParse: JSON troncato o assente non fa cadere il job; risposta valida limitata a 5 memorie',()=>{
+  const cp=require('../src/jobs/consolidateParse');
+  const truncated=cp.parseConsolidation('{"delete_ids": ["m1"], "new_memories": [{"content": "Aitho: cliente dal 2025, bran','max_tokens');
+  assert.match(truncated.error,/troncata a max_tokens/); assert.deepEqual([...truncated.delete_ids],[]);
+  assert.match(cp.parseConsolidation('','end_turn').error,/vuota/);
+  assert.match(cp.parseConsolidation('Non serve consolidare.','end_turn').error,/nessun JSON/);
+  const ok=cp.parseConsolidation('Ecco:\n{"delete_ids":["m1",7],"new_memories":[{"content":"a"},{"content":""},{"content":"b"},{"content":"c"},{"content":"d"},{"content":"e"},{"content":"f"}]}','end_turn');
+  assert.equal(ok.error,undefined); assert.equal(ok.delete_ids.join(),'m1'); assert.equal(ok.new_memories.length,5);
+  assert.ok(cp.MAX_TOKENS>=2000); assert.match(cp.SYSTEM_PROMPT,/CORTO/);
+});

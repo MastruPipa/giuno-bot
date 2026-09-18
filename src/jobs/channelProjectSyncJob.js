@@ -72,7 +72,9 @@ async function syncProjectsFromChannels() {
     if (type !== 'tipo:interno' && !entry.cliente && !entry.progetto) continue;
 
     // Verifica attività nella finestra (ultimi 30g).
-    var activity = await slackService.channelActivity(channelId, ACTIVITY_DAYS, 1);
+    // Batch di messaggi (non 1): un thread_broadcast o un join in cima non
+    // devono far risultare inattivo un canale vivo.
+    var activity = await slackService.channelActivity(channelId, ACTIVITY_DAYS, 20);
     if (!activity || activity.error) {
       unreadable.push(channelId);
       activeIds.push('chan_' + channelId);
