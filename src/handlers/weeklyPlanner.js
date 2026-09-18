@@ -408,6 +408,7 @@ function register(appInstance) {
       var resolved = await resolveOtherProject(orow.other_name, userId, projects, { model: false });
       if (resolved.error) { otherErrors['wp_other_' + orow.index] = resolved.error; continue; }
       orow.project_id = resolved.project.id;
+      if (resolved.client_id) orow.client_id = resolved.client_id;
       projectsById[resolved.project.id] = resolved.project;
       if (resolved.via === 'testo') logger.info('[PLANNER] "Altro" agganciato a ' + resolved.project.name + ' da "' + resolved.text + '" (' + userId + ')');
       if (resolved.created) created.push(resolved.project.name);
@@ -421,6 +422,7 @@ function register(appInstance) {
       logger.info('[PLANNER] Progetti creati dal planner:', created.join(', '), 'da', userId);
     }
 
+    rows = require('../domain/plannerActivities').groupClientActivities(rows);
     var result = await validator.validateSubmission(rows, {
       prefix: 'wp', logType: 'weekly', projectsById: projectsById,
       context: { logDate: weekStart },
@@ -435,7 +437,7 @@ function register(appInstance) {
       return {
         slack_user_id: userId, project_id: r.project_id,
         log_date: weekStart, log_type: 'weekly',
-        hours: r.hours, notes: null, validation: result.validation,
+        hours: r.hours, notes: r.other_name || null, validation: Object.assign({}, result.validation, r.activities ? { activities: r.activities } : {}),
       };
     });
     // Replace, non semplice upsert: una ri-pianificazione che omette un

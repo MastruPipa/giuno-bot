@@ -35,8 +35,17 @@ async function getCatalog() {
   var now = Date.now();
   if (_catalog && (now - _catalogAt) < 300000) return _catalog;
   try {
-    var projects = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 200 });
-    var list = (projects || []).filter(function(p) { return p && p.id && p.name; }).map(catalogEntry);
+    var projects = await db.searchProjects({ limit: 10000 });
+    var byId = new Map((projects || []).map(p => [p.id, p]));
+    var entries = new Map();
+    for (var source of projects || []) {
+      var canonical = await require('./canonicalProject').resolve(source.id, async id => byId.get(id));
+      if (!canonical || !['active', 'planning', 'on_hold'].includes(canonical.status)) continue;
+      if (!entries.has(canonical.id)) entries.set(canonical.id, catalogEntry(canonical));
+      var entry = entries.get(canonical.id);
+      entry.norms = [...new Set(entry.norms.concat(catalogEntry(source).norms))];
+    }
+    var list = [...entries.values()];
     if (list.length > 0) {
       _catalog = list;
       _catalogAt = now;
@@ -126,9 +135,22 @@ async function enrichTasksWithProjects(tasks, options) {
   try {
     var catalog = options.catalog || await getCatalog();
 
+    var identity = require('./clientIdentity');
+    var clients = options.clients || await identity.getClients();
     var unmatched = [];
     tasks.forEach(function(t, i) {
       if (!t || !t.task || t.project_id) return;
+      var identified = identity.identify(t.task, clients);
+      if (identified) {
+        t.client_id = identified.client ? identified.client.id : null;
+        t.assignment_status = identified.ambiguous ? 'ambiguous_client' : 'client_only';
+        // Keep the original activity; no automatic month or deliverable guess.
+        if (identified.client && identified.client.default_project_id) {
+          t.project_id = identified.client.default_project_id;
+          t.project_name = identified.client.name;
+        }
+        return;
+      }
       var hit = resolveTask(t.task, catalog);
       if (hit) {
         t.project_id = hit.id;
@@ -169,6 +191,21 @@ async function enrichTasksWithProjects(tasks, options) {
   } catch(e) {
     logger.warn('[PROJECT-MATCH] enrich fallito (task restano senza progetto):', e.message);
   }
+  // Canonicalize every path, including existing assignments and client defaults,
+  // before the activity matcher sees the project ID. Never write lifecycle data.
+  if (options.projects || require('./db/client').useSupabase) {
+    const rows = options.projects && new Map(options.projects.map(p => [p.id, p]));
+    const lookup = rows ? async id => rows.get(id) : id => db.getProject(id);
+    for (const task of tasks) {
+      if (!task?.project_id) continue;
+      let canonical = null;
+      try { canonical = await require('./canonicalProject').resolve(task.project_id, lookup); } catch (_) {}
+      if (canonical) { task.project_id = canonical.id; task.project_name = canonical.name; }
+      else { delete task.project_id; delete task.project_name; delete task.activity_id; task.assignment_status = 'unresolved_project'; }
+    }
+  }
+  try { await require('./workNodeMatcher').enrich(tasks, { nodes: options.workNodes, date: options.date }); }
+  catch(e) { logger.debug('[PROJECT-MATCH] dettaglio cliente non disponibile:', e.message); }
   // Livello attività: la microtask agganciata alla commessa cerca l'attività
   // aperta ("caption video gambino" → "PED settembre 2026"). Mai bloccante.
   if (options.activities !== false) {

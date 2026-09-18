@@ -57,6 +57,7 @@ Aggiornare a inizio e fine sessione. Una riga per sessione attiva.
 
 | Agente | Area | Ramo / PR | Da | Stato |
 |---|---|---|---|---|
+| Codex | C/D (ingresso planner e matcher cliente; G completata; nessuna riscrittura lifecycle) | `feat/gambino-client-hierarchy` / #153 | 12/9 | 18/9: riallineata a main incluso #162; audit DB completato, matcher canonico e planner senza riaperture; pronta al merge |
 | Claude | C (stime del daily: diagnosi, bottoni rapidi, stime persistite, attività nel prompt) | `claude/hopeful-dijkstra-uq0ulb` / nuova PR | 12/9 | in attesa di merge |
 | Claude | C (daily 16:00 non arrivato a tutti: id univoci dei bottoni rapidi, modulo semplice se Slack rifiuta il DM, avviso agli admin) | `claude/daily-delivery-issue-l79lx8` | 14/9 | pushato, in attesa di merge |
 | Codex | G (dashboard giun.os) + C (ore, sync progetti) | #133, #134, #136, #137 mergiate; #135 (contratti) in bozza | 10/9 | in corso |
