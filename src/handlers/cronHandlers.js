@@ -1153,16 +1153,11 @@ async function consolidaMemorie() {
       group.sort(function(a, b) { return new Date(b.created || 0) - new Date(a.created || 0); });
 
       try {
+        var consolidateParse = require('../jobs/consolidateParse');
         var res = await client.messages.create({
           model: MODELS.PRIMARY,
-          max_tokens: 800,
-          system: 'Consolida queste memorie di un\'agenzia di marketing. Per ogni gruppo:\n' +
-            '1. ELIMINA duplicati e info superate (tieni la più recente)\n' +
-            '2. FONDI memorie episodiche simili in UNA memoria semantica completa\n' +
-            '3. Esempio: 5 frammenti su "Aitho" → 1 memoria: "Aitho: cliente dal 2025, branding+social, budget €15k, contatto Marco, canale #aitho, ultimo progetto logo Q1 2026"\n' +
-            '4. Per tool_result e search_pattern: elimina se >7 giorni e non utili\n\n' +
-            'JSON: {"delete_ids": ["id1"], "new_memories": [{"content": "testo consolidato", "tags": ["tipo:valore"], "memory_type": "semantic"}]}\n' +
-            'Se non serve: {"delete_ids": [], "new_memories": []}',
+          max_tokens: consolidateParse.MAX_TOKENS,
+          system: consolidateParse.SYSTEM_PROMPT,
           messages: [{
             role: 'user',
             content: 'Entità/gruppo: ' + keys[k] + ' (' + group.length + ' memorie)\n\n' +
@@ -1172,11 +1167,11 @@ async function consolidaMemorie() {
           }],
         });
 
-        var text = _textOf(res).trim();
-        var jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) continue;
-
-        var result = safeParse('CRON.consolidate', jsonMatch[0], null);
+        var result = consolidateParse.parseConsolidation(_textOf(res), res && res.stop_reason);
+        if (result.error) {
+          logger.warn('[CONSOLIDATE] ' + userId + ' / ' + keys[k] + ': ' + result.error + ', gruppo saltato');
+          continue;
+        }
         if (result.delete_ids && result.delete_ids.length > 0) {
           for (var d = 0; d < result.delete_ids.length; d++) {
             await db.deleteMemory(userId, result.delete_ids[d]);

@@ -91,19 +91,44 @@ async function upsertSyncedProject(row) {
 // 'attio_%' o 'chan_%') che non sono più nel set attivo corrente, così cadono
 // fuori dal planner. Non tocca i progetti manuali né le altre sorgenti.
 // Retro-compatibile: se chiamata con un solo argomento array, usa 'attio_%'.
-async function archiveStaleSyncedProjects(prefix, activeIds) {
+// Una commessa tenuta attiva per decisione di un admin non si archivia da
+// sola: evidenza lifecycle di tipo 'admin' ancora valida (valid_until non
+// passato) oppure tag 'fonte:admin'. Il 17/9 alle 19:11 il sync canali ha
+// archiviato Angela Intelisano, Museo Civico Niscemi e Terzo Settore Coop.
+function isAdminProtected(row, today) {
+  if (!row) return false;
+  var tags = Array.isArray(row.tags) ? row.tags : [];
+  if (tags.indexOf('fonte:admin') !== -1) return true;
+  var ev = row.lifecycle_evidence;
+  if (!ev || ev.kind !== 'admin') return false;
+  if (ev.state && ev.state !== 'active') return false;
+  if (!ev.valid_until) return true;
+  return String(ev.valid_until).substring(0, 10) >= today;
+}
+
+async function archiveStaleSyncedProjects(prefix, activeIds, opts) {
   if (!c.useSupabase) return 0;
   if (Array.isArray(prefix)) { activeIds = prefix; prefix = 'attio_%'; }
   // An empty snapshot must never bulk-archive the catalogue automatically.
   if (!Array.isArray(activeIds) || activeIds.length === 0) return 0;
+  var today = (opts && opts.today) || new Date().toISOString().substring(0, 10);
   try {
-    var q = c.getClient().from('projects')
-      .update({ status: 'archived', updated_at: new Date().toISOString() })
-      .like('id', prefix).eq('status', 'active');
-    if (activeIds && activeIds.length) {
-      q = q.not('id', 'in', '(' + activeIds.map(function(id) { return '"' + id + '"'; }).join(',') + ')');
+    var notIn = '(' + activeIds.map(function(id) { return '"' + id + '"'; }).join(',') + ')';
+    // Prima si guarda chi si sta per archiviare, poi si archivia solo chi
+    // non è protetto da una decisione admin.
+    var cand = await c.getClient().from('projects').select('id, name, tags, lifecycle_evidence')
+      .like('id', prefix).eq('status', 'active').not('id', 'in', notIn);
+    if (cand.error) throw cand.error;
+    var rows = cand.data || [];
+    var protectedRows = rows.filter(function(r) { return isAdminProtected(r, today); });
+    var toArchive = rows.filter(function(r) { return !isAdminProtected(r, today); }).map(function(r) { return r.id; });
+    if (protectedRows.length) {
+      logger.info('[PROJECTS] archiviazione saltata per decisione admin:', protectedRows.map(function(r) { return r.name || r.id; }).join(', '));
     }
-    var res = await q.select('id');
+    if (!toArchive.length) return 0;
+    var res = await c.getClient().from('projects')
+      .update({ status: 'archived', updated_at: new Date().toISOString() })
+      .in('id', toArchive).eq('status', 'active').select('id');
     if (res.error) throw res.error;
     return (res.data || []).length;
   } catch(e) { c.logErr('archiveStaleSyncedProjects', e); throw e; }
@@ -265,6 +290,7 @@ async function getTeamWorkload() {
 }
 
 module.exports = {
+  isAdminProtected: isAdminProtected,
   OPEN_STATUSES: OPEN_STATUSES,
   createProject: createProject,
   updateProject: updateProject,

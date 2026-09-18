@@ -1187,7 +1187,34 @@ Ora, quando c'è una proposta in sospeso:
 
 Tempi: turno del modello più la chiamata utility per la modifica, 15-30 s.
 
-## 37. Da fare
+## 37. Tre correzioni dalla produzione del 17/9 sera (dopo #160 e #161)
+
+1. **Archiviazione che rispetta gli admin** (`db/projects.archiveStaleSyncedProjects`).
+   Alle 19:11 il sync canali ha archiviato Angela Intelisano, Museo Civico
+   Niscemi e Terzo Settore Coop, tenute attive per decisione admin
+   registrata su Supabase. Ora, prima di archiviare, la funzione legge i
+   candidati e salta chi ha `lifecycle_evidence.kind='admin'` ancora valida
+   (`valid_until` non passato, o assente) oppure il tag `fonte:admin`; le
+   commesse protette finiscono nel log. Gli stati su Supabase li ha
+   rimessi a posto Antonio a mano.
+2. **Attività di un canale letta su un batch** (`slackService.channelActivity`).
+   `chan_C076AGC0L94` non entrava tra gli attivi con messaggi di oggi: la
+   lettura era di UN solo messaggio e scartava ogni subtype, quindi un
+   thread_broadcast, un bot o un join in cima rendevano il canale
+   "inattivo". Ora si leggono 20 messaggi e si ignorano solo
+   channel/group join e leave.
+3. **Consolidamento memorie che non cade** (`jobs/consolidateParse.js`).
+   La risposta si troncava a 800 token, il JSON restava aperto, safeParse
+   dava null e il job andava in errore "reading 'delete_ids' of null"
+   (gruppo condiviso e Alessandra). Budget a 2500, prompt che chiede una
+   risposta corta (max 5 memorie da 300 caratteri, solo JSON), parsing che
+   restituisce sempre un oggetto e logga il motivo ("troncata a
+   max_tokens", "nessun JSON") saltando il gruppo.
+
+Test: `test/reliability-flows.test.js` (archiviazione, parsing) e
+`test/daily-estimate-1730.test.js` (attività canale). Nessuna migrazione.
+
+## 38. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
