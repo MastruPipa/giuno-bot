@@ -47,5 +47,9 @@ risolve tutta la catena merged_into per default cliente e task già assegnati,
 prima di cercare attività; cicli e riferimenti mancanti restano irrisolti.
 Il planner segue le stesse catene e non riapre più commesse chiuse per nome.
 Test di regressione coprono questi casi e la conservazione delle decisioni admin.
-La protezione della sincronizzazione in db/projects.js è oggetto della PR #162,
-che questa PR non modifica. Nessuna operazione manuale richiesta sul database.
+Integrata anche origin/main a 1f11db9: include la PR #162 con la protezione
+admin della sincronizzazione, mantenuta senza riscritture. Nessuna operazione manuale richiesta sul database.
+
+Validazione finale sul codice integrato: `npm test` 454/454 passati, zero skip;
+`npm run check:conflicts` e `git diff --check` superati. Impronta delle decisioni
+admin identica prima/dopo l’audit; nessuna scrittura sul database.
