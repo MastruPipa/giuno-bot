@@ -216,3 +216,23 @@ test('tool daily_estimate_amend / daily_estimate_approve: passano dalla proposta
     assert.equal(a2.success, true); assert.deepEqual(calls[calls.length - 1], ['confirm', 'U_ANT']);
   } finally { dsv2.amendPendingEstimate = origAmend; dsv2.confirmEstimate = origConfirm; dsv2.getExistingEntry = origExisting; dsv2.clearPendingEstimate('U_ANT'); }
 });
+
+test('channelActivity: legge un batch e ignora solo join/leave — un thread_broadcast o un bot in cima non rendono inattivo un canale vivo', async function() {
+  var svc = require('../src/services/slackService');
+  var seen;
+  svc.app.client.conversations = { history: async function(a) { seen = a; return { messages: [
+    { type: 'message', subtype: 'channel_join', text: 'x è entrato' },
+    { type: 'message', subtype: 'thread_broadcast', text: 'risposta in thread' },
+    { type: 'message', text: 'messaggio normale' },
+  ] }; } };
+  try {
+    var r = await svc.channelActivity('C076AGC0L94', 30);
+    assert.equal(seen.limit, 20, 'batch, non 1');
+    assert.equal(r.active, true); assert.equal(r.count, 2);
+    svc.app.client.conversations = { history: async function() { return { messages: [{ type: 'message', subtype: 'channel_join' }, { type: 'message', subtype: 'channel_leave' }] }; } };
+    var r2 = await svc.channelActivity('C1', 30);
+    assert.equal(r2.active, false);
+    assert.equal(svc.isActivityMessage({ type: 'message', subtype: 'bot_message' }), true);
+    assert.equal(svc.isActivityMessage({ type: 'message', subtype: 'group_leave' }), false);
+  } finally { delete svc.app.client.conversations; }
+});

@@ -155,21 +155,28 @@ async function leggiCanaleSlack(channelId, limit) {
 // ─── Channel activity ────────────────────────────────────────────────────────
 // Verifica se un canale ha avuto attività (almeno un messaggio) negli ultimi
 // `days` giorni. Chiamata leggera: conversations.history con oldest=now-Ndays
-// e limit basso. Ritorna { active: bool, count: number } — count è il numero
-// di messaggi nel batch (≤ limit), utile solo come segnale grezzo. Non fa
-// join al canale: se il bot non è membro di un canale privato, ritorna
-// active=false silenziosamente.
+// e limit contenuto. Ritorna { active: bool, count: number } — count è il
+// numero di messaggi validi nel batch (≤ limit). Non fa join al canale: se il
+// bot non è membro di un canale privato, ritorna active=false silenziosamente.
+// Con limit 1 bastava che l'ultimo evento fosse un join, un leave o un
+// messaggio con subtype (thread_broadcast, bot_message, file_share) per
+// dichiarare il canale inattivo (17/9: chan_C076AGC0L94 archiviato con
+// messaggi di oggi). Ora si leggono più messaggi e si ignorano solo le
+// notifiche di ingresso/uscita.
+var ACTIVITY_BATCH = 20;
+var INACTIVE_SUBTYPES = { channel_join: true, channel_leave: true, group_join: true, group_leave: true };
+function isActivityMessage(m) {
+  return !!(m && m.type === 'message' && !INACTIVE_SUBTYPES[m.subtype || '']);
+}
 async function channelActivity(channelId, days, limit) {
   days = days || 60;
-  limit = limit || 1;
+  limit = limit || ACTIVITY_BATCH;
   var oldest = String(Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000));
   try {
     var res = await slackCall('SLACK.conversations.history.activity', function() {
       return app.client.conversations.history({ channel: channelId, oldest: oldest, limit: limit });
     }, { timeoutMs: 5000, retries: 1 });
-    var msgs = (res.messages || []).filter(function(m) {
-      return m && m.type === 'message' && !m.subtype;
-    });
+    var msgs = (res.messages || []).filter(isActivityMessage);
     return { active: msgs.length > 0, count: msgs.length };
   } catch (e) {
     logger.debug('[SLACK-SVC] channelActivity ignorato per ' + channelId + ':', e.message);
@@ -186,6 +193,7 @@ function getChannelMapEntry(channelId) {
 }
 
 module.exports = {
+  isActivityMessage: isActivityMessage,
   listMembers: listMembers,
   invalidateUsersCache: invalidateUsersCache,
   app: app,
