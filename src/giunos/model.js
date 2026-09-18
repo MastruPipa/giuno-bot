@@ -1,12 +1,13 @@
 'use strict';
 const {buildClientHierarchy} = require('../domain/clientHierarchy');
 const {isActiveProject} = require('./projectScope');
+const {canonicalMap,buildReconciliation,estimateSummary}=require('./reconciliation');
 const day = 86400000;
 const iso = d => d.toISOString().slice(0,10);
 function validDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s)) && iso(new Date(s)) === s; }
 function romeToday(now = new Date()) { return new Intl.DateTimeFormat('en-CA', {timeZone:'Europe/Rome',year:'numeric',month:'2-digit',day:'2-digit'}).format(now); }
 function periodBounds(kind = 'month', anchor = romeToday()) {
-  if (!['week','month','quarter'].includes(kind) || !validDate(anchor)) throw new Error('Periodo non valido');
+  if (!['day','week','month','quarter'].includes(kind) || !validDate(anchor)) throw new Error('Periodo non valido');
   const d = new Date(anchor), start = new Date(d), end = new Date(d);
   if (kind === 'week') { start.setUTCDate(d.getUTCDate() - (d.getUTCDay()+6)%7); end.setTime(start.getTime()+6*day); }
   if (kind === 'month') { start.setUTCDate(1); end.setUTCMonth(d.getUTCMonth()+1,0); }
@@ -128,7 +129,7 @@ function projectActivities(pid,rows,activities,period,today) {
 }
 function buildSnapshot(raw,period,now=new Date()) {
   const today=romeToday(now), cutoff=period.end<today?period.end:today;
-  const aliases=new Map((raw.projects||[]).filter(p=>p.merged_into).map(p=>[p.id,p.merged_into]));
+  const aliases=canonicalMap(raw.projects||[]);
   const allLogs=normalizeLogs(raw.time_logs||[]).filter(r=>r.date<=today).map(r=>({...r,project:aliases.get(r.project)||r.project}));
   const logs=allLogs.filter(r=>r.date>=period.start && r.date<=cutoff);
   // Piani delle settimane che iniziano nel periodo (anche future, entro il periodo)
@@ -188,7 +189,7 @@ function buildSnapshot(raw,period,now=new Date()) {
   });
   const activeIds=new Set((raw.projects||[]).filter(p=>isActiveProject(p,today)).map(p=>p.id));
   const projects=catalogue.filter(p=>activeIds.has(p.id));
-  const peopleIds=new Set([...(raw.team_members||[]).filter(m=>m.active!==false).map(m=>m.slack_user_id),...logs.map(l=>l.person)]);
+  const peopleIds=new Set([...(raw.team_members||[]).filter(m=>m.active!==false).map(m=>m.slack_user_id),...logs.map(l=>l.person),...plans.map(l=>l.person),...(raw.standup_entries||[]).filter(e=>e.date>=period.start&&e.date<=cutoff&&e.source!=='estimate').map(e=>e.slack_user_id)]);
   const people=[...peopleIds].map(id=>{
     const member=(raw.team_members||[]).find(m=>m.slack_user_id===id);
     const mine=logs.filter(l=>l.person===id);
@@ -237,6 +238,6 @@ function buildSnapshot(raw,period,now=new Date()) {
   const internalHours=hours(logs.filter(l=>String(l.project).startsWith('cat_')));
   const clientHours=hours(logs.filter(l=>!String(l.project).startsWith('cat_')));
   const hierarchy=buildClientHierarchy(raw,logs,catalogue,today);
-  return {reconciledClients:hierarchy.clients,mappedProjectIds:hierarchy.mappedProjectIds,period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...hierarchy.warnings,...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries,aliases),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
+  return {reconciliation:buildReconciliation(raw,period,today,logs),estimates:estimateSummary(raw,period,today),catalogue,reconciledClients:hierarchy.clients,mappedProjectIds:hierarchy.mappedProjectIds,period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...hierarchy.warnings,...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries,aliases),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
 module.exports={CATEGORY_RULES,category,categoryHours,activityRows,projectActivities,normalizePlans,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

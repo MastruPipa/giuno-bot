@@ -540,3 +540,22 @@ CREATE INDEX IF NOT EXISTS client_evidence_client_dates_idx ON public.client_evi
 -- 2026-09-12: explicit general posting account for a reconciled client.
 ALTER TABLE public.agency_clients ADD COLUMN IF NOT EXISTS default_project_id text REFERENCES public.projects(id);
 CREATE UNIQUE INDEX IF NOT EXISTS agency_clients_default_project_unique ON public.agency_clients(default_project_id) WHERE default_project_id IS NOT NULL;
+-- 2026-09-18: source-backed dashboard reviews, separate from original dailies and ledger.
+CREATE TABLE IF NOT EXISTS public.giunos_daily_reviews (
+ id text PRIMARY KEY,
+ slack_user_id text NOT NULL,
+ date date NOT NULL,
+ basis_entry_id text,
+ basis_hash text,
+ status text NOT NULL CHECK (status IN ('matched','corrected','conflict','excluded','supplement')),
+ tasks jsonb,
+ source_urls jsonb NOT NULL CHECK (jsonb_typeof(source_urls) = 'array' AND jsonb_array_length(source_urls)>0),
+ note text NOT NULL,
+ reviewed_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(slack_user_id,date),
+ CHECK ((basis_entry_id IS NULL) = (basis_hash IS NULL)),
+ CHECK (tasks IS NULL OR jsonb_typeof(tasks)='array')
+);
+ALTER TABLE public.giunos_daily_reviews ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.giunos_daily_reviews FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.giunos_daily_reviews TO service_role;
