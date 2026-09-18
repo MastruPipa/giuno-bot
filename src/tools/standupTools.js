@@ -59,6 +59,44 @@ var definitions = [
       },
     },
   },
+  {
+    name: 'daily_estimate_amend',
+    description: 'Modifica la PROPOSTA DI DAILY IN ATTESA (la stima ricostruita da Giuno, nel contesto) secondo quello che chiede l\'utente e gliela rimanda in DM con i bottoni. ' +
+      'Usalo per "togli X", "leva quella cosa", "aggiungi 1h di call con Y", "la seconda voce erano 2h", "senza il meeting saltato": scrivi in instruction un\'istruzione precisa e autonoma, con il nome della voce così com\'è nella proposta e le ore, risolvendo tu i riferimenti impliciti dal contesto. ' +
+      'Dopo il tool rispondi con una riga sola: la proposta aggiornata è già arrivata con i bottoni.',
+    input_schema: {
+      type: 'object',
+      properties: { instruction: { type: 'string', description: 'La modifica, precisa: es. "togli la voce Meet Fondazione con il Sud 30min" oppure "aggiungi Call con Elios 1h in oggi".' } },
+      required: ['instruction'],
+    },
+  },
+  {
+    name: 'daily_estimate_approve',
+    description: 'Approva la PROPOSTA DI DAILY IN ATTESA: diventa il daily di oggi dell\'utente (salvato, ore nel consuntivo, pubblicato in #daily). ' +
+      'Usalo quando l\'utente la approva ("va bene così", "approvala", "ok la stima"). Se esiste già un daily vero di oggi, il tool si ferma e te lo dice: chiedi conferma prima di richiamarlo con replace_existing=true.',
+    input_schema: {
+      type: 'object',
+      properties: { replace_existing: { type: 'boolean', description: 'true solo dopo che l\'utente ha confermato di voler sostituire il daily già registrato oggi.' } },
+    },
+  },
+  {
+    name: 'post_daily',
+    description: 'Registra e pubblica in #daily il daily che l\'utente ha scritto a mano nel messaggio, quando chiede di ' +
+      'postarlo/pubblicarlo/registrarlo ("posta il mio daily", "pubblicalo in #daily", "ecco il daily di oggi, ' +
+      'registralo", "postalo" riferito al daily scritto nel messaggio prima). Passa in text SOLO il daily (cosa ha ' +
+      'fatto oggi con le ore, cosa farà domani, blocchi), senza la frase di richiesta: viene salvato come daily di ' +
+      'OGGI a nome della persona, le ore entrano nel consuntivo e il testo viene pubblicato in #daily. Non inventare ' +
+      'né completare il daily: se il messaggio non lo contiene, chiedilo. Per conto di chi scrive; solo un admin può ' +
+      'indicare user_id per registrarlo a nome di un altro.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Il testo del daily così come l\'ha scritto la persona (senza la richiesta).' },
+        user_id: { type: 'string', description: 'Slack ID della persona a cui intestare il daily (solo admin; default: chi scrive).' },
+      },
+      required: ['text'],
+    },
+  },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -309,22 +347,87 @@ function aggregateStandupRows(rows, input, dateFrom, dateTo) {
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
 
-async function execute(toolName, input) {
+async function execute(toolName, input, userId, userRole) {
+  input = input || {};
   if (toolName === 'query_standup') {
     try {
-      return await queryStandup(input || {});
+      return await queryStandup(input);
     } catch(e) {
       logger.error('[STANDUP-TOOL] error:', e.message);
       return { error: 'Errore query standup: ' + e.message };
     }
   }
+  if (toolName === 'post_daily') return postDaily(input, userId, userRole);
+  if (toolName === 'daily_estimate_amend') return amendEstimateTool(input, userId);
+  if (toolName === 'daily_estimate_approve') return approveEstimateTool(input, userId);
   return { error: 'Tool sconosciuto in standupTools: ' + toolName };
+}
+
+// ─── daily_estimate_amend / daily_estimate_approve ───────────────────────────
+// La proposta in sospeso la modifica e la approva il modello, che ha il
+// contesto della chat: "togli quella cosa" diventa un'istruzione precisa.
+async function amendEstimateTool(input, userId) {
+  var instruction = String(input.instruction || '').trim();
+  if (!instruction) return { error: 'Manca l\'istruzione di modifica.' };
+  if (!userId || userId === 'system') return { error: 'Nessun utente.' };
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    if (!dailyV2.getPendingEstimate(userId, dailyV2.oggi())) return { error: 'Nessuna proposta di daily in attesa per oggi: la persona può compilare il daily con il bottone o scriverlo in testo.' };
+    var updated = await dailyV2.amendPendingEstimate(userId, instruction);
+    if (!updated) return { error: 'Modifica non applicata: riprova con un\'istruzione più precisa (nome della voce e ore).' };
+    var estimator = require('../agents/dailyEstimator');
+    return { success: true, proposal: estimator.formatEstimateBody(updated),
+      nota: 'Proposta aggiornata già inviata in DM con i bottoni Approvo / Modifico / Compilo da zero. Rispondi con una riga sola, senza ripetere la proposta.' };
+  } catch(e) { return { error: 'Errore nella modifica: ' + e.message }; }
+}
+
+async function approveEstimateTool(input, userId) {
+  if (!userId || userId === 'system') return { error: 'Nessun utente.' };
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    var todayStr = dailyV2.oggi();
+    if (!dailyV2.getPendingEstimate(userId, todayStr)) return { error: 'Nessuna proposta di daily in attesa per oggi.' };
+    var existing = await dailyV2.getExistingEntry(userId, todayStr);
+    if (existing && existing.source && existing.source !== 'estimate' && !input.replace_existing) {
+      return { requires_confirmation: true,
+        message: 'Oggi esiste già un daily vero (fonte: ' + existing.source + '). Approvare la stima lo SOSTITUISCE, ore comprese. Chiedi conferma all\'utente e richiama il tool con replace_existing=true solo se dice sì.' };
+    }
+    var ok = await dailyV2.confirmEstimate(userId);
+    if (!ok) return { error: 'Approvazione non riuscita: la proposta non è più valida.' };
+    return { success: true, message: 'Stima approvata: è il daily di oggi, pubblicato in #daily, ore nel consuntivo.' };
+  } catch(e) { return { error: 'Errore nell\'approvazione: ' + e.message }; }
+}
+
+// ─── post_daily ───────────────────────────────────────────────────────────────
+// Il daily scritto a mano in chat, pubblicato su richiesta. Stessa strada del
+// daily testuale in DM (handleDailyResponse: parser AI, aggancio commesse,
+// standup_entries, consuntivo, post in #daily), ma raggiungibile dal modello
+// quando la richiesta non è riconosciuta dalle euristiche dell'handler.
+async function postDaily(input, userId, userRole) {
+  var text = String(input.text || '').trim();
+  if (text.length < 10) return { error: 'Testo del daily mancante o troppo corto: passa il daily così come l\'ha scritto la persona.' };
+  var target = input.user_id || userId;
+  if (!target || target === 'system') return { error: 'Nessuna persona a cui intestare il daily: specifica user_id.' };
+  if (input.user_id && input.user_id !== userId && userRole !== 'admin') {
+    return { error: 'Solo un admin può registrare il daily a nome di un altro.' };
+  }
+  try {
+    var dailyV2 = require('../handlers/dailyStandupV2');
+    var saved = await dailyV2.handleDailyResponse(target, text);
+    if (!saved) return { error: 'Daily non registrato: riprova o usa il bottone "✏️ Compila daily".' };
+    return { success: true, user_id: target, date: dailyV2.oggi(),
+      message: 'Daily di oggi registrato e pubblicato in #daily' + (target !== userId ? ' a nome di <@' + target + '>' : '') + '.' };
+  } catch(e) {
+    logger.error('[STANDUP-TOOL] post_daily:', e.message);
+    return { error: 'Errore nel registrare il daily: ' + e.message };
+  }
 }
 
 module.exports = {
   definitions: definitions,
   execute: execute,
   queryStandup: queryStandup,
+  postDaily: postDaily,
   aggregateStandupRows: aggregateStandupRows,
   workdaysBetween: workdaysBetween,
 };

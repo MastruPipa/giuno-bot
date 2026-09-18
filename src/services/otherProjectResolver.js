@@ -31,7 +31,7 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
   if (identity) {
     if (identity.ambiguous) return { error: 'La riga cita più clienti: separa le attività per cliente.' };
     if (!identity.client.default_project_id) return { error: 'Cliente riconosciuto, associazione ore ancora da completare.' };
-    var posting = (activeProjects || []).find(p => p.id === identity.client.default_project_id) || await db.getProject(identity.client.default_project_id);
+    var posting = await require('./canonicalProject').resolve(identity.client.default_project_id, async id => (activeProjects || []).find(p => p.id === id) || await db.getProject(id));
     if (!posting || posting.status !== 'active') return { error: 'Voce ore cliente non disponibile. Riprova tra poco.' };
     return { project: posting, created: false, client_id: identity.client.id, via: 'cliente', text: clean };
   }
@@ -40,16 +40,12 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
   if (!existing) {
     var found = await db.searchProjects({ name: clean, limit: 10 });
     existing = (found || []).find(function(p) { return norm(p.name) === key; }) || null;
-    if (existing && existing.status === 'merged' && existing.merged_into) {
-      var canonical = await db.getProject(existing.merged_into);
-      if (canonical) existing = canonical;
-    }
-    if (existing && ['completed', 'archived', 'cancelled'].indexOf(existing.status) !== -1) {
-      // Scelta apposta per nome: riapriamo.
-      try { await db.updateProject(existing.id, { status: 'active' }); existing.status = 'active'; } catch(e) { /* best effort */ }
-    }
   }
-  if (existing) return { project: existing, created: false, via: 'nome' };
+  if (existing) {
+    existing = await require('./canonicalProject').resolve(existing.id, async id => id === existing.id ? existing : await db.getProject(id));
+    if (!existing || !['active', 'planning', 'on_hold'].includes(existing.status)) return { error: 'Commessa chiusa o non disponibile: scegli una voce aperta.' };
+    return { project: existing, created: false, via: 'nome' };
+  }
   // Il testo nomina un cliente o una commessa ("Tarocco - shooting e onboarding")
   var catalog = deps.catalog || await matcher.getCatalog();
   var hit = matcher.resolveTask(clean, catalog) || tokenMatch(clean, catalog);
@@ -68,7 +64,8 @@ async function resolveOtherProject(name, userId, activeProjects, deps) {
       return { error: 'Non capisco a quale commessa si riferisce "' + clean.substring(0, 50) + '". Scegli una voce in lista' + (sugg.length ? ' (le tue ultime: ' + sugg.join(', ') + ')' : '') + ' oppure scrivi anche il nome del cliente.' };
     }
   }
-  var row = (activeProjects || []).find(function(p) { return String(p.id) === String(hit.id); }) || await db.getProject(hit.id) || { id: hit.id, name: hit.name };
+  var row = await require('./canonicalProject').resolve(hit.id, async id => (activeProjects || []).find(p => String(p.id) === String(id)) || await db.getProject(id));
+  if (!row || !['active', 'planning', 'on_hold'].includes(row.status)) return { error: 'Commessa chiusa o non disponibile: scegli una voce aperta.' };
   return { project: row, created: false, via: via, text: clean };
 }
 

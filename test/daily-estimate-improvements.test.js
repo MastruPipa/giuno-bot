@@ -19,7 +19,7 @@ var fakeDb = { getLogsForUserDate: async function() { return []; }, getProject: 
 var recentSb = { from: function() { return { select: function() { return { eq: function() { return { gte: function() { return { limit: async function() { return { data: [{ project_id: 'attio_1', hours: 6, log_date: '2026-09-08' }, { project_id: 'attio_2', hours: 2, log_date: '2026-09-05' }] }; } }; } }; } }; } }; } };
 
 test('diagnosi: per una persona senza tracce dice quale fonte era vuota e perché (token, admin, canali)', async function() {
-  var dayContext = { users: [{ id: 'U_PAOLO', name: 'Paolo Spartano', email: 'paolo@katania.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, figmaByEmail: {}, figmaByName: {}, figmaEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
+  var dayContext = { users: [{ id: 'U_PAOLO', name: 'Paolo Spartano', email: 'paolo@katania.it' }], slackByUser: {}, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
   var noTokens = { getUserTokens: function() { return {}; } };
   var why = await est.explainMissing('U_PAOLO', '2026-09-11', { db: fakeDb, app: { client: {} }, dayContext: dayContext, gauth: noTokens, roles: [], env: {}, supabase: null, activities: [], recent: [], calibration: null });
   assert.deepEqual(why, [
@@ -27,24 +27,23 @@ test('diagnosi: per una persona senza tracce dice quale fonte era vuota e perch�
     'Drive: nessun admin con Google, non leggibile',
     'canali: nessun messaggio suo oggi nei canali dove c\'è Giuno',
     'ricerca Slack: SLACK_USER_TOKEN mancante, vedo solo i canali con Giuno',
-    'Figma: FIGMA_TOKEN/FIGMA_TEAM_ID non configurati',
     'email: Google non collegato',
     'nessun "domani" nel daily precedente',
     'nessun piano settimanale',
   ]);
   // con un admin che ha Google e i token impostati, le frasi cambiano
   var withAdmin = { getUserTokens: function() { return { U_ADM: {} }; } };
-  var why2 = await est.explainMissing('U_PAOLO', '2026-09-11', { db: fakeDb, app: { client: {} }, dayContext: dayContext, gauth: withAdmin, roles: [{ slack_user_id: 'U_ADM', role: 'admin' }], env: { SLACK_USER_TOKEN: 'x', FIGMA_TOKEN: 'f', FIGMA_TEAM_ID: 't' }, supabase: null, activities: [], recent: [], calibration: null });
+  var why2 = await est.explainMissing('U_PAOLO', '2026-09-11', { db: fakeDb, app: { client: {} }, dayContext: dayContext, gauth: withAdmin, roles: [{ slack_user_id: 'U_ADM', role: 'admin' }], env: { SLACK_USER_TOKEN: 'x' }, supabase: null, activities: [], recent: [], calibration: null });
   assert.equal(why2[0], 'calendario: Google non collegato e nessun invito da un admin');
   assert.equal(why2[1], 'Drive: nessun file suo oggi (letto con il Google di 1 admin)');
   assert.equal(why2[3], 'ricerca Slack: nessun messaggio suo oggi');
-  assert.equal(why2[4], 'Figma: nessuna versione sua oggi');
+  assert.equal(why2[4], 'email: Google non collegato');
 });
 
 test('attività aperte sulle commesse recenti nel prompt della stima, con il vocabolario', async function() {
   var prompt;
   var fakeClient = { messages: { create: async function(req) { prompt = req.messages[0].content; return { content: [{ type: 'text', text: JSON.stringify({ oggi: [{ task: 'PED settembre 2026: caption e storie', hours: 2, minutes: 0, project: 'Gambino Vini · Social' }], domani: [], blocchi: null, confidence: 'media', note: '' }) }] }; } } };
-  var dayContext = { users: [{ id: 'U_GIUSY', name: 'Giusy Russo', email: 'giusy@katania.it' }], slackByUser: { U_GIUSY: [{ channel: 'gambino', text: 'caricate le storie', files: [] }] }, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, figmaByEmail: {}, figmaByName: {}, figmaEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
+  var dayContext = { users: [{ id: 'U_GIUSY', name: 'Giusy Russo', email: 'giusy@katania.it' }], slackByUser: { U_GIUSY: [{ channel: 'gambino', text: 'caricate le storie', files: [] }] }, driveByEmail: {}, driveByName: {}, driveEvents: { byEmail: {}, byName: {} }, adminEvents: [] };
   var activities = [{ id: 'act_ped', project_id: 'attio_1', name: 'PED settembre 2026', status: 'open', vocabulary: ['caption', 'post', 'storie', 'reel'] }, { id: 'act_tpl', project_id: 'attio_1', name: 'PED', status: 'open', recurrence: 'mensile' }, { id: 'act_t', project_id: 'attio_2', name: 'Shooting', status: 'open', vocabulary: ['foto'] }];
   var out = await est.estimateDaily('U_GIUSY', '2026-09-11', { client: fakeClient, db: fakeDb, app: { client: {} }, dayContext: dayContext, calibration: null, supabase: recentSb, activities: activities });
   assert.ok(out);
@@ -82,7 +81,10 @@ test('bottoni rapidi: le commesse recenti della persona come bottoni (max 4), ni
   for (var i = 0; i < 6; i++) recent.push({ id: 'p' + i, hours: 6 - i });
   var deps = { context: { recentProjectsFor: async function() { return recent; } }, db: { getProject: async function(id) { return { id: id, name: 'Commessa ' + id.toUpperCase() }; } } };
   var btns = await dsv2.quickProjectButtons('U1', deps);
-  assert.equal(btns.length, 4); assert.equal(btns[0].action_id, 'daily_quick_project'); assert.equal(btns[0].value, 'p0'); assert.equal(btns[0].text.text, 'Commessa P0');
+  assert.equal(btns.length, 4); assert.equal(btns[0].action_id, 'daily_quick_project_0'); assert.equal(btns[0].value, 'p0'); assert.equal(btns[0].text.text, 'Commessa P0');
+  var ids = btns.map(function(b) { return b.action_id; });
+  assert.equal(new Set(ids).size, 4, 'action_id univoci nel blocco, altrimenti Slack rifiuta il DM: ' + ids.join(','));
+  ids.forEach(function(id) { assert.match(id, /^daily_quick_project(_\d+)?$/); });
   assert.deepEqual(await dsv2.quickProjectButtons('U1', { context: { recentProjectsFor: async function() { return []; } }, db: deps.db }), []);
 });
 
@@ -108,4 +110,39 @@ test('stima consumata: sparisce dalla memoria E dallo stato persistito (un riavv
   d.clearPendingEstimate('U9');
   assert.equal(sd.stime.U9, undefined, 'via dallo stato persistito');
   assert.equal(d.getPendingEstimate('U9', '2026-09-12'), null, 'e nemmeno la memoria la ripesca');
+});
+
+test('richiesta daily: se Slack rifiuta il DM con i bottoni rapidi, arriva comunque il modulo semplice', async function() {
+  var dsv2 = require('../src/handlers/dailyStandupV2');
+  var recent = [{ id: 'p0', hours: 6 }, { id: 'p1', hours: 2 }];
+  var quickDeps = { context: { recentProjectsFor: async function() { return recent; } }, db: { getProject: async function(id) { return { id: id, name: 'Commessa ' + id }; } } };
+  var sent = [];
+  var fakeApp = { client: { chat: { postMessage: async function(m) {
+    var hasQuick = (m.blocks || []).some(function(b) { return b.type === 'actions' && b.elements.some(function(el) { return /^daily_quick_project/.test(el.action_id); }); });
+    if (hasQuick) { var e = new Error('An API error occurred: invalid_blocks'); throw e; }
+    sent.push(m);
+  } } } };
+  var inattesa = new Set();
+  await dsv2.sendDailyRequestTo({ id: 'U_CLAUDIA', name: 'Claudia Petrino' }, false, { app: fakeApp, inattesa: inattesa, quickDeps: quickDeps });
+  assert.equal(sent.length, 1, 'il modulo semplice parte dopo il rifiuto');
+  assert.equal(sent[0].channel, 'U_CLAUDIA');
+  assert.ok(sent[0].blocks.some(function(b) { return b.type === 'actions' && b.elements[0].action_id === 'open_daily_modal'; }), 'c\'è il bottone Compila daily');
+  assert.ok(!sent[0].blocks.some(function(b) { return b.type === 'actions' && /^daily_quick_project/.test(b.elements[0].action_id); }), 'senza bottoni rapidi');
+  assert.ok(inattesa.has('U_CLAUDIA'));
+
+  // Senza bottoni rapidi un errore resta un errore (nessun secondo tentativo cieco).
+  var boom = { client: { chat: { postMessage: async function() { throw new Error('channel_not_found'); } } } };
+  await assert.rejects(dsv2.sendDailyRequestTo({ id: 'U_X', name: 'X' }, false, { app: boom, inattesa: new Set(), quickDeps: { context: { recentProjectsFor: async function() { return []; } }, db: quickDeps.db } }), /channel_not_found/);
+});
+
+test('invii falliti all\'invio: gli admin ricevono in DM chi non ha avuto la richiesta e perché', async function() {
+  var dsv2 = require('../src/handlers/dailyStandupV2');
+  var sent = [];
+  var n = await dsv2.notifySendFailures([{ id: 'U_CLAUDIA', name: 'Claudia', error: 'An API error occurred: invalid_blocks' }], '2026-09-14', {
+    roles: [{ slack_user_id: 'U_ANT', role: 'admin' }, { slack_user_id: 'U_X', role: 'member' }],
+    app: { client: { chat: { postMessage: async function(m) { sent.push(m); } } } },
+  });
+  assert.equal(n, 1); assert.equal(sent[0].channel, 'U_ANT');
+  assert.match(sent[0].text, /non è partita per 1 persona[\s\S]*<@U_CLAUDIA>: An API error occurred: invalid_blocks[\s\S]*manda la richiesta daily/);
+  assert.equal(await dsv2.notifySendFailures([], '2026-09-14', { roles: [], app: {} }), 0);
 });

@@ -166,7 +166,7 @@ async function scanGeminiNotes(opts) {
   var dossiers = deps.dossiers || require('../services/db/dossiers');
   var matcher = deps.matcher || require('../services/projectMatcher');
   var gauth = deps.gauth || require('../services/googleAuthService');
-  var client = deps.client || require('../services/anthropicService').client;
+  var client = deps.client || require('../services/utilityModel').client('gemini_notes');
   var days = opts.days || 3;
   // Backfill automatico: se non c'è ancora nessun documento collegato ai
   // progetti (prima installazione, tabella svuotata) la prima corsa guarda

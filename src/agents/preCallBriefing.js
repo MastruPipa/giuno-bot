@@ -3,6 +3,7 @@
 // Checks calendar for meetings starting in 15-45 minutes.
 // Sends DM with briefing: attendees, client status, recent slack activity, docs.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -197,7 +198,7 @@ async function buildBriefing(userId, event) {
   // Generate briefing with LLM — no raw dumps, only useful info
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var llmClient = new Anthropic();
+    var llmClient = require('../services/utilityModel').client('precall_briefing');
     var res = await llmClient.messages.create({
       model: MODELS.UTILITY,
       max_tokens: 300,
@@ -224,7 +225,7 @@ async function buildBriefing(userId, event) {
         content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') +
           (dossierText ? 'SCHEDA PROGETTO:\n' + dossierText + '\n\n' : '') + JSON.stringify(rawData).substring(0, 2000) }],
     });
-    var briefingText = res.content[0].text.trim();
+    var briefingText = _textOf(res).trim();
 
     var output = '*📞 ' + title + '* — ' + startTime + '\n\n' + briefingText;
     if (meetLink) output += '\n\n<' + meetLink + '|Entra nella call>';

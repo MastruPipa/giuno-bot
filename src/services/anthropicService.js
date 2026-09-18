@@ -31,6 +31,7 @@ var modelsConfig = require('../config/models');
 var mcpToolsets = require('./mcpToolsets');
 var toolPacks = require('../tools/toolPacks');
 var actionLog = require('./db/actionLog');
+var utilityModel = require('./utilityModel');
 
 // Tool falliti (eccezione o risultato {error}): ultimi 300, per la
 // retrospettiva serale. In memoria: si perde al riavvio, va bene.
@@ -45,7 +46,7 @@ function getToolFailures(sinceIso) { return _toolFailures.filter(function(f) { r
 var SIDE_EFFECT_TOOLS = new Set(['send_dm', 'send_campaign', 'cancel_campaign', 'send_email', 'reply_email', 'forward_email', 'send_draft', 'create_event', 'update_event', 'delete_event', 'add_attendees',
   'share_file', 'edit_doc', 'create_doc', 'edit_slides', 'create_sheet', 'write_sheet', 'create_folder', 'move_file', 'rename_file', 'upload_file', 'pin_message', 'unpin_message', 'set_channel_topic', 'invite_to_channel', 'create_poll',
   'create_lead', 'update_lead', 'delete_lead', 'attio_create_record', 'attio_update_record', 'attio_add_note', 'create_project', 'update_project', 'allocate_resource', 'log_hours', 'log_time',
-  'team_member_joined', 'team_member_left', 'send_google_link', 'set_reminder', 'remember_this', 'add_to_kb', 'trigger_daily_request', 'trigger_checkin_request', 'trigger_planner_request', 'refresh_project_dossier']);
+  'team_member_joined', 'team_member_left', 'send_google_link', 'set_reminder', 'remember_this', 'add_to_kb', 'trigger_daily_request', 'trigger_checkin_request', 'trigger_planner_request', 'post_daily', 'daily_estimate_amend', 'daily_estimate_approve', 'refresh_project_dossier']);
 
 function _hhmm(iso) { try { return new Date(iso).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' }); } catch(_) { return ''; } }
 
@@ -140,6 +141,9 @@ var SYSTEM_PROMPT =
   'Se un tool fallisce, prova un\'altra via (Slack → email → KB → Drive) prima di arrenderti. ' +
   'Trascrizioni/recap meeting (Gemini notes): prima KB, poi le TUE email, poi find_emails sui colleghi che erano alla call; cerca per subject del meeting o "meeting notes". ' +
   '#daily (C05846AEV6D): contiene messaggi bot → read_channel con include_bots=true. ' +
+  require('../config/dailyTimes').describeFlow() + ' ' +
+  '"Posta/pubblica/registra il mio daily" con il daily scritto nel messaggio (o in quello prima) → post_daily con il testo così com\'è: lo salva come daily di oggi e lo pubblica in #daily. Senza il testo del daily, chiedilo: non compilarlo tu. ' +
+  'Se nel contesto c\'è una PROPOSTA DI DAILY IN ATTESA: correzioni (anche implicite: "togli quella cosa") → daily_estimate_amend con istruzione precisa; approvazione → daily_estimate_approve. Mai dire di averla modificata senza il tool. ' +
   '"Ricordati che…" → remember_this con una frase completa (chi, cosa, quando). "Tutto su X" → entity_card. "Feedback" → get_feedback_results. "Quanto costi?" → get_api_costs. ' +
   'Se l\'utente DÀ numeri (importi, stati) è un aggiornamento CRM; se CHIEDE una stima è una quotazione. ' +
   'Non dire "ho fatto X" se non hai chiamato il tool. ' +
@@ -270,15 +274,14 @@ async function compressConversation(messages, convKey) {
     : 'Riassumi questa conversazione in modo conciso, mantenendo: decisioni prese, info importanti su clienti/progetti, task assegnati, preferenze utente emerse, aggiornamenti CRM menzionati.\n\n' + transcript;
 
   try {
-    var res = await client.messages.create({
-      model: MODELS.UTILITY,
+    var res = await utilityModel.create({
       max_tokens: 600,
       system: 'Riassumi questa conversazione di un\'agenzia di marketing. Il riassunto deve essere UTILE per riprendere il discorso domani.\n' +
         'Mantieni: nomi clienti/persone, cifre esatte, decisioni prese, azioni da fare, scadenze, problemi aperti.\n' +
         'Formato: frasi complete, non bullet point. Come se raccontassi a un collega "ieri abbiamo parlato di...".\n' +
         'NON includere: saluti, conferme banali, dettagli tecnici sul bot. Max 150 parole.',
       messages: [{ role: 'user', content: summaryPrompt }],
-    });
+    }, 'conversation_summary');
     var summaryText = extractText(res).trim();
     var summary = '[RIASSUNTO CONVERSAZIONE PRECEDENTE: ' + summaryText + ']';
     logger.info('[COMPRESS] Conversazione compressa:', toSummarize.length, 'messaggi → riassunto');
@@ -344,8 +347,7 @@ async function maybeUpdateDmSummary(userId, messages) {
   }).join('\n');
 
   try {
-    var res = await client.messages.create({
-      model: MODELS.UTILITY,
+    var res = await utilityModel.create({
       max_tokens: 600,
       system: 'Stai aggiornando la memoria di chat 1:1 tra Giuno (assistente) e un membro del team. ' +
         'Produci TRE blocchi in italiano, in questo formato ESATTO:\n\n' +
@@ -358,7 +360,7 @@ async function maybeUpdateDmSummary(userId, messages) {
         'Niente saluti, niente meta-commenti. NON citare testualmente frasi di altre persone del team. ' +
         'Quando citi altri membri del team usa il tag <@U...> preso dal ROSTER. Non confondere i nomi (Peppe ≠ Giusy, Claudia ≠ Clà di un cliente).',
       messages: [{ role: 'user', content: (db.formatTeamRosterForPrompt ? db.formatTeamRosterForPrompt() + '\n\n' : '') + transcript }],
-    });
+    }, 'dm_summary');
     var raw = extractText(res).trim();
     if (!raw) return;
 
@@ -488,15 +490,14 @@ async function autoLearn(userId, userMessage, botReply, context) {
         return '- ' + String(m).substring(0, 220);
       }).join('\n') + '\n\n---\n';
     }
-    var analysisRes = await client.messages.create({
-      model: MODELS.UTILITY,
+    var analysisRes = await utilityModel.create({
       max_tokens: 900,
       system: AUTO_LEARN_SYSTEM,
       messages: [{ role: 'user', content:
         known +
         (context.conversationSummary ? 'CONVERSAZIONE RECENTE:\n' + context.conversationSummary.substring(0, 1600) + '\n\n---\n' : '') +
         'ULTIMO SCAMBIO:\nUTENTE: ' + userMessage.substring(0, 1000) + '\n\nGIUNO: ' + (botReply || '').substring(0, 800) }],
-    });
+    }, 'auto_learn');
 
     var analysisText = extractText(analysisRes).trim();
     var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
@@ -732,7 +733,7 @@ async function callAnthropicWithRetry(params) {
         var cacheRead = usage.cache_read_input_tokens || 0;
         var cacheWrite = usage.cache_creation_input_tokens || 0;
         costTracker.trackCall('anthropic', params.model || 'unknown',
-          (usage.input_tokens || 0) + cacheRead + cacheWrite, usage.output_tokens || 0);
+          usage.input_tokens || 0, usage.output_tokens || 0, { feature: 'chat', cacheRead: cacheRead, cacheWrite: cacheWrite });
         if (cacheRead || cacheWrite) {
           logger.debug('[API] cache — read:', cacheRead, 'write:', cacheWrite, 'uncached:', usage.input_tokens || 0);
         }
@@ -1037,6 +1038,12 @@ async function askGiuno(userId, userMessage, options) {
     if (actsSection) sections.push(actsSection);
   } catch(actErr) { logger.debug('[ASK-GIUNO] action log:', actErr.message); }
 
+  // Proposta di daily in sospeso: il modello la vede e la corregge/approva
+  // con i tool, capendo "togli quella cosa" dal contesto della chat.
+  var pendingProposal = null;
+  try { pendingProposal = require('../handlers/dailyStandupV2').pendingProposalSection(userId); } catch(ppErr) { logger.debug('[ASK-GIUNO] proposta daily:', ppErr.message); }
+  if (pendingProposal) sections.push(pendingProposal);
+
   if (options.preflightInstruction) sections.push(String(options.preflightInstruction).trim());
 
   // Tetto al contesto: oltre il budget il segnale annega nel rumore.
@@ -1074,7 +1081,7 @@ async function askGiuno(userId, userMessage, options) {
     '| contesto:', dynamicBody.length, 'char | modello:', MODELS.PRIMARY);
 
   // Strumenti del turno: nucleo + pacchetti pertinenti (vedi tools/toolPacks).
-  var toolSelection = toolPacks.selectForTurn(getStableTools(), resolvedMessage, history);
+  var toolSelection = toolPacks.selectForTurn(getStableTools(), resolvedMessage, history, { extraPacks: pendingProposal ? ['daily_estimate'] : [] });
   logger.info('[ASK-GIUNO] tool:', toolSelection.tools.length, '(nucleo ' + toolSelection.core + (toolSelection.packs.length ? ', pacchetti ' + toolSelection.packs.join('+') : '') + ')');
 
   var finalReply = '';

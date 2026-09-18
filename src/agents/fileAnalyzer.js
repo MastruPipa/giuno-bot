@@ -2,6 +2,7 @@
 // Handles Slack file uploads: PDFs, images, documents uploaded directly.
 // Reads content, categorizes, saves to KB.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -80,7 +81,7 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
         // Only process images < 5MB for vision
         if (imgBuffer.length < 5 * 1024 * 1024) {
           var Anthropic = require('@anthropic-ai/sdk');
-          var visionClient = new Anthropic();
+          var visionClient = require('../services/utilityModel').client('file_vision');
           var visionRes = await visionClient.messages.create({
             model: MODELS.PRIMARY,
             max_tokens: 500,
@@ -105,7 +106,7 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
               ],
             }],
           });
-          contentText = visionRes.content[0].text.trim();
+          contentText = _textOf(visionRes).trim();
           summary = '🖼 *' + fileName + '*\n' + contentText;
           logger.info('[FILE-ANALYZER] Vision analysis done for:', fileName);
         }
@@ -141,14 +142,14 @@ async function processSlackFile(file, userId, channelId, threadTs, messageTs) {
     if (contentText.length > 50 && !/^image\//i.test(mimeType)) {
       try {
         var Anthropic = require('@anthropic-ai/sdk');
-        var client = new Anthropic();
+        var client = require('../services/utilityModel').client('file_summary');
         var summaryRes = await client.messages.create({
           model: MODELS.FAST,
           max_tokens: 300,
           system: 'Riassumi questo file condiviso su Slack. Estrai: scopo del documento, punti chiave, azioni/deadline se presenti. Max 5 righe. Formato Slack: *grassetto*, •liste. MAI **.',
           messages: [{ role: 'user', content: 'File: "' + fileName + '" (categoria: ' + category + ')\n\n' + contentText.substring(0, 3000) }],
         });
-        summary = '*📎 ' + fileName + '* [' + category + ']\n' + summaryRes.content[0].text.trim();
+        summary = '*📎 ' + fileName + '* [' + category + ']\n' + _textOf(summaryRes).trim();
       } catch(e) {
         summary = '*📎 ' + fileName + '* [' + category + ']';
         logger.debug('[FILE-ANALYZER] Summary error:', e.message);

@@ -1,5 +1,6 @@
 // ─── Daily Standup V2 — daily unico pomeridiano ─────────────────────────────
-// Workflow: 16:00 DM → 17:30 push → 18:00 recap. Struttura: FATTO OGGI (ore
+// Workflow: 17:30 stima in DM → 18:00 promemoria → 18:30 recap (orari in
+// DAILY_TIMES, override via env). Struttura: FATTO OGGI (ore
 // reali → alimentano anche time_logs via project match) + DOMANI (piano) +
 // BLOCCHI. Sostituisce il vecchio daily mattutino e il check-in serale.
 'use strict';
@@ -11,6 +12,11 @@ var db = require('../../supabase');
 var { acquireCronLock, releaseCronLock } = require('../../supabase');
 
 var DAILY_CHANNEL_ID = process.env.DAILY_CHANNEL_ID || 'C05846AEV6D';
+
+// Orari del daily: src/config/dailyTimes.js (li legge anche il prompt).
+var dailyTimesConfig = require('../config/dailyTimes');
+var DAILY_TIMES = dailyTimesConfig.DAILY_TIMES;
+var cronExprFor = dailyTimesConfig.cronExprFor;
 
 // ─── Exclusions ──────────────────────────────────────────────────────────────
 // Persone che NON partecipano al daily (niente richiesta, niente push, niente
@@ -39,15 +45,16 @@ function oggi() {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Rome' }).format(new Date());
 }
 
-// ─── 16:00 — Send DM to all team members ────────────────────────────────────
+// ─── Invio — Send DM (stima o modulo) to all team members ───────────────────
 
-// Invio singolo del DM col bottone "Compila daily": usato dal cron delle 16:00
+// Invio singolo del DM col bottone "Compila daily": usato dal cron dell'invio
 // e dal tool admin trigger_daily_request (test on-demand). Aggiunge l'utente
 // a standupInAttesa così anche una risposta testuale in DM viene riconosciuta.
 // persistInAttesa=true (invii fuori cron) salva subito lo stato: il cron lo
 // fa già in blocco a fine loop.
-async function sendDailyRequestTo(utente, persistInAttesa) {
-  var standupInAttesa = getStandupInAttesa();
+async function sendDailyRequestTo(utente, persistInAttesa, deps) {
+  deps = deps || {};
+  var standupInAttesa = deps.inattesa || getStandupInAttesa();
   standupInAttesa.add(utente.id);
   if (persistInAttesa) {
     try {
@@ -60,8 +67,23 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
   var nome = (utente.name || '').split(' ')[0] || 'ciao';
   // Senza tracce per la stima, la scorciatoia: le commesse recenti della
   // persona come bottoni; un tap apre il modulo con la riga già intestata.
-  var quick = await quickProjectButtons(utente.id);
-  await app.client.chat.postMessage({
+  var quick = await quickProjectButtons(utente.id, deps.quickDeps);
+  var client = (deps.app || app).client;
+  try {
+    await client.chat.postMessage(dailyRequestMessage(utente, nome, quick));
+  } catch(e) {
+    if (!quick.length) throw e;
+    // I bottoni rapidi sono un extra: se Slack rifiuta il messaggio (blocchi
+    // non validi, nome di commessa strano) il modulo deve arrivare lo stesso.
+    // 14/9: al primo giro con i bottoni il DM non è arrivato a qualcuno e
+    // nessuno se n'è accorto fino alla domanda in #daily.
+    logger.warn('[DAILY-V2] DM con bottoni rapidi rifiutato per', utente.id + ':', e.message, '— rimando il modulo semplice');
+    await client.chat.postMessage(dailyRequestMessage(utente, nome, []));
+  }
+}
+
+function dailyRequestMessage(utente, nome, quick) {
+  return {
     channel: utente.id,
     text: 'Ciao ' + nome + ', è il momento del daily!',
     blocks: [
@@ -71,7 +93,7 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
       },
       {
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Le ore contano come consuntivo. Il recap esce alle 18:00.' }],
+        elements: [{ type: 'mrkdwn', text: 'Compila il form o rispondi con un messaggio. Le ore contano come consuntivo. Il recap esce alle ' + DAILY_TIMES.recap + '.' }],
       },
     ].concat(quick.length ? [
       { type: 'section', text: { type: 'mrkdwn', text: 'Oggi hai lavorato su una di queste? Un tap e ti apro il modulo già intestato:' } },
@@ -87,10 +109,12 @@ async function sendDailyRequestTo(utente, persistInAttesa) {
         }],
       },
     ]),
-  });
+  };
 }
 
 // Bottoni con le commesse recenti della persona (max 4): value = project id.
+// action_id diverso per ogni bottone: Slack chiede id univoci dentro lo stesso
+// blocco e con id ripetuti può rifiutare l'intero messaggio (invalid_blocks).
 async function quickProjectButtons(userId, deps) {
   deps = deps || {};
   try {
@@ -100,7 +124,7 @@ async function quickProjectButtons(userId, deps) {
     for (var i = 0; i < recent.length && out.length < 4; i++) {
       var p = await (deps.db || db).getProject(recent[i].id);
       if (!p || !p.name) continue;
-      out.push({ type: 'button', text: { type: 'plain_text', text: String(p.name).substring(0, 30), emoji: true }, action_id: 'daily_quick_project', value: String(p.id) });
+      out.push({ type: 'button', text: { type: 'plain_text', text: String(p.name).substring(0, 30), emoji: true }, action_id: 'daily_quick_project_' + out.length, value: String(p.id) });
     }
     return out;
   } catch(e) { logger.debug('[DAILY-V2] bottoni rapidi saltati:', e.message); return []; }
@@ -132,6 +156,7 @@ async function sendDailyRequests() {
     var standupInAttesa = getStandupInAttesa();
 
     var precompilati = 0;
+    var falliti = [];
     for (var i = 0; i < utenti.length; i++) {
       var utente = utenti[i];
       if (!getPrefs(utente.id).standup_enabled) continue;
@@ -155,30 +180,53 @@ async function sendDailyRequests() {
         inviati++;
       } catch(e) {
         logger.error('[DAILY-V2] Errore invio a', utente.id + ':', e.message);
+        falliti.push({ id: utente.id, name: utente.name, error: e.message });
       }
     }
     logger.info('[DAILY-V2] Daily precompilati:', precompilati, 'su', inviati);
     sd.inattesa = Array.from(standupInAttesa);
     await db.saveStandup(sd);
     logger.info('[DAILY-V2] Richieste inviate a', inviati, 'utenti.');
+    if (falliti.length) {
+      try { await notifySendFailures(falliti, todayStr); }
+      catch(e) { logger.warn('[DAILY-V2] avviso invii falliti non mandato:', e.message); }
+    }
   } finally {
     await releaseCronLock('daily_standup_v2_send');
   }
 }
 
-// ─── 17:30 — Push to missing responders ──────────────────────────────────────
+// Se il DM del daily non parte per qualcuno, gli admin lo sanno subito in
+// DM: prima restava solo nei log di Railway e alle 18:00 la persona risultava
+// "mancante" senza aver mai ricevuto la richiesta.
+async function notifySendFailures(failed, dateStr, deps) {
+  deps = deps || {};
+  if (!failed || !failed.length) return 0;
+  var roles = deps.roles || await require('../../rbac').getAllRoles();
+  var admins = roles.filter(function(r) { return r.role === 'admin'; }).map(function(r) { return r.slack_user_id; });
+  if (!admins.length) return 0;
+  var lines = ['*Daily del ' + dateStr + ': la richiesta delle ' + DAILY_TIMES.send + ' non è partita per ' + failed.length + (failed.length === 1 ? ' persona' : ' persone') + ':*'];
+  failed.forEach(function(f) { lines.push('• <@' + f.id + '>: ' + String(f.error || 'errore sconosciuto').substring(0, 160)); });
+  lines.push('_Per rimandarla: "manda la richiesta daily a <nome>" qui in DM. La persona può comunque scrivermi il daily in DM o postarlo in #daily._');
+  var client = (deps.app || app).client;
+  var sent = 0;
+  for (var a = 0; a < admins.length; a++) {
+    try { await client.chat.postMessage({ channel: admins[a], text: lines.join('\n') }); sent++; }
+    catch(e) { logger.debug('[DAILY-V2] avviso invii falliti a ' + admins[a] + ' fallito:', e.message); }
+  }
+  return sent;
+}
 
 // ─── Daily stimato ───────────────────────────────────────────────────────────
-// Proposte generate alle 17:30 per chi non ha compilato: userId → structured.
-// In memoria (una giornata): se il processo riparte, chi non ha confermato
-// riceve semplicemente il daily stimato alle 18:00 come tutti gli altri.
+// Proposte generate all'invio (DAILY_TIMES.send) per tutti: userId → structured.
+// Chi non conferma né corregge riceve il daily stimato al recap come tutti gli altri.
 var _pendingEstimates = {}; // userId -> { date, structured }
 var ESTIMATES_ENABLED = String(process.env.DAILY_ESTIMATES_ENABLED || 'true') !== 'false';
-// Alle 16:00 il daily arriva già compilato (stima) invece del modulo vuoto.
+// All'invio il daily arriva già compilato (stima) invece del modulo vuoto.
 var PREFILL_ENABLED = String(process.env.DAILY_PREFILL_ENABLED || 'true') !== 'false';
 
 // Memoria prima, poi lo stato persistito (standup_data.stime): sopravvive
-// a un deploy tra le 16:00 e le 18:00.
+// a un deploy tra l'invio e il recap.
 function getPendingEstimate(userId, dateStr) {
   var p = _pendingEstimates[userId];
   if (p && p.date === dateStr) return p.structured;
@@ -245,7 +293,7 @@ async function notifyMissingEstimates(users, dateStr, deps) {
     try { why = await estimator.explainMissing(users[i].id, dateStr, deps.estimatorDeps); } catch(e) { why = ['diagnosi non disponibile: ' + e.message]; }
     lines.push('• *' + (users[i].name || users[i].id) + '*: ' + (why.length ? why.join('; ') : 'nessuna fonte vuota registrata'));
   }
-  lines.push('_Le fonti si sbloccano così: Google collegato da un admin (Drive e inviti per tutti), Giuno invitato nei canali di lavoro, `SLACK_USER_TOKEN` e `FIGMA_TOKEN` su Railway._');
+  lines.push('_Le fonti si sbloccano così: Google collegato da un admin (Drive e inviti per tutti), Giuno invitato nei canali di lavoro, `SLACK_USER_TOKEN` su Railway._');
   var client = (deps.app || app).client;
   var sent = 0;
   for (var a = 0; a < admins.length; a++) {
@@ -253,6 +301,33 @@ async function notifyMissingEstimates(users, dateStr, deps) {
     catch(e) { logger.debug('[DAILY-V2] diagnosi a ' + admins[a] + ' fallita:', e.message); }
   }
   return sent;
+}
+
+// Invio on-demand come lo farebbe il cron: prima la stima (se ci sono
+// tracce), altrimenti il modulo. Usato dal tool admin trigger_daily_request
+// ("mandami la stima del daily") quando il cron è passato o è stato saltato.
+async function sendDailyRequestWithEstimate(utente, deps) {
+  deps = deps || {};
+  var todayStr = oggi();
+  var proposed = null;
+  if (ESTIMATES_ENABLED) {
+    try { proposed = await (deps.buildEstimateFor || buildEstimateFor)(utente, todayStr); }
+    catch(e) { logger.warn('[DAILY-V2] stima on-demand fallita per', utente.id + ':', e.message); }
+  }
+  if (proposed) {
+    var standupInAttesa = deps.inattesa || getStandupInAttesa();
+    standupInAttesa.add(utente.id);
+    try {
+      var sd = (deps.db || db).getStandupCache();
+      if (sd.oggi !== todayStr) { sd.oggi = todayStr; sd.risposte = {}; }
+      sd.inattesa = Array.from(standupInAttesa);
+      await (deps.db || db).saveStandup(sd);
+    } catch(e) { logger.warn('[DAILY-V2] persist inattesa (stima on-demand) fallito:', e.message); }
+    await sendEstimateProposal(utente, proposed, { mode: 'daily' }, deps);
+    return { estimate: true };
+  }
+  await sendDailyRequestTo(utente, true, deps);
+  return { estimate: false };
 }
 
 async function buildEstimateFor(utente, dateStr) {
@@ -263,30 +338,116 @@ async function buildEstimateFor(utente, dateStr) {
   return structured;
 }
 
-// DM con la proposta: la persona conferma con un bottone o compila da sé.
-async function sendEstimateProposal(utente, structured, opts) {
+// DM con la proposta. La persona può: approvarla (bottone), correggerla nel
+// modulo già compilato (bottone), compilare da zero (bottone) o scrivere qui
+// cosa aggiungere/cambiare (testo → amendPendingEstimate → nuova proposta).
+// mode: 'daily' (invio), 'amended' (dopo una modifica a parole), 'reminder'
+// (promemoria), 'push' (ricostruita al promemoria).
+function estimateProposalMessage(utente, structured, opts, deps) {
   opts = opts || {};
-  var estimator = require('../agents/dailyEstimator');
+  var estimator = (deps && deps.estimator) || require('../agents/dailyEstimator');
   var nome = (utente.name || '').split(' ')[0] || 'ciao';
   var body = estimator.formatEstimateBody(structured);
   var intro = opts.mode === 'daily'
-    ? 'Ciao *' + nome + '*, è il momento del daily. Te l\'ho già compilato da calendario, Slack e mail: confermi così o lo correggi?'
-    : opts.mode === 'reminder'
-      ? 'Ehi *' + nome + '*, manca solo la conferma del daily di oggi. Se torna, un tap e siamo a posto:'
-      : 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:';
-  await app.client.chat.postMessage({
+    ? 'Ciao *' + nome + '*, è il momento del daily. Te l\'ho già compilato da calendario, Slack, Drive e mail:'
+    : opts.mode === 'amended'
+      ? 'Ok *' + nome + '*, aggiornato così:'
+      : opts.mode === 'reminder'
+        ? 'Ehi *' + nome + '*, manca solo la conferma del daily di oggi. Se torna, un tap e siamo a posto:'
+        : 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:';
+  var howTo = 'Va bene così? *Approva* con il bottone, *modifica* nel modulo già compilato, oppure *scrivimi qui* cosa aggiungere o cambiare ' +
+    '("aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la revisione") e ti rimando la proposta aggiornata.';
+  var plain = (opts.mode === 'daily' ? 'È il momento del daily: te l\'ho compilato io, approvi?' : opts.mode === 'amended' ? 'Daily aggiornato: approvi?' : 'Manca il tuo daily: ho provato a ricostruirlo io.');
+  return {
     channel: utente.id,
-    text: (opts.mode === 'daily' ? 'È il momento del daily: te l\'ho compilato io, confermi?' : 'Manca il tuo daily: ho provato a ricostruirlo io.') + '\n' + body,
+    text: plain + '\n' + body,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: intro } },
       { type: 'section', text: { type: 'mrkdwn', text: formatPerSlack(body) } },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: estimator.formatSourcesLine(structured) + '\nSe alle 18:00 non ho tue notizie lo pubblico come *stima* in #daily e le ore entrano nel consuntivo come stimate; puoi correggerlo anche dopo, compilando il daily.' }] },
+      { type: 'section', text: { type: 'mrkdwn', text: howTo } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: estimator.formatSourcesLine(structured) + '\nSe alle ' + DAILY_TIMES.recap + ' non ho tue notizie lo pubblico come *stima* in #daily e le ore entrano nel consuntivo come stimate; puoi correggerlo anche dopo, compilando il daily.' }] },
       { type: 'actions', elements: [
-        { type: 'button', text: { type: 'plain_text', text: '✅ Confermo così', emoji: true }, style: 'primary', action_id: 'daily_estimate_confirm', value: structured.estimate ? structured.estimate.generated_at : 'x' },
-        { type: 'button', text: { type: 'plain_text', text: '✏️ Correggo io', emoji: true }, action_id: 'open_daily_modal' },
+        { type: 'button', text: { type: 'plain_text', text: '✅ Approvo', emoji: true }, style: 'primary', action_id: 'daily_estimate_confirm', value: structured.estimate ? structured.estimate.generated_at : 'x' },
+        { type: 'button', text: { type: 'plain_text', text: '✏️ Modifico nel modulo', emoji: true }, action_id: 'open_daily_modal' },
+        { type: 'button', text: { type: 'plain_text', text: '📝 Compilo da zero', emoji: true }, action_id: 'open_daily_modal_blank' },
       ] },
     ],
-  });
+  };
+}
+
+async function sendEstimateProposal(utente, structured, opts, deps) {
+  var client = ((deps && deps.app) || app).client;
+  await client.chat.postMessage(estimateProposalMessage(utente, structured, opts, deps));
+}
+
+// Risposta testuale alla proposta in DM: approvazione a parole, oppure una
+// modifica ("aggiungi…", "togli…", "erano 3h") da applicare alla stima.
+// null = non è una risposta alla proposta (daily intero, o altro).
+// Solo le approvazioni sono deterministiche: ESPLICITA ("approvo",
+// "confermo") vale sempre; NUDA ("ok", "sì", "va bene") solo se l'ultimo
+// messaggio di Giuno nel DM è la proposta (il 17/9 un "ok" a un consiglio ha
+// sovrascritto il daily buono). Le correzioni ("togli quella cosa", "la
+// seconda voce erano 2h") le capisce il modello dal contesto e le applica
+// con il tool daily_estimate_amend: l'elenco di verbi di prima non reggeva
+// ("leva il meeting…" non era previsto).
+var APPROVE_EXPLICIT_RE = /^(approv[oa]t?[oa]?|conferm[oa]t?[oa]?|confermo cos[iì]|approvo cos[iì]|approva(la)?|conferma(la)?)[\s!.👍✅]*$/i;
+var APPROVE_BARE_RE = /^(ok(ay)?|va bene|vabbe'?|s[iì]|yes|perfetto|giusto|corretto|esatto|tutto (ok|giusto|corretto)|(va bene|ok) cos[iì]|cos[iì] va bene)[\s!.👍✅]*$/i;
+
+function classifyEstimateReply(txt) {
+  txt = String(txt || '').trim();
+  if (!txt) return null;
+  if (APPROVE_EXPLICIT_RE.test(txt)) return 'approve';
+  if (APPROVE_BARE_RE.test(txt)) return 'approve_bare';
+  return null;
+}
+
+// La proposta in sospeso, per il contesto del modello: così "togli quella
+// cosa" o "la seconda erano 2h" hanno un riferimento e finiscono nel tool.
+function pendingProposalSection(userId, deps) {
+  var todayStr = oggi();
+  var structured = getPendingEstimate(userId, todayStr);
+  if (!structured) return null;
+  var estimator = (deps && deps.estimator) || require('../agents/dailyEstimator');
+  return 'PROPOSTA DI DAILY IN ATTESA (inviata all\'utente in DM con i bottoni Approvo / Modifico / Compilo da zero; data ' + todayStr + '):\n' +
+    estimator.formatEstimateBody(structured) + '\n' +
+    'Se l\'utente chiede di cambiarla (togliere, aggiungere, correggere ore o nomi, anche con riferimenti impliciti come "quella cosa", "la seconda", "il meeting saltato") → daily_estimate_amend con un\'istruzione precisa che nomina la voce e le ore. ' +
+    'Se la approva → daily_estimate_approve. Non riscrivere la proposta nel testo: il tool la rimanda già con i bottoni. Non fingere di aver modificato senza chiamare il tool.';
+}
+
+// L'ultimo messaggio di Giuno nel DM (prima di quello dell'utente) è la
+// proposta con i bottoni? Serve per dare un senso a un "ok" nudo.
+async function lastBotMessageIsProposal(channelId, beforeTs, deps) {
+  deps = deps || {};
+  var client = ((deps.app) || app).client;
+  try {
+    var res = await client.conversations.history({ channel: channelId, latest: beforeTs, inclusive: false, limit: 5 });
+    var msgs = (res && res.messages) || [];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (!m.bot_id && !(m.subtype === 'bot_message')) continue;
+      var blocks = m.blocks || [];
+      return blocks.some(function(b) { return b.type === 'actions' && (b.elements || []).some(function(e) { return e.action_id === 'daily_estimate_confirm'; }); });
+    }
+  } catch(e) { logger.debug('[DAILY-V2] history per approvazione nuda non letta:', e.message); }
+  return false;
+}
+
+// Applica la modifica a parole alla stima in sospeso e rimanda la proposta.
+// Ritorna la stima aggiornata, o null se non c'era una proposta valida oggi.
+async function amendPendingEstimate(userId, instruction, deps) {
+  deps = deps || {};
+  var todayStr = oggi();
+  var current = getPendingEstimate(userId, todayStr);
+  if (!current) return null;
+  var estimator = deps.estimator || require('../agents/dailyEstimator');
+  var updated = await estimator.amendEstimate(current, instruction, { userId: userId, date: todayStr, client: deps.client });
+  if (!updated) return null;
+  rememberPendingEstimate(userId, todayStr, updated);
+  try { await (deps.db || db).saveStandup((deps.db || db).getStandupCache()); } catch(e) { logger.debug('[DAILY-V2] stima modificata non persistita:', e.message); }
+  var utenti = deps.utenti || await getUtenti();
+  var utente = utenti.find(function(u) { return u.id === userId; }) || { id: userId, name: '' };
+  await sendEstimateProposal(utente, updated, { mode: 'amended' }, deps);
+  return updated;
 }
 
 // Righe per il modale dalla stima: {oggi:[{task,hours}], domani:[...], blocchi}
@@ -375,7 +536,7 @@ async function pushMissingResponders(pushNumber) {
         var proposed = null;
         var alreadyProposed = getPendingEstimate(utente.id, todayStr);
         if (alreadyProposed) {
-          // Proposta già mandata alle 16:00: solo un promemoria con i bottoni.
+          // Proposta già mandata all'invio: solo un promemoria con i bottoni.
           proposed = alreadyProposed;
         } else if (ESTIMATES_ENABLED && pushNumber === 1) {
           try { proposed = await buildEstimateFor(utente, todayStr); }
@@ -384,7 +545,7 @@ async function pushMissingResponders(pushNumber) {
         if (proposed) {
           await sendEstimateProposal(utente, proposed, { mode: alreadyProposed ? 'reminder' : 'push' });
         } else {
-          var pushMsg = 'Ehi ' + utente.name.split(' ')[0] + ', manca il tuo daily! Il recap esce alle 18:00 — ci vogliono 2 minuti.';
+          var pushMsg = 'Ehi ' + utente.name.split(' ')[0] + ', manca il tuo daily! Il recap esce alle ' + DAILY_TIMES.recap + ' — ci vogliono 2 minuti.';
           await app.client.chat.postMessage({ channel: utente.id, text: pushMsg });
         }
         pushed++;
@@ -414,7 +575,43 @@ function classifyDailyText(txt) {
   var startsLikeRequest = /^(per favore|ciao giuno|ehi giuno|hey giuno|giuno[,:\s!]|assicurati|puoi |potresti |scusa|aiuto|non (hai|ho|funziona|va))/i.test(txt);
   var hasQuestionMark = /[?¿]/.test(txt);
   var isRequest = startsLikeRequest || (hasQuestionMark && !looksStructured);
-  return { isDaily: isDaily, isRequest: isRequest };
+  return { isDaily: isDaily, isRequest: isRequest, isStructured: looksStructured };
+}
+
+// Daily scritto a mano CON la richiesta esplicita di postarlo ("Giuno, posta
+// questo daily: …", "ecco il mio daily, pubblicalo in #daily:", oppure il
+// daily seguito da "postalo come daily"). classifyDailyText lo scarta come
+// richiesta (inizia con "giuno,") e il modello non aveva modo di pubblicarlo.
+// Ritorna il corpo del daily senza la frase di richiesta, o null.
+var DAILY_REQUEST_VERB = /\b(post\w*|pubblic\w*|registr\w*|mand\w*|mett\w*|inser\w*|caric\w*|invi\w*)\b/i;
+var DAILY_REQUEST_WORD = /\bdaily\b|\bstandup\b/i;
+// "manda il daily a Marco" è una richiesta di test (trigger_daily_request), non un daily.
+var DAILY_REQUEST_FOR_OTHERS = /\b(a|ad|per)\s+(<@[A-Z0-9]+>|[A-ZÀ-Ü][a-zà-ü]+)\b/;
+
+function looksLikeDailyRequestLine(line) {
+  line = (line || '').trim();
+  if (!line || line.length > 140) return false;
+  return DAILY_REQUEST_WORD.test(line) && DAILY_REQUEST_VERB.test(line) && !DAILY_REQUEST_FOR_OTHERS.test(line);
+}
+
+function extractDailyFromRequest(txt) {
+  txt = String(txt || '').replace(/\r/g, '').trim();
+  if (!txt) return null;
+  var body = null;
+  // Richiesta in testa: tutto fino al primo ":" o a capo, poi il daily.
+  var head = txt.match(/^([^\n:]{1,140})[:\n]\s*([\s\S]+)$/);
+  if (head && looksLikeDailyRequestLine(head[1])) body = head[2];
+  // Richiesta in coda: ultima riga ("postalo come daily", "puoi pubblicarlo in #daily?").
+  if (!body) {
+    var tail = txt.match(/^([\s\S]+)\n([^\n]{1,140})$/);
+    if (tail && looksLikeDailyRequestLine(tail[2])) body = tail[1];
+  }
+  if (!body) return null;
+  body = body.trim();
+  if (body.length < 10) return null;
+  var cls = classifyDailyText(body);
+  if (!cls.isDaily) return null;
+  return body;
 }
 
 // La entry esistente di (utente, giorno) ha già task strutturati? Serve per il
@@ -437,7 +634,7 @@ function hasStructuredTasks(entry) {
 }
 
 // ─── Consuntivo automatico (time_logs) ───────────────────────────────────────
-// Il daily unico delle 16:00 ha ore REALI sui task "oggi": quelle agganciate
+// Il daily unico pomeridiano ha ore REALI sui task "oggi": quelle agganciate
 // a un progetto dal matcher diventano time_logs (log_type='daily') — il
 // vecchio check-in serale separato è stato ritirato. Replace semantics: un
 // daily ricompilato sovrascrive il consuntivo del giorno.
@@ -508,7 +705,7 @@ async function handleDailyResponse(userId, text, structured, opts) {
 
   var todayStr = oggi();
   var sd = db.getStandupCache();
-  // Self-heal: if sd.oggi is stale (bot restart after 16:00 cron, etc.),
+  // Self-heal: if sd.oggi is stale (bot restart after the send cron, etc.),
   // bootstrap today in-place instead of silently dropping the submission.
   if (sd.oggi !== todayStr) {
     logger.warn('[DAILY-V2] sd.oggi stale (' + (sd.oggi || 'null') + '), self-heal a ' + todayStr);
@@ -543,7 +740,7 @@ async function handleDailyResponse(userId, text, structured, opts) {
         source: opts.source || (viaModal ? 'modal' : 'dm'),
       };
       if (structured) {
-        // Daily unico delle 16:00: oggi = FATTO (ore reali), domani = piano.
+        // Daily unico pomeridiano: oggi = FATTO (ore reali), domani = piano.
         entry.oggi_tasks = structured.oggi || [];
         entry.domani_tasks = structured.domani || [];
         entry.blocchi = structured.blocchi || null;
@@ -686,7 +883,7 @@ async function recordChannelDaily(userId, text, channelId) {
   return true;
 }
 
-// ─── 18:00 — Publish unified summary in #daily ──────────────────────────────
+// ─── Recap — Publish unified summary in #daily ───────────────────────────────
 
 async function publishDailySummary() {
   var locked = await acquireCronLock('daily_standup_v2_recap', 10);
@@ -708,12 +905,19 @@ async function publishDailySummary() {
     });
     var missingUsers = enabledUsers.filter(function(u) { return !risposte[u.id]; });
 
-    // Chi ha una stima in sospeso la riceve come daily stimato (marcato,
-    // senza consuntivo); resta comunque nell'appello dei mancanti.
+    // Chi ha una stima in sospeso la riceve come daily stimato (marcato);
+    // resta comunque nell'appello dei mancanti. Senza stima in sospeso la si
+    // ricostruisce QUI: il 17/9 quattro deploy avevano svuotato la memoria
+    // e il recap ha detto "nessuna traccia" a persone con la giornata piena.
     var estimatedUsers = [];
     if (ESTIMATES_ENABLED) {
       for (var ei = 0; ei < missingUsers.length; ei++) {
         var est = getPendingEstimate(missingUsers[ei].id, todayStr);
+        if (!est) {
+          try { est = await buildEstimateFor(missingUsers[ei], todayStr); }
+          catch(e) { logger.warn('[DAILY-V2] stima al recap fallita per', missingUsers[ei].id + ':', e.message); }
+          if (est) logger.info('[DAILY-V2] stima ricostruita al recap per', missingUsers[ei].id);
+        }
         if (!est) continue;
         try {
           if (await saveEstimateAsEntry(missingUsers[ei], todayStr, est)) estimatedUsers.push(missingUsers[ei]);
@@ -809,32 +1013,45 @@ async function publishDailySummary() {
 // daily mattutino (ieri/oggi contati due volte) sia il check-in delle 17:30.
 
 function scheduleDailyJobs(cron) {
-  // 16:00 Mon-Fri — Send daily requests
-  cron.schedule('0 16 * * 1-5', function() {
+  // Mon-Fri — la stima (o il modulo) a tutti
+  cron.schedule(cronExprFor(DAILY_TIMES.send), function() {
     return sendDailyRequests();
   }, { timezone: 'Europe/Rome', name: 'daily_send', lockTtl: 15 });
 
-  // 17:30 Mon-Fri — Push to missing responders
-  cron.schedule('30 17 * * 1-5', function() {
+  // Mon-Fri — promemoria a chi non ha risposto
+  cron.schedule(cronExprFor(DAILY_TIMES.push), function() {
     return pushMissingResponders(1);
-  }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 15 });
+  }, { timezone: 'Europe/Rome', name: 'daily_push', lockTtl: 5 });
 
-  // 18:00 Mon-Fri — Publish unified summary
-  cron.schedule('0 18 * * 1-5', function() {
+  // Mon-Fri — recap: stime pubblicate, appello dei mancanti
+  cron.schedule(cronExprFor(DAILY_TIMES.recap), function() {
     return publishDailySummary();
   }, { timezone: 'Europe/Rome', name: 'daily_recap', lockTtl: 15 });
 
-  logger.info('[DAILY-V2] Cron jobs schedulati: 16:00 send, 17:30 push, 18:00 recap');
+  logger.info('[DAILY-V2] Cron jobs schedulati: ' + DAILY_TIMES.send + ' send, ' + DAILY_TIMES.push + ' push, ' + DAILY_TIMES.recap + ' recap');
 }
 
 module.exports = {
   DAILY_CHANNEL_ID: DAILY_CHANNEL_ID,
+  DAILY_TIMES: DAILY_TIMES,
+  cronExprFor: cronExprFor,
+  estimateProposalMessage: estimateProposalMessage,
+  sendEstimateProposal: sendEstimateProposal,
+  classifyEstimateReply: classifyEstimateReply,
+  pendingProposalSection: pendingProposalSection,
+  getExistingEntry: getExistingEntry,
+  lastBotMessageIsProposal: lastBotMessageIsProposal,
+  amendPendingEstimate: amendPendingEstimate,
   scheduleDailyJobs: scheduleDailyJobs,
   handleDailyResponse: handleDailyResponse,
   recordChannelDaily: recordChannelDaily,
   classifyDailyText: classifyDailyText,
+  extractDailyFromRequest: extractDailyFromRequest,
   sendDailyRequests: sendDailyRequests,
   sendDailyRequestTo: sendDailyRequestTo,
+  buildEstimateFor: buildEstimateFor,
+  sendDailyRequestWithEstimate: sendDailyRequestWithEstimate,
+  notifySendFailures: notifySendFailures,
   pushMissingResponders: pushMissingResponders,
   publishDailySummary: publishDailySummary,
   respondedFromDb: respondedFromDb,

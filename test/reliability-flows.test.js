@@ -16,12 +16,13 @@ function load(file, stubs) {
   return mod.exports;
 }
 const quiet = {info(){},warn(){},error(){},debug(){}};
-test('daily free text calls SDK and returns normalized work',async () => {
+test('daily free text calls the utility model and returns normalized work',async () => {
   let calls=0;
-  function SDK() {this.messages={create:async () => {
-    calls++; return {content:[{text:JSON.stringify({oggi:[{task:'Design progetto',hours:2}],domani:[]})}]};
-  }};}
-  const parser=load('src/services/dailyParser.js',{'@anthropic-ai/sdk':SDK,'../utils/logger':quiet});
+  // Dal 17/9 il parser passa dal modulo utility (thinking spento, costo tracciato).
+  const utility={create:async (req,feature) => {
+    calls++; assert.equal(feature,'daily_parser'); return {content:[{type:'text',text:JSON.stringify({oggi:[{task:'Design progetto',hours:2}],domani:[]})}]};
+  }, textOf:r => r.content.map(b => b.text).join('')};
+  const parser=load('src/services/dailyParser.js',{'./utilityModel':utility,'../utils/logger':quiet});
   const result=await parser.parseDailyText('Ho lavorato due ore al design del progetto');
   assert.equal(calls,1);
   assert.equal(result.oggi[0].hours,2);
@@ -153,4 +154,19 @@ test('source sync cannot reactivate closed projects or write after failed status
   assert.equal(writes,0);
   if(status==='error') assert.equal(result,null); else assert.equal(result.status,status);
  }
+});
+
+test('channel sync: un canale illeggibile non blocca il sync né l\'archiviazione, e la sua commessa non viene archiviata',async () => {
+  const upserts=[]; let archiveArgs=null;
+  const sync=load('src/jobs/channelProjectSyncJob.js',{
+    '../utils/logger':quiet,
+    '../../supabase':{isSupabase:()=>true,getChannelMapCache:()=>({C_OK:{channel_name:'progetto-elios',cliente:'Elios'},C_BAD:{channel_name:'progetto-acme',cliente:'Acme'}}),
+      searchProjects:async()=>[],upsertSyncedProject:async r=>{upserts.push(r.id);return true;},archiveStaleSyncedProjects:async(prefix,ids)=>{archiveArgs=ids;return 0;}},
+    '../services/slackService':{channelActivity:async id=>id==='C_BAD'?{active:false,count:0,error:'channel_not_found'}:{active:true,count:3}},
+  });
+  const r=await sync.syncProjectsFromChannels();
+  assert.equal(r.synced,1); assert.equal(r.unreadable.join(),'C_BAD');
+  assert.equal(upserts.join(),'chan_C_OK');
+  assert.ok(archiveArgs.includes('chan_C_BAD'),'la commessa del canale illeggibile resta fuori dall\'archiviazione');
+  assert.ok(archiveArgs.includes('chan_C_OK'));
 });

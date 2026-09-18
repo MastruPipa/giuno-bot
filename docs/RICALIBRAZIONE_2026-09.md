@@ -949,7 +949,245 @@ ADD COLUMN IF NOT EXISTS stime JSONB NOT NULL DEFAULT '{}'`); collegare
 Google da un admin; invitare Giuno nei canali dove lavorano Paolo e Gianna;
 `SLACK_USER_TOKEN`, `FIGMA_TOKEN`, `FIGMA_TEAM_ID` su Railway.
 
-## 30. Da fare
+## 30. Il daily scritto a mano, postato su richiesta
+
+Antonio (17/9): "devi fare in modo che Giuno posti il mio daily se glielo
+scrivo manualmente chiedendo di postarlo". Un DM come "Giuno, posta questo
+daily: oggi ho fatto…" non arrivava da nessuna parte: le euristiche del
+daily testuale (`classifyDailyText`) lo scartavano come richiesta al bot
+(inizia con "giuno,"), il modello riceveva il messaggio ma non aveva un
+tool per pubblicare un daily, e la strada del daily in DM vale comunque
+solo tra le 16:00 e le 18:00 (`standupInAttesa`).
+
+1. **Riconoscimento della richiesta** (`dailyStandupV2.extractDailyFromRequest`).
+   Se la prima riga (fino ai due punti o a capo) o l'ultima riga del
+   messaggio contiene "daily" e un verbo tra posta/pubblica/registra/
+   manda/metti/inserisci/carica/invia, e il resto sembra un daily, il resto
+   è il daily. "Manda il daily a Marco" resta una richiesta di test, "hai
+   postato il mio daily?" resta una domanda.
+2. **In DM, senza modello** (`slackHandlers.js`, prima del blocco
+   `standupInAttesa`). Il corpo va in `handleDailyResponse`, la stessa
+   strada del daily testuale: parser AI, aggancio commesse,
+   `standup_entries`, consuntivo, post in #daily. Vale a qualsiasi ora.
+   Risposta: "Fatto: daily di oggi registrato e pubblicato in #daily".
+3. **In #daily con il tag** ("@Giuno posta il mio daily: …"): si registra
+   con `recordChannelDaily` senza ripubblicare, come il daily taggato puro.
+4. **Tool `post_daily`** (`standupTools.js`, pacchetto `team_admin`, che
+   già si accende sulla parola "daily"). Copre le forme che le euristiche
+   non prendono ("postalo" riferito al messaggio prima, il daily dentro
+   una conversazione): il modello passa il testo così com'è, il tool lo
+   registra a nome di chi scrive; solo un admin può intestarlo a un altro
+   con `user_id`. Il prompt gli dice di chiedere il testo se manca, non di
+   compilarlo lui.
+
+Test: `test/daily-post-on-request.test.js`. Niente migrazioni.
+
+## 31. Figma esce dal contesto quotidiano delle persone
+
+Antonio (17/9): "leviamo anche Figma dal contesto quotidiano delle
+persone?". Sì. La fonte non è mai stata attiva (`FIGMA_TOKEN` e
+`FIGMA_TEAM_ID` mai impostati) e la sua unica traccia visibile era la riga
+"Figma: FIGMA_TOKEN/FIGMA_TEAM_ID non configurati" nella diagnosi delle
+18:00 agli admin, ogni giorno, per ogni persona senza stima.
+
+Tolto dall'estimatore (`src/agents/dailyEstimator.js`): la raccolta delle
+versioni dei file del team (`collectFigmaActivity`), i campi Figma del
+contesto di giornata, la sezione "FILE FIGMA CON VERSIONI SALVATE OGGI"
+nel prompt, gli eventi Figma nelle sessioni di lavoro, la voce nella
+diagnosi e il suggerimento su `FIGMA_TOKEN` nel DM agli admin. Le sessioni
+(`activitySessions.js`) non conoscono più il tipo `figma`. Le fonti del
+daily stimato restano: piano di ieri e settimanale, calendario, Drive,
+canali Slack, ricerca Slack, email.
+
+Resta com'è il registro delle posizioni di progetto
+(`projectLocations.js`, tabella `project_locations`): i tipi `figma_project`
+e `figma_file` sono nel vincolo della tabella e nel comando admin
+`/giuno admin progetti posizione`, e riguardano le commesse, non la
+giornata delle persone. Senza token il rebuild li salta già. Niente
+migrazioni. Se `FIGMA_TOKEN`/`FIGMA_TEAM_ID` sono su Railway si possono
+togliere.
+
+## 32. La stima alle 17:30 a tutti, Antonio compreso; si approva, si modifica o si rifà
+
+Antonio (17/9): "mi inserisci pure a me nella richiesta di daily e mi
+restituisci la stima che poi va approvata o modificata? Vorrei che
+arrivasse la stima a un certo orario a tutti, poi si chiede se aggiungere
+altro, modificare qualcosa, approvarla o compilare il bottone. Alle 17:30."
+
+1. **Orari** (`DAILY_TIMES` in `dailyStandupV2.js`): invio 17:30, promemoria
+   18:00, recap 18:30, lun-ven. Prima: 16:00 / 17:30 / 18:00. Il recap è
+   scivolato di mezz'ora per lasciare tempo di rispondere alla stima: alle
+   17:30 la giornata è chiusa e le tracce sono complete, ma trenta minuti
+   soli tra proposta e pubblicazione erano pochi. Override senza deploy:
+   `DAILY_SEND_AT`, `DAILY_PUSH_AT`, `DAILY_RECAP_AT` (HH:MM). I messaggi
+   ("il recap esce alle …") leggono gli stessi valori.
+2. **Antonio dentro.** `config/tracking.js` non esclude più "antonio": riceve
+   la stima come tutti, e la sua giornata entra nel consuntivo. Restano
+   fuori Gloria, Corrado e i numeri di servizio. Attenzione: se su Railway
+   c'è `TRACKING_EXCLUDED_NAMES`, vince quella lista e va aggiornata a mano.
+3. **Il messaggio delle 17:30** (`estimateProposalMessage`): la stima, poi
+   "Va bene così? Approva con il bottone, modifica nel modulo già
+   compilato, oppure scrivimi qui cosa aggiungere o cambiare", e tre
+   bottoni: *✅ Approvo* (la stima diventa il daily), *✏️ Modifico nel
+   modulo* (modulo precompilato), *📝 Compilo da zero* (modulo vuoto,
+   action `open_daily_modal_blank`).
+4. **Modifica a parole** (`classifyEstimateReply`, `amendPendingEstimate`,
+   `dailyEstimator.amendEstimate`). Con una proposta in sospeso, un DM come
+   "aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la
+   revisione", "non ho fatto la call" va al modello con la stima corrente
+   in JSON e la sola istruzione; il modello applica quella modifica e
+   Giuno rimanda la proposta aggiornata ("Ok Paolo, aggiornato così:") con
+   gli stessi bottoni. "ok", "va bene così", "approvo" a parole valgono
+   come il bottone. Questo controllo sta PRIMA del daily testuale: "aggiungi
+   1h di call" somiglia a un daily e prima sarebbe stato salvato così, al
+   posto di tutto il resto. Un daily strutturato ("Oggi: … Domani: …")
+   sostituisce ancora la proposta per intero.
+
+Test: `test/daily-estimate-1730.test.js`. Niente migrazioni.
+
+Da fare dopo il merge: controllare `TRACKING_EXCLUDED_NAMES` su Railway
+(se presente, togliere "antonio"); verificare che per Antonio
+`standup_enabled` non sia a false nelle preferenze.
+
+Primo giorno (17/9): la PR è andata su `main` alle 17:25 e il cron delle
+17:30 è scattato sull'istanza vecchia (o è stato saltato dal riavvio):
+Antonio non ha ricevuto nulla. Da qui `trigger_daily_request` manda prima
+la STIMA con i tre bottoni, e solo senza tracce il modulo
+(`sendDailyRequestWithEstimate`): "mandami la stima del daily" o "non mi è
+arrivato il daily" la fanno arrivare subito, a chiunque.
+
+Alle 18:02 il secondo tentativo è fallito su `users.list`: "la chiamata a
+Slack va in timeout (due tentativi)". `users.list` è lenta e contingentata
+(Tier 2, 20 chiamate al minuto) e il daily la chiama decine di volte tra
+invio, stime e promemoria. Ora `slackService.listMembers` la tiene in cache
+per 5 minuti, con Slack giù usa l'ultima lista buona e senza nemmeno quella
+il roster in DB; `trigger_daily_request` non dipende più da quella lista
+(`users.info`, o il solo id) e manda il DM in background, perché la
+ricostruzione può superare i 55 secondi del turno.
+
+## 33. Le stime non funzionavano dal 10/9: il thinking di Sonnet 5 mangiava il budget
+
+Antonio (17/9, sera): "possiamo analizzare e capire il problema? Giuno ha
+detto che non ha stime di Gianna e Claudia". Con i log di Railway (collegati
+oggi) e Supabase il quadro è questo.
+
+**Cosa dicevano i log.** Alle 17:30 il cron nuovo è partito regolarmente:
+"Daily precompilati: 0 su 8". Alle 18:16 i tre trigger a mano: tutti
+"modulo". In tutta la giornata nessuna riga `[DAILY-ESTIMATE]`: né
+successo, né "nessuna traccia", né errore. Circa 20 secondi a persona:
+il modello veniva chiamato e rispondeva, e il codice scartava la risposta
+in silenzio. Stesso schema nel parser del daily scritto a mano di Antonio
+(zero task, zero ore) e nel consolidamento memorie ("reading 'trim' of
+undefined" per ogni utente). Le diagnosi delle 18:30 mostravano che
+Claudia e Gianna avevano calendario, Drive, ricerca Slack ed email pieni:
+"nessuna traccia" era falso.
+
+**La causa.** Dal 10/9 il modello utility è `claude-sonnet-5`, che ragiona
+(thinking adattivo) di default. Le 21 chiamate utility avevano budget da
+60 a 1500 token: il modello li consumava ragionando e non arrivava mai al
+testo. Contenuto senza blocco `text`, JSON non trovato, `return null` senza
+log. I recap del 15 e 16/9 ("nessuna traccia" per 4 e 6 persone) erano lo
+stesso bug.
+
+**Cosa cambia.**
+1. `src/services/utilityModel.js`: un solo punto per le chiamate utility.
+   Thinking spento dove il modello lo accetta (`thinkingOffParams` in
+   `config/models.js`: Sonnet 5, Opus 5, 4.6-4.8; effort basso su Fable),
+   risposta vuota o troncata loggata con funzione, modello e stop_reason,
+   costo tracciato. Tutte le 21 chiamate passano da qui (stima e modifica
+   del daily, parser, memorie, riassunti, dossier, retrospettiva, note
+   Gemini, aggancio commesse, briefing, welcome, App Home). Budget della
+   stima 900 → 2000, del parser 1500 → 2500, timeout del parser 20 → 30 s.
+2. **Costi per funzione.** `api_usage` ha la colonna `feature` (migrazione
+   applicata): chat, daily_estimate, daily_parser, memory_consolidation,
+   ecc. Le letture dalla cache costano un decimo, le scritture 1,25: prima
+   la chat era contata tutta a prezzo pieno e le utility non erano contate.
+   `get_api_costs` restituisce anche `by_feature` e `by_model`.
+3. **Recap che ricostruisce.** Alle 18:30, per chi manca e non ha una
+   stima in memoria, Giuno la costruisce lì per lì: quattro deploy oggi
+   avevano svuotato la memoria. Colonna `standup_data.stime` applicata
+   (era rimasta in sospeso dal 12/9).
+4. **Lock del promemoria.** Alle 18:00 il push è stato saltato per un lock
+   `daily_push` di origine ignota. Ora lo skip dice chi tiene il lock e
+   fino a quando, e il TTL del push è 5 minuti.
+
+Non spiegato: il lock `daily_push` delle 18:00. Con la diagnostica nuova
+la prossima volta si vede.
+
+Nota sul primo giorno: il DM delle 17:30 ad Antonio era arrivato (17:30:54,
+un messaggio a blocchi) ma non l'aveva visto; alle 18:02 il trigger è
+fallito su `users.list` (sezione 32).
+
+## 34. Il "domani" della stima viene dal calendario del giorno dopo
+
+Antonio (17/9, dopo la fix): "funziona ma mancano gli eventi del giorno
+dopo". La stima leggeva solo il calendario di oggi e il prompt diceva di
+riempire "domani" solo da piano settimanale o messaggi: quasi sempre vuoto.
+
+Ora `collectEvidence` legge anche il calendario del prossimo giorno
+lavorativo (`nextWorkingDay`: venerdì → lunedì): quello della persona se ha
+Google collegato, altrimenti gli inviti negli admin. Le riunioni entrano
+nel prompt come "CALENDARIO DI DOMANI (data)" con orario e durata, e la
+regola del modello è: una riga in "domani" per ogni riunione, con la sua
+durata, più piano settimanale e messaggi; niente inventato. Fonte
+"calendario di domani" nella riga delle fonti.
+
+## 35. "ok" a una risposta non è un'approvazione; "leva" è una correzione; niente più `content[0].text`
+
+Alle 19:00 Antonio ha scritto "leva il meeting di fondazione per il sud che
+è saltato": il verbo non era tra quelli riconosciuti, il messaggio è andato
+al modello che ha risposto con un consiglio (sbagliato: "se non tocchi
+nulla non viene salvata"). Antonio ha risposto "ok" al consiglio e Giuno
+l'ha preso come approvazione della stima: il daily buono delle 17:31 è
+stato sovrascritto dalla stima.
+
+1. **Approvazione nuda** ("ok", "sì", "va bene", "perfetto") vale solo se
+   l'ultimo messaggio di Giuno nel DM è la proposta con i bottoni
+   (`lastBotMessageIsProposal`, una lettura di `conversations.history`).
+   "Approvo" e "confermo" valgono sempre.
+2. **Verbi di correzione**: aggiunti leva/levare, rimetti, "ci levi",
+   "puoi levare".
+3. **Il prompt conosce il flusso** (`config/dailyTimes.describeFlow`, dove
+   ora vivono anche gli orari): cosa succede alle 17:30, 18:00, 18:30, e
+   che approvare la stima sostituisce un daily già registrato.
+4. **`content[0].text` non esiste più** (segnalazione dai log del deploy
+   #159: il cron CONSOLIDATE falliva per tutti gli utenti perché con
+   Opus 5 il primo blocco è `thinking`). I 22 punti che lo leggevano
+   passano tutti da `utilityModel` (thinking spento, costo tracciato per
+   funzione) e leggono il testo con `textOf`. Priorità ad aggancio commesse
+   (`projectMatcher`, `projectContext`), dove l'errore era silenzioso.
+   Test con un blocco thinking davanti: `test/thinking-block-responses.test.js`.
+5. **Sync canali** (`channelProjectSyncJob`): un canale che Slack non lascia
+   leggere (oggi C06FP326WPP) non blocca più il sync né l'archiviazione; la
+   sua commessa resta com'è e il log lo elenca.
+
+Da fare per Antonio: il daily di oggi va rimandato ("posta il daily: …" con
+il testo delle 17:31, che è in #daily): il parser ora funziona e le ore
+entrano nel consuntivo al posto della stima.
+
+## 36. Le correzioni alla stima le capisce il modello dal contesto
+
+Antonio (17/9, sera): "dovrebbe capire la chat: se dico 'togli quella cosa'
+dovrebbe capirlo dal contesto". Giusto. Il percorso deterministico a verbi
+(sezione 32) era nato per due timori (una correzione scambiata per un
+daily, il turno da 55 secondi) ma non reggeva il linguaggio vero.
+
+Ora, quando c'è una proposta in sospeso:
+- il modello la vede nel contesto ("PROPOSTA DI DAILY IN ATTESA: …",
+  `dailyStandupV2.pendingProposalSection`) con le istruzioni sui tool;
+- il pacchetto `daily_estimate` viene caricato d'ufficio
+  (`extraPacks` in `selectForTurn`): `daily_estimate_amend(instruction)`
+  applica la modifica via `amendPendingEstimate` e rimanda la proposta con
+  i bottoni; `daily_estimate_approve` la approva, e se oggi esiste già un
+  daily vero si ferma e chiede conferma (`replace_existing`);
+- in DM restano deterministiche solo le approvazioni ("approvo" sempre;
+  "ok" solo se l'ultimo messaggio di Giuno era la proposta); e con una
+  proposta in sospeso solo un daily STRUTTURATO ("Oggi: …") la sostituisce
+  per intero: "aggiungi 1h di call" va al modello, non nel daily.
+
+Tempi: turno del modello più la chiamata utility per la modifica, 15-30 s.
+
+## 37. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

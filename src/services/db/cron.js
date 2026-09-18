@@ -16,7 +16,15 @@ async function acquireCronLock(jobName, ttlMinutes) {
     var res = await c.getClient().from('cron_locks').insert({ job_name: jobName, locked_at: new Date().toISOString(), locked_by: INSTANCE_ID, expires_at: expiresAt });
     if (res.error) {
       if (res.error.code !== '23505') throw res.error;
-      process.stdout.write('[CRON-LOCK] ' + jobName + ' già in esecuzione, skip.\n');
+      // Chi lo tiene e fino a quando: il 17/9 il promemoria delle 18:00 è
+      // stato saltato per un lock di cui non si è saputo l'origine.
+      var holder = '';
+      try {
+        var cur = await c.getClient().from('cron_locks').select('locked_by, locked_at, expires_at').eq('job_name', jobName).limit(1);
+        var row = cur && cur.data && cur.data[0];
+        if (row) holder = ' (tenuto da ' + row.locked_by + (row.locked_by === INSTANCE_ID ? ' = questa istanza' : '') + ' dalle ' + row.locked_at + ', scade ' + row.expires_at + ')';
+      } catch(_) {}
+      process.stdout.write('[CRON-LOCK] ' + jobName + ' già in esecuzione, skip.' + holder + '\n');
       return false;
     }
     process.stdout.write('[CRON-LOCK] Lock acquisito: ' + jobName + '\n');

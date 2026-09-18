@@ -2,10 +2,11 @@
 // Configurazione condivisa tra Daily Standup V2 e Daily Check-in: prima le
 // esclusioni erano due liste hardcoded duplicate (dailyStandupV2.js e
 // timeTracking.js) che potevano divergere. Override senza deploy via env:
-//   TRACKING_EXCLUDED_NAMES="antonio,gloria,corrado,cellulare,telefono"
+//   TRACKING_EXCLUDED_NAMES="gloria,corrado,cellulare,telefono"
+// Antonio è dentro dal 17/9/2026 (sua richiesta: riceve la stima come tutti).
 'use strict';
 
-var DEFAULT_EXCLUDED = ['antonio', 'gloria', 'corrado', 'cellulare', 'telefono'];
+var DEFAULT_EXCLUDED = ['gloria', 'corrado', 'cellulare', 'telefono'];
 
 function excludedNamePatterns() {
   var raw = process.env.TRACKING_EXCLUDED_NAMES;

@@ -2,6 +2,7 @@
 // Polls Google Drive for changes using drive.changes.list() with saved page token.
 // Processes new/modified Docs, Slides, Sheets → KB + Drive Content Index.
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -36,7 +37,7 @@ async function processDocument(drv, docsApi, file, supabase) {
     if (text.length < 100) return null;
 
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('drive_watcher');
     var res = await client.messages.create({
       model: CONFIG.MODEL, max_tokens: 400,
       messages: [{ role: 'user', content:
@@ -45,7 +46,7 @@ async function processDocument(drv, docsApi, file, supabase) {
         'Se irrilevante: {"worth_saving":false}'
       }],
     });
-    var match = res.content[0].text.trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+    var match = _textOf(res).trim().replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
     return match ? safeParse('DRIVE-WATCHER', match[0], null) : null;
   } catch(e) {
     logger.warn('[DRIVE-WATCH] Doc process error:', file.name, e.message);

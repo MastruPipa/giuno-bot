@@ -6,6 +6,7 @@
 // attivi; fallback LLM in un'unica chiamata batch solo per i task rimasti
 // senza match.
 'use strict';
+var { textOf: _textOf } = require('./utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -34,8 +35,17 @@ async function getCatalog() {
   var now = Date.now();
   if (_catalog && (now - _catalogAt) < 300000) return _catalog;
   try {
-    var projects = await db.searchProjects({ statuses: ['active', 'planning', 'on_hold'], limit: 200 });
-    var list = (projects || []).filter(function(p) { return p && p.id && p.name; }).map(catalogEntry);
+    var projects = await db.searchProjects({ limit: 10000 });
+    var byId = new Map((projects || []).map(p => [p.id, p]));
+    var entries = new Map();
+    for (var source of projects || []) {
+      var canonical = await require('./canonicalProject').resolve(source.id, async id => byId.get(id));
+      if (!canonical || !['active', 'planning', 'on_hold'].includes(canonical.status)) continue;
+      if (!entries.has(canonical.id)) entries.set(canonical.id, catalogEntry(canonical));
+      var entry = entries.get(canonical.id);
+      entry.norms = [...new Set(entry.norms.concat(catalogEntry(source).norms))];
+    }
+    var list = [...entries.values()];
     if (list.length > 0) {
       _catalog = list;
       _catalogAt = now;
@@ -81,10 +91,9 @@ async function llmMatch(unmatchedTexts, catalog, recentIds) {
   var ordered = catalog.filter(function(p) { return recentSet[p.id]; }).concat(catalog.filter(function(p) { return !recentSet[p.id]; }));
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('./utilityModel').client('project_matcher');
     var res = await withTimeout(function() {
       return client.messages.create({
-        model: MODELS.UTILITY,
         max_tokens: 800,
         system: 'Associa ogni task al progetto/cliente giusto della lista, se evidente. ' +
           'Rispondi SOLO con JSON: {"matches": {"<indice task>": "<nome progetto ESATTO dalla lista>"}}. ' +
@@ -97,7 +106,7 @@ async function llmMatch(unmatchedTexts, catalog, recentIds) {
       });
     }, LLM_TIMEOUT_MS, 'projectMatcher.llm');
 
-    var out = (res.content && res.content[0] && res.content[0].text || '').trim();
+    var out = _textOf(res).trim();
     var jsonMatch = out.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return {};
     var parsed = safeParse('PROJECT-MATCH', jsonMatch[0], null);
@@ -181,6 +190,19 @@ async function enrichTasksWithProjects(tasks, options) {
     }
   } catch(e) {
     logger.warn('[PROJECT-MATCH] enrich fallito (task restano senza progetto):', e.message);
+  }
+  // Canonicalize every path, including existing assignments and client defaults,
+  // before the activity matcher sees the project ID. Never write lifecycle data.
+  if (options.projects || require('./db/client').useSupabase) {
+    const rows = options.projects && new Map(options.projects.map(p => [p.id, p]));
+    const lookup = rows ? async id => rows.get(id) : id => db.getProject(id);
+    for (const task of tasks) {
+      if (!task?.project_id) continue;
+      let canonical = null;
+      try { canonical = await require('./canonicalProject').resolve(task.project_id, lookup); } catch (_) {}
+      if (canonical) { task.project_id = canonical.id; task.project_name = canonical.name; }
+      else { delete task.project_id; delete task.project_name; delete task.activity_id; task.assignment_status = 'unresolved_project'; }
+    }
   }
   try { await require('./workNodeMatcher').enrich(tasks, { nodes: options.workNodes, date: options.date }); }
   catch(e) { logger.debug('[PROJECT-MATCH] dettaglio cliente non disponibile:', e.message); }

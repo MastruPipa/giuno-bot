@@ -97,9 +97,11 @@ var definitions = [
   },
   {
     name: 'trigger_daily_request',
-    description: 'Invia SUBITO il DM di richiesta daily (bottone "✏️ Compila daily") a un utente, fuori dal cron ' +
-      'delle 16:00 e bypassando le esclusioni. Usalo quando un admin chiede di testare il daily: "mandami il daily ' +
-      'di test", "fammi provare il daily", "manda la richiesta daily a X". Solo admin.',
+    description: 'Invia SUBITO il DM del daily a un utente, fuori dal cron pomeridiano e bypassando le esclusioni: ' +
+      'la STIMA ricostruita da Giuno con i bottoni Approvo / Modifico / Compilo da zero se ci sono tracce di giornata, ' +
+      'altrimenti il modulo (bottone "✏️ Compila daily"). Usalo quando un admin chiede di testare il daily o non lo ha ' +
+      'ricevuto: "mandami il daily di test", "mandami la stima del daily", "non mi è arrivato il daily", ' +
+      '"manda la richiesta daily a X". Solo admin.',
     input_schema: {
       type: 'object',
       properties: {
@@ -110,7 +112,7 @@ var definitions = [
   {
     name: 'trigger_checkin_request',
     description: 'LEGACY: invia il DM del vecchio check-in ore separato (bottone "⏱ Traccia le ore"). Il consuntivo ' +
-      'ora è integrato nel daily unico delle 16:00 (usa trigger_daily_request per testarlo); questo tool serve solo ' +
+      'ora è integrato nel daily unico pomeridiano (usa trigger_daily_request per testarlo); questo tool serve solo ' +
       'per correzioni manuali una tantum del consuntivo di una data. Solo admin.',
     input_schema: {
       type: 'object',
@@ -152,15 +154,38 @@ async function execute(toolName, input, userId, userRole) {
     try {
       var targetId = input.user_id || userId;
       if (!targetId || targetId === 'system') return { error: 'Nessun destinatario: specifica user_id.' };
-      var { getUtenti } = require('../services/slackService');
-      var allUsers = await getUtenti();
-      var target = allUsers.find(function(u) { return u.id === targetId; }) || { id: targetId, name: '' };
+      // Il destinatario non deve dipendere da users.list (lenta, contingentata):
+      // lista in cache o roster, altrimenti users.info, altrimenti solo l'id.
+      var target = { id: targetId, name: '' };
+      try {
+        var { getUtenti } = require('../services/slackService');
+        var allUsers = await getUtenti();
+        target = allUsers.find(function(u) { return u.id === targetId; }) || target;
+      } catch(e) {
+        logger.warn('[TRIGGER] getUtenti fallita (' + e.message + '): provo users.info');
+        try {
+          var info = await require('../services/slackService').app.client.users.info({ user: targetId });
+          if (info && info.user) target = { id: targetId, name: info.user.real_name || info.user.name || '', email: (info.user.profile && info.user.profile.email) || null };
+        } catch(e2) { logger.warn('[TRIGGER] users.info fallita (' + e2.message + '): procedo con il solo id'); }
+      }
 
       if (toolName === 'trigger_daily_request') {
         var dailyV2 = require('../handlers/dailyStandupV2');
-        await dailyV2.sendDailyRequestTo(target, true);
-        return { success: true, sent_to: target.id, tipo: 'daily',
-          nota: 'DM col bottone "✏️ Compila daily" inviato. Vale anche una risposta testuale in DM (parser AI).' };
+        // Ricostruire la stima (Drive, calendari, canali, modello) può durare
+        // più del turno di conversazione (55s): 17/9, "Ci sto mettendo
+        // troppo" ad Antonio. Si parte in background e si risponde subito;
+        // il DM arriva da solo, con la stima o col modulo.
+        dailyV2.sendDailyRequestWithEstimate(target).then(function(r) {
+          logger.info('[TRIGGER-DAILY] DM inviato a', target.id, r && r.estimate ? '(stima)' : '(modulo)');
+        }).catch(function(e) {
+          logger.error('[TRIGGER-DAILY] invio fallito per', target.id + ':', e.message);
+          var client = require('../services/slackService').app.client;
+          client.chat.postMessage({ channel: target.id, text: 'Non sono riuscito a mandarti il daily (' + String(e.message).substring(0, 120) + '). Riprova tra poco o scrivimi il daily qui in testo.' }).catch(function() {});
+        });
+        return { success: true, sent_to: target.id, tipo: 'daily', in_background: true,
+          nota: 'Sto ricostruendo la giornata: il DM arriva da solo entro un paio di minuti, con la stima e i bottoni ' +
+            'Approvo / Modifico nel modulo / Compilo da zero se ci sono tracce, altrimenti col bottone "✏️ Compila daily". ' +
+            'Rispondi alla persona che sta arrivando, senza promettere altro.' };
       }
 
       if (toolName === 'trigger_planner_request') {

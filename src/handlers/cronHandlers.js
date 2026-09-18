@@ -3,6 +3,7 @@
 // catalogazione preventivi, onboarding helpers.
 
 'use strict';
+var { textOf: _textOf } = require('../services/utilityModel');
 
 var { MODELS } = require('../config/models');
 
@@ -422,7 +423,7 @@ async function autoMapChannel(channelId) {
     if (ch.purpose && ch.purpose.value) chContext += '\nDescrizione: ' + ch.purpose.value;
 
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('channel_map_classify');
     var res = await client.messages.create({
       model: MODELS.FAST,
       max_tokens: 200,
@@ -432,7 +433,7 @@ async function autoMapChannel(channelId) {
         'I tag devono essere nel formato: tipo:valore (es. "cliente:elfo", "area:sviluppo", "tipo:marketing")',
       messages: [{ role: 'user', content: chContext }],
     });
-    var text = res.content[0].text.trim();
+    var text = _textOf(res).trim();
     var jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     var parsed = safeParse('CRON.459', jsonMatch[0], null);
@@ -449,7 +450,7 @@ async function digerisciCanali() {
   logger.info('[CHANNEL-DIGEST] Avvio digestione canali...');
   try {
     var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('channel_digest');
     var channelsRes = await app.client.conversations.list({ limit: 100, types: 'public_channel,private_channel' });
     var channels = (channelsRes.channels || []).filter(function(c) { return !c.is_archived; });
     var digested = 0;
@@ -510,7 +511,7 @@ async function digerisciCanali() {
           messages: [{ role: 'user', content: msgText + pinnedText }],
         });
 
-        var analysisText = analysisRes.content[0].text.trim();
+        var analysisText = _textOf(analysisRes).trim();
         var jsonMatch = analysisText.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
         var analysis = safeParse('CRON.517', jsonMatch[0], null);
@@ -608,10 +609,8 @@ async function inviaOnboardingPersonalizzato(slackUserId) {
 
     var roleCtx = getRoleSystemPrompt(role);
 
-    var Anthropic = require('@anthropic-ai/sdk');
-    var client = new Anthropic();
+    var client = require('../services/utilityModel').client('welcome_google');
     var response = await client.messages.create({
-      model: MODELS.UTILITY,
       max_tokens: 450,
       system:
         'Sei Giuno, assistente interno di Katania Studio, agenzia digitale di Catania.\n' +
@@ -626,7 +625,7 @@ async function inviaOnboardingPersonalizzato(slackUserId) {
         'Se la mansione non è nota, basati sul ruolo di accesso e sul contesto aziendale.',
       messages: [{ role: 'user', content: 'Dati utente:\n' + userCtx + '\nContesto ruolo:\n' + roleCtx }],
     });
-    var msg = response.content[0].text;
+    var msg = require('../services/utilityModel').textOf(response);
     await app.client.chat.postMessage({ channel: slackUserId, text: msg });
     logger.info('[ONBOARDING] Messaggio generato e inviato a', slackUserId, '| ruolo:', role);
   } catch(e) {
@@ -687,13 +686,13 @@ async function catalogaPreventivi(userId, channelId, maxFiles, skipConfirm) {
       var rcFile = rcRes.data.files[0];
       var rcData = await sheets.spreadsheets.values.get({ spreadsheetId: rcFile.id, range: 'A1:Z50' });
       var Anthropic = require('@anthropic-ai/sdk');
-      var client = new Anthropic();
+      var client = require('../services/utilityModel').client('rate_card');
       var rcExtract = await client.messages.create({
         model: MODELS.PRIMARY, max_tokens: 1000,
         system: 'Estrai la rate card da questo foglio. Rispondi SOLO in JSON valido:\n{"version":"current","effective_from":null,"resources":[{"person":null,"role":"nome ruolo","day_rate":null,"hour_rate":null,"notes":null}]}\nSe non riesci rispondi: {"skip":true}',
         messages: [{ role: 'user', content: 'Rate card dal file "' + rcFile.name + '":\n' + JSON.stringify(rcData.data.values || []).substring(0, 3000) }],
       });
-      var rcText = rcExtract.content[0].text.trim();
+      var rcText = _textOf(rcExtract).trim();
       var rcJson = rcText.match(/\{[\s\S]*\}/);
       if (rcJson) {
         var parsed = safeParse('CRON.698', rcJson[0], null);
@@ -782,7 +781,7 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
   var sheets = getSheetPerUtente(userId);
   var results = { catalogati: 0, saltati: 0, da_rivedere: [], per_era: { 'pre-ratecard': 0, 'ratecard-v1': 0, 'ratecard-v2': 0, 'unknown': 0 }, per_categoria: {}, per_stato: { accepted: 0, rejected: 0, draft: 0, unknown: 0 }, valori: [] };
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('../services/utilityModel').client('quotes_catalog');
   var toProcess = files.slice(0, 50);
 
   for (var i = 0; i < toProcess.length; i++) {
@@ -814,7 +813,7 @@ async function elaboraPreventivi(userId, channelId, files, rateCard) {
         messages: [{ role: 'user', content: 'File: "' + file.name + '" (' + (isSheet ? 'Sheet' : 'Doc') + ')\n\nContenuto:\n' + fileContent + (rateCard ? '\n\nRate card corrente:\n' + JSON.stringify(rateCard.resources).substring(0, 1000) : '') }],
       });
 
-      var extText = extraction.content[0].text.trim();
+      var extText = _textOf(extraction).trim();
       var extJson = extText.match(/\{[\s\S]*\}/);
       if (!extJson) { results.da_rivedere.push(file.name + ' (parsing fallito)'); continue; }
       var data = safeParse('CRON.813', extJson[0], null);
@@ -943,7 +942,7 @@ async function monitoraDomandeInSospeso() {
 
           try {
             var Anthropic = require('@anthropic-ai/sdk');
-            var client = new Anthropic();
+            var client = require('../services/utilityModel').client('kb_autoreply');
             var res = await client.messages.create({
               model: MODELS.FAST,
               max_tokens: 200,
@@ -959,7 +958,7 @@ async function monitoraDomandeInSospeso() {
               }],
             });
 
-            var reply = res.content[0].text.trim();
+            var reply = _textOf(res).trim();
             // Robust SKIP detection — any response containing "SKIP" or explaining why it skips
             var isSkip = /^SKIP/i.test(reply) || /non pertinent|non rilevant|non riguarda|comunicazione informale|saluto/i.test(reply);
             if (!isSkip && reply.length > 15 && !/knowledge base|KB aziendale/i.test(reply)) {
@@ -1115,7 +1114,7 @@ async function decayStaleMemories() {
 
 async function consolidaMemorie() {
   var Anthropic = require('@anthropic-ai/sdk');
-  var client = new Anthropic();
+  var client = require('../services/utilityModel').client('memory_consolidation');
   var memCache = db.getMemCache();
   var userIds = Object.keys(memCache);
   var totalConsolidated = 0;
@@ -1173,7 +1172,7 @@ async function consolidaMemorie() {
           }],
         });
 
-        var text = res.content[0].text.trim();
+        var text = _textOf(res).trim();
         var jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) continue;
 

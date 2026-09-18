@@ -54,6 +54,10 @@ async function syncProjectsFromChannels() {
   var activeIds = [];
   var synced = 0;
   var skippedDedup = 0;
+  // Canali che Slack non lascia leggere (17/9: C06FP326WPP bloccava tutto il
+  // sync e quindi anche l'archiviazione). Non si sa se sono attivi: la loro
+  // commessa non si tocca e non si archivia.
+  var unreadable = [];
 
   for (var i = 0; i < channelIds.length; i++) {
     var channelId = channelIds[i];
@@ -69,7 +73,12 @@ async function syncProjectsFromChannels() {
 
     // Verifica attività nella finestra (ultimi 30g).
     var activity = await slackService.channelActivity(channelId, ACTIVITY_DAYS, 1);
-    if (!activity || activity.error) throw new Error('Attività Slack non disponibile: ' + channelId);
+    if (!activity || activity.error) {
+      unreadable.push(channelId);
+      activeIds.push('chan_' + channelId);
+      logger.warn('[CHANNEL-SYNC] Attività Slack non disponibile per ' + channelId + (activity && activity.error ? ' (' + activity.error + ')' : '') + ': canale saltato, commessa non archiviata');
+      continue;
+    }
     if (!activity.active) continue;
 
     var name = entry.progetto || entry.cliente || entry.channel_name;
@@ -98,8 +107,9 @@ async function syncProjectsFromChannels() {
 
   var archived = await db.archiveStaleSyncedProjects('chan_%', activeIds);
   logger.info('[CHANNEL-SYNC] Sincronizzati', synced, 'progetti da canali attivi (' +
-    ACTIVITY_DAYS + 'g),', skippedDedup, 'saltati per dedup Attio,', archived, 'archiviati.');
-  return { synced: synced, archived: archived, skippedDedup: skippedDedup };
+    ACTIVITY_DAYS + 'g),', skippedDedup, 'saltati per dedup Attio,', archived, 'archiviati' +
+    (unreadable.length ? ', ' + unreadable.length + ' canali illeggibili: ' + unreadable.join(', ') : '') + '.');
+  return { synced: synced, archived: archived, skippedDedup: skippedDedup, unreadable: unreadable };
 }
 
 module.exports = {

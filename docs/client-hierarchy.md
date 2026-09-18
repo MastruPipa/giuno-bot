@@ -27,3 +27,25 @@ Il codice richiede merge e deploy per entrare nel bot; le tabelle additive da so
 ## Validazione
 
 411 test passati sul codice integrato con origin/main, incluse conservazione ore, conflitti di identità, esclusione weekly dal consuntivo, vincoli SQL e riconoscimento Altro/daily. Il rendering viene verificato con test del frontend. La verifica visiva nel browser è rimasta indisponibile: il controllo di sicurezza amministrativo del browser non ha potuto autorizzare la pagina locale.
+
+## Riallineamento e verifica del 18 settembre 2026
+
+Integrati i 21 commit di origin/main fino a ef5312b, preservando utilityModel/textOf,
+sync canali tollerante e gli ultimi flussi daily. Conflitto SQL risolto mantenendo
+la migrazione api_usage.feature di main e accodando la gerarchia; nessun nuovo DDL.
+
+Audit Supabase in sola lettura: 27 active, 3 on_hold, 26 completed, 32 merged,
+19 archived, zero planning (lo stato corrente è diverso dal conteggio precedente).
+67 righe riportano kind=admin e decided_by=U052S2RT7B6. Angela e i suoi duplicati
+puntano a prj_client_angela_intelisano; nessun ciclo, destinazione mancante o
+conflitto tra clienti sui progetti canonici. L'unica agency_clients presente è
+Gambino e il suo default è già canonico. Non sono state create identità o righe
+projects e non sono stati modificati lifecycle_evidence, stati o registri ore.
+
+Il catalogo assorbe nomi e alias dei duplicati nel progetto canonico. Il matcher
+risolve tutta la catena merged_into per default cliente e task già assegnati,
+prima di cercare attività; cicli e riferimenti mancanti restano irrisolti.
+Il planner segue le stesse catene e non riapre più commesse chiuse per nome.
+Test di regressione coprono questi casi e la conservazione delle decisioni admin.
+La protezione della sincronizzazione in db/projects.js è oggetto della PR #162,
+che questa PR non modifica. Nessuna operazione manuale richiesta sul database.

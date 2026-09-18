@@ -154,10 +154,15 @@ app.event('app_mention', async function(args) {
       var dailyV2ForMention = require('./dailyStandupV2');
       if (event.channel === dailyV2ForMention.DAILY_CHANNEL_ID && !event.thread_ts) {
         var dailyClass = dailyV2ForMention.classifyDailyText(text);
-        if (dailyClass.isDaily && !dailyClass.isRequest) {
+        // Daily puro, oppure daily con la richiesta esplicita di registrarlo
+        // ("@Giuno posta il mio daily: …"): in canale è già pubblico, si
+        // registra e basta.
+        var mentionDailyBody = (dailyClass.isDaily && !dailyClass.isRequest)
+          ? text : dailyV2ForMention.extractDailyFromRequest(text);
+        if (mentionDailyBody) {
           var capturedMention = false;
           try {
-            capturedMention = await dailyV2ForMention.recordChannelDaily(event.user, text, event.channel);
+            capturedMention = await dailyV2ForMention.recordChannelDaily(event.user, mentionDailyBody, event.channel);
           } catch(e) { logger.warn('[STANDUP-V2] cattura daily da mention fallita:', e.message); }
           if (capturedMention) {
             try { await app.client.reactions.remove({ channel: event.channel, timestamp: event.ts, name: 'eyes' }); } catch(e) { /* ignore */ }
@@ -386,6 +391,55 @@ app.message(async function(args) {
     }
   } catch(e) { logger.debug('[CAMPAIGN] registerReply:', e.message); }
 
+  // Daily scritto a mano con la richiesta esplicita di postarlo ("Giuno, posta
+  // questo daily: …", oppure il daily seguito da "pubblicalo in #daily"): si
+  // registra e si pubblica subito, a qualsiasi ora, senza passare dal modello.
+  // Prima la classificazione lo scartava come richiesta (inizia con "giuno,")
+  // e il modello non aveva un tool per pubblicarlo: restava senza esito.
+  var dailyV2OnRequest = require('./dailyStandupV2');
+  var requestedDailyBody = dailyV2OnRequest.extractDailyFromRequest(message.text);
+  if (requestedDailyBody) {
+    var requestedSaved = false;
+    try {
+      requestedSaved = await dailyV2OnRequest.handleDailyResponse(message.user, requestedDailyBody);
+    } catch(e) {
+      logger.error('[STANDUP-V2] daily su richiesta fallito:', e.message);
+    }
+    await app.client.chat.postMessage({
+      channel: message.channel,
+      text: requestedSaved
+        ? 'Fatto: daily di oggi registrato e pubblicato in #daily ✅'
+        : 'Non sono riuscito a pubblicare il daily — riprova con il bottone *✏️ Compila daily* o avvisa Antonio.',
+    });
+    logger.info('[STANDUP-V2] Daily su richiesta esplicita da:', message.user, requestedSaved ? '(ok)' : '(fallito)');
+    return;
+  }
+
+  // Risposta a parole alla proposta di daily ("ok", "aggiungi 1h di call con
+  // Elios", "la grafica erano 3h"): approva o aggiorna la stima in sospeso e
+  // rimanda la proposta. Prima del daily testuale: "aggiungi 1h di call"
+  // sembra un daily e sarebbe stato salvato così, al posto di tutto il resto.
+  var dailyV2Estimate = require('./dailyStandupV2');
+  if (dailyV2Estimate.getPendingEstimate(message.user, dailyV2Estimate.oggi())) {
+    var estimateReply = dailyV2Estimate.classifyEstimateReply(message.text);
+    // "ok" nudo: vale come approvazione solo se l'ultimo messaggio di Giuno
+    // qui era la proposta; se in mezzo c'è stata una conversazione, è una
+    // risposta a quella (17/9: "ok" a un consiglio → daily sovrascritto).
+    if (estimateReply === 'approve_bare') {
+      estimateReply = (await dailyV2Estimate.lastBotMessageIsProposal(message.channel, message.ts)) ? 'approve' : null;
+    }
+    if (estimateReply === 'approve') {
+      var approved = false;
+      try { approved = await dailyV2Estimate.confirmEstimate(message.user); } catch(e) { logger.error('[DAILY-ESTIMATE] approvazione a parole fallita:', e.message); }
+      await app.client.chat.postMessage({ channel: message.channel, text: approved
+        ? 'Registrato come tuo daily ✅ — grazie. Se vuoi cambiare qualcosa, compila il daily e lo sostituisco.'
+        : 'Non sono riuscito a registrarlo: riprova con il bottone *✅ Approvo* o compila il daily.' });
+      return;
+    }
+    // Le correzioni ("togli quella cosa") vanno al modello, che ha la
+    // proposta nel contesto e il tool daily_estimate_amend.
+  }
+
   // Standup replies (V2 — routes through dailyStandupV2)
   // Strict detection: only accept messages that CLEARLY look like a daily report.
   // Plain length > 30 is not enough (it catches complaints/questions to the bot).
@@ -398,8 +452,13 @@ app.message(async function(args) {
       // Euristiche condivise con la cattura da canale/mention (una sola copia,
       // vive in dailyStandupV2.classifyDailyText).
       var dmDailyClass = require('./dailyStandupV2').classifyDailyText(txt);
+      // Con una proposta in sospeso, solo un daily STRUTTURATO ("Oggi: …")
+      // la sostituisce per intero: "aggiungi 1h di call con Elios" somiglia a
+      // un daily ma è una correzione, e la gestisce il modello col tool.
+      var pendingForDm = require('./dailyStandupV2').getPendingEstimate(message.user, dailyV2Oggi);
+      var dmIsDaily = dmDailyClass.isDaily && (!pendingForDm || dmDailyClass.isStructured);
 
-      if (!dmDailyClass.isRequest && dmDailyClass.isDaily) {
+      if (!dmDailyClass.isRequest && dmIsDaily) {
         var dailyStandupV2 = require('./dailyStandupV2');
         var saved = false;
         try {
@@ -408,7 +467,7 @@ app.message(async function(args) {
           logger.error('[STANDUP-V2] handleDailyResponse ha throwato:', e.message);
         }
         if (saved) {
-          await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il recap uscirà alle 18:00 in #daily.' });
+          await app.client.chat.postMessage({ channel: message.channel, text: 'Registrato, mbare! Il recap uscirà alle ' + dailyStandupV2.DAILY_TIMES.recap + ' in #daily.' });
           logger.info('[STANDUP-V2] Risposta testuale ricevuta da:', message.user);
         } else {
           await app.client.chat.postMessage({ channel: message.channel, text: 'Non sono riuscito a registrare il daily — riprova con il bottone *✏️ Compila daily* o avvisa Antonio.' });
@@ -965,7 +1024,7 @@ var DURATA_OPTIONS = [
   { text: { type: 'plain_text', text: '8h' }, value: '8' },
 ];
 
-// Daily unico delle 16:00: FATTO OGGI (ore reali — alimentano anche il
+// Daily unico pomeridiano: FATTO OGGI (ore reali — alimentano anche il
 // consuntivo time_logs via project match) + DOMANI (piano) + BLOCCHI.
 // Sostituisce il vecchio daily mattutino (ieri/oggi) E il check-in serale.
 // Opzione di durata più vicina alle ore decimali della stima.
@@ -1118,7 +1177,8 @@ app.action('daily_estimate_confirm', async function(args) {
 
 // Bottone rapido "commessa X" nel DM del daily: il modulo si apre con la
 // prima riga già intestata alla commessa; la persona mette ore e dettaglio.
-app.action('daily_quick_project', async function(args) {
+// daily_quick_project_0..3: un id per bottone (Slack li vuole univoci nel blocco).
+app.action(/^daily_quick_project(_\d+)?$/, async function(args) {
   await args.ack();
   var action = args.action || (args.body.actions && args.body.actions[0]) || {};
   var label = action.text && action.text.text ? String(action.text.text) : '';
@@ -1133,6 +1193,19 @@ app.action('daily_quick_project', async function(args) {
   } catch(e) {
     logger.error('[DAILY-MODAL] quick views.open fallita:', e && e.message);
     try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* ' + label + ' … (con le ore).' }); } catch(_) {}
+  }
+});
+
+// "Compilo da zero": il modulo vuoto anche se c'è una proposta in sospeso.
+app.action('open_daily_modal_blank', async function(args) {
+  await args.ack();
+  try {
+    await withTimeout(function() {
+      return app.client.views.open({ trigger_id: args.body.trigger_id, view: rebuildDailyModal({ oggi: 2, domani: 2 }) });
+    }, 2500, 'views.open daily blank');
+  } catch(e) {
+    logger.error('[DAILY-MODAL] blank views.open fallita:', e && e.message);
+    try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* … (con le ore), *Domani:* …' }); } catch(_) {}
   }
 });
 
