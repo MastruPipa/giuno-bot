@@ -1267,7 +1267,67 @@ Da fare dopo il merge: nessuna configurazione. Se la lettura del DB per il
 prefill supera 1,2 s Giuno apre il modulo vuoto e lo logga come "prefill
 non disponibile": guardare i log se capita.
 
-## 39. Da fare
+## 39. La stima filtra di più: niente "Ufficio 24h", riunioni verificate con gli appunti Gemini
+
+Antonio (22/9): "Giuno deve capire meglio cosa è stato fatto: controllare
+dai recap di Gemini se la persona è stata davvero in call e per quanto
+(magari la call si è dilungata), e non mettere cose tipo 'Ufficio 24h'
+nella conta. Deve fare più filtro."
+
+**Cosa succedeva.** Dal DB: "Presenza in ufficio / gestione flussi interni
+1h", "Attività in ufficio (presenza) 2h30", "Tempo operativo - setting
+settimanale 5h" nelle stime del 21/9. Due cause. Il calendario personale
+(`find_event`) passava anche gli eventi "tutto il giorno" e i blocchi
+"Ufficio"/"Smart working": entravano nelle sessioni di lavoro (tetto 5h)
+e il modello, obbligato dal prompt a "coprire" le sessioni senza tracce
+con "un task generico", li trasformava in righe di presenza. Le riunioni
+valevano sempre la durata del calendario, anche se saltate o allungate.
+
+**Cosa cambia** (`src/agents/dailyEstimator.js`).
+1. **Filtro sul calendario** (`filterCalendarEvents`): via gli eventi senza
+   orario (tutto il giorno), i blocchi di presenza/disponibilità (Ufficio,
+   Smart working, Focus, Non disponibile, Ferie, Tempo operativo…), i
+   blocchi di 4h o più senza altri partecipanti; ogni riunione conta al
+   massimo 4h. Gli esclusi finiscono nel prompt come "EVENTI ESCLUSI (non
+   sono lavoro)" e nel log. Vale anche per il calendario di domani.
+2. **Verifica con gli appunti Gemini** (`collectMeetingRecaps`,
+   `verifyCalendarWithRecaps`). I recap del giorno vengono dalla KB (lo
+   scanner Gemini gira alle 9:45/11:45/13:45/15:45/17:45) e dai Doc
+   "Appunti di Gemini" di oggi su Drive, letti direttamente (anche prima
+   che lo scanner li ingerisca). Dal Doc: inizio riunione dal titolo,
+   fine ≈ creazione del file, quindi la **durata effettiva**; dal testo
+   (riga "Invitati/Partecipanti" e nomi citati) **chi c'era**. Per ogni
+   riunione in calendario: se la durata effettiva differisce di 15 min o
+   più, sostituisce quella del calendario (il prompt lo dice: "75 min
+   effettivi dagli appunti Gemini (calendario: 30 min)"); se la persona
+   non compare tra i partecipanti, la riunione non le viene contata.
+   Fonte "appunti Gemini" nella riga delle fonti.
+3. **Gli appunti Gemini non sono output.** Prima comparivano tra i
+   "documenti prodotti" di chi risultava ultimo autore: ora vanno solo
+   alla verifica delle riunioni.
+4. **Prompt più severo**: il tempo di sessione senza traccia leggibile non
+   diventa un task (niente "presenza in ufficio", "tempo operativo",
+   "attività generiche"); meglio un totale sotto le 8h che una riga
+   inventata; i blocchi di presenza esclusi non vanno ricostruiti; per le
+   riunioni vale la durata effettiva quando c'è.
+5. **Filtro finale deterministico** (`isPresenceTask`): se il modello
+   scrive lo stesso una riga di sola presenza, viene scartata prima del
+   salvataggio, con log; i totali si ricalcolano.
+
+Limiti da sapere: chi c'era lo deduciamo dai nomi nel testo degli appunti
+(nome e cognome; il solo nome se in team è unico): se Gemini non nomina
+una persona che era in silenzio, la riunione le viene tolta solo quando
+il recap ha una riga di partecipanti o un testo lungo. La durata dal
+file vale se sta tra 5 minuti e 6 ore. Lettura di massimo 15 Doc Gemini
+per giornata, 4 s l'uno.
+
+Test: `test/daily-estimate-filter.test.js` (titoli e task di presenza,
+filtro calendario, recap da KB e da Drive, durata e presenza, appunti
+fuori dagli output, stima end-to-end con "Ufficio" escluso e riga di
+presenza scartata). Niente migrazioni. Niente da configurare: i Doc
+Gemini si leggono con il Google degli admin già collegati.
+
+## 40. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
