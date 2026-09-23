@@ -127,6 +127,26 @@ function projectActivities(pid,rows,activities,period,today) {
   const loose=mine.filter(r=>r.activity===NO_ACTIVITY);
   return {activities:list,unassigned:hours(loose.map(r=>({hours:r.hours,estimated:r.estimated}))),unassignedTasks:loose.filter(r=>r.task).length};
 }
+// Copertura dei daily nel periodo: giorni lavorativi (lun-ven) fino a oggi,
+// per ogni persona del roster attivo i giorni con un daily vero (non stima)
+// e quelli mancanti; più i giorni coperti solo dalla stima di Giuno. Sono i
+// segnali che contano oggi: un daily mancante non è tempo libero, è un buco
+// nella lettura.
+function coverageOfDaily(raw,period,cutoff,people) {
+  const workdays=[];
+  for(let d=new Date(period.start);iso(d)<=cutoff;d=new Date(d.getTime()+day)) { const w=d.getUTCDay(); if(w!==0&&w!==6) workdays.push(iso(d)); }
+  const entries=(raw.standup_entries||[]).filter(e=>validDate(e.date)&&e.date>=period.start&&e.date<=cutoff);
+  const active=new Set((raw.team_members||[]).filter(m=>m.active!==false).map(m=>m.slack_user_id));
+  const rows=people.filter(p=>active.has(p.id)).map(p=>{
+    const mine=entries.filter(e=>e.slack_user_id===p.id);
+    const days=new Set(mine.filter(e=>e.source!=='estimate').map(e=>e.date));
+    const estimateDays=new Set(mine.filter(e=>e.source==='estimate').map(e=>e.date));
+    return {id:p.id,name:p.name,days:days.size,estimateDays:estimateDays.size,missing:workdays.filter(d=>!days.has(d)).length};
+  }).sort((a,b)=>b.missing-a.missing||a.name.localeCompare(b.name));
+  return {available:Array.isArray(raw.standup_entries),workdays:workdays.length,people:rows,
+    missingTotal:rows.reduce((s,r)=>s+r.missing,0),estimateTotal:rows.reduce((s,r)=>s+r.estimateDays,0),
+    peopleWithoutDaily:rows.filter(r=>r.days===0).length};
+}
 function buildSnapshot(raw,period,now=new Date()) {
   const today=romeToday(now), cutoff=period.end<today?period.end:today;
   const aliases=canonicalMap(raw.projects||[]);
@@ -218,15 +238,20 @@ function buildSnapshot(raw,period,now=new Date()) {
   });
   // Segnali, in ordine di gravità: sforamenti verificati, sforamenti sulla
   // commessa, blocchi dichiarati, azioni e milestone scadute, ore senza venduto.
+  // Segnali solo dove la fonte è in uso: "ore senza venduto" ha senso se
+  // esiste almeno un budget ore; "azioni scadute" se qualcuno chiude le
+  // azioni. Al 23/9 nessun budget e 3 azioni chiuse su 167: erano rumore.
+  const soldInUse=budgets.length>0;
+  const actionsInUse=actions.some(a=>a.status==='done');
   const alerts=[];
   projects.filter(p=>p.overrun>0).forEach(p=>alerts.push({project:p.id,kind:'overrun',title:p.name+' · oltre budget',detail:round(p.overrun)+' h oltre le ore vendute nel periodo'}));
   projects.filter(p=>p.sold&&p.sold.verified&&p.sold.remaining!==null&&p.sold.remaining<0).forEach(p=>alerts.push({project:p.id,kind:'sold',title:p.name+' · oltre il venduto',detail:round(-p.sold.remaining)+' h oltre le '+p.sold.hours+' h vendute sulla commessa'}));
   projects.filter(p=>p.sold&&p.sold.verified&&p.sold.ratio!==null&&p.sold.ratio>=0.8&&p.sold.remaining>=0).forEach(p=>alerts.push({project:p.id,kind:'sold_near',title:p.name+' · venduto quasi esaurito',detail:Math.round(p.sold.ratio*100)+'% delle ore vendute già utilizzate'}));
   projects.filter(p=>p.blocks.length).forEach(p=>alerts.push({project:p.id,kind:'block',title:p.name+' · blocco segnalato',detail:p.blocks[0].slice(0,120)}));
-  projects.filter(p=>p.overdueActions>0).forEach(p=>alerts.push({project:p.id,kind:'overdue',title:p.name+' · azioni scadute',detail:p.overdueActions+' azioni dalle call oltre la scadenza'}));
+  if(actionsInUse) projects.filter(p=>p.overdueActions>0).forEach(p=>alerts.push({project:p.id,kind:'overdue',title:p.name+' · azioni scadute',detail:p.overdueActions+' azioni dalle call oltre la scadenza'}));
   projects.filter(p=>p.milestones.some(m=>m.overdue)).forEach(p=>alerts.push({project:p.id,kind:'milestone',title:p.name+' · milestone scaduta',detail:p.milestones.find(m=>m.overdue).what.slice(0,120)}));
   projects.filter(p=>p.phase==='in attesa cliente').forEach(p=>alerts.push({project:p.id,kind:'waiting',title:p.name+' · attesa cliente',detail:'Stato ricostruito dal dossier di progetto'}));
-  projects.filter(p=>!p.sold&&p.hours.total>0).forEach(p=>alerts.push({project:p.id,kind:'nosold',title:p.name+' · ore senza venduto',detail:round(p.hours.total)+' h nel periodo, nessun budget ore sulla commessa'}));
+  if(soldInUse) projects.filter(p=>!p.sold&&p.hours.total>0).forEach(p=>alerts.push({project:p.id,kind:'nosold',title:p.name+' · ore senza venduto',detail:round(p.hours.total)+' h nel periodo, nessun budget ore sulla commessa'}));
   const candidates=catalogue.filter(p=>p.lifecycle==='da verificare');
   // Cliente → commesse: il cliente è client_name (o il nome stesso), le commesse operative sotto.
   const clientKey=p=>String(p.client||p.name||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()||p.id;
@@ -241,6 +266,7 @@ function buildSnapshot(raw,period,now=new Date()) {
   const internalHours=hours(logs.filter(l=>String(l.project).startsWith('cat_')));
   const clientHours=hours(logs.filter(l=>!String(l.project).startsWith('cat_')));
   const hierarchy=buildClientHierarchy(raw,logs,catalogue,today);
-  return {reconciliation:buildReconciliation(raw,period,today,logs),estimates:estimateSummary(raw,period,today),catalogue,reconciledClients:hierarchy.clients,mappedProjectIds:hierarchy.mappedProjectIds,period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...hierarchy.warnings,...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),hours:hours(logs),categories:categoryHours(logs,raw.standup_entries,aliases),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
+  const dailyCoverage=coverageOfDaily(raw,period,cutoff,people);
+  return {reconciliation:buildReconciliation(raw,period,today,logs),estimates:estimateSummary(raw,period,today),catalogue,reconciledClients:hierarchy.clients,mappedProjectIds:hierarchy.mappedProjectIds,period:{...period,cutoff},fetchedAt:now.toISOString(),mode:raw.mode||'live',warnings:[...(raw.warnings||[]),...hierarchy.warnings,...(candidates.length?[candidates.length+' progetti acquisiti attendono un\'evidenza operativa e non sono conteggiati tra gli attivi. Le ore storiche restano nei consuntivi.']:[])],projects,clients,internal,internalHours,clientHours,planned:planned(plans),plannerCoverage:{week:thisWeek,people:people.filter(u=>(raw.team_members||[]).some(m=>m.slack_user_id===u.id&&m.active!==false)).length,planned:people.filter(u=>u.plannedThisWeek!==null).length},internalShare:hours(logs).total?Math.round((internalHours.total||0)/hours(logs).total*100):null,candidateProjects:candidates,historicalProjects:catalogue.filter(p=>!activeIds.has(p.id)&&p.lifecycle!=='da verificare'&&p.lifecycle!=='interno'),people,alerts:alerts.slice(0,8),dailyCoverage,hours:hours(logs),categories:categoryHours(logs,raw.standup_entries,aliases),coverage:{people:people.length,peopleWithHours:people.filter(u=>u.hours.total!==null).length,peopleOnlyEstimates:people.filter(u=>u.hours.total!==null&&!u.hours.recorded).length}};
 }
-module.exports={CATEGORY_RULES,category,categoryHours,activityRows,projectActivities,normalizePlans,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};
+module.exports={CATEGORY_RULES,category,categoryHours,coverageOfDaily,activityRows,projectActivities,normalizePlans,periodBounds,validDate,romeToday,normalizeLogs,hours,budgetFor,buildSnapshot};

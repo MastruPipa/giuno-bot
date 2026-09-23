@@ -25,4 +25,10 @@ process.on('uncaughtException', function (err) {
     (err && err.stack) || (err && err.message) || err);
 });
 
-require('./src/app.js');
+// Interruttore: con SERVIZIO_SPENTO impostata il bot non parte (vedi src/spento.js).
+var spento = require('./src/spento');
+if (spento.isSpento()) {
+  spento.avviaSpento(process.env, logger);
+} else {
+  require('./src/app.js');
+}

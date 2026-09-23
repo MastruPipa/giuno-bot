@@ -1386,7 +1386,61 @@ Test: `test/hours-attribution.test.js` (dipendenza esportata, confronto
 registro, riallineamento con flag stima, anteprima), `test/daily-prefill.test.js`
 (lettura fresca dal DB). Niente migrazioni.
 
-## 41. Da fare
+## 41. giun.os: segnali con base dati, copertura dei daily, cache e sessione
+
+Seconda tappa della revisione di giun.os con Antonio (23/9), dopo il
+registro ore (§40). Quattro interventi, tutti in `src/giunos`.
+
+1. **Segnali solo dove la fonte è in uso** (`model.js`). "Ore senza
+   venduto" scattava per ogni commessa attiva perché `giunos_budgets` è
+   vuota; "azioni scadute" e i giorni mediani a chiusura misuravano 3
+   azioni chiuse su 167. Ora "senza venduto" compare solo se esiste almeno
+   un budget ore nel DB e "azioni scadute" solo se qualcuno chiude le
+   azioni. Sforamenti, blocchi dichiarati e milestone restano.
+2. **Copertura dei daily** (`coverageOfDaily`, campo `dailyCoverage` dello
+   snapshot): giorni lavorativi del periodo fino a oggi, per ogni persona
+   del roster attivo i giorni con un daily vero e quelli mancanti, più i
+   giorni coperti solo dalla stima di Giuno. In Panoramica una terza voce
+   in "Da guardare adesso" ("N giornate senza daily su M lavorative", con
+   i nomi); in Team, sotto ogni persona, "giorni con daily / mancanti". Un
+   daily mancante non è tempo libero: è un buco nella lettura.
+3. **Cache dei dati grezzi** (`handler.js`): le 14 tabelle si leggono una
+   volta ogni 2 minuti e valgono per tutti i periodi e le pagine; il
+   bottone "Aggiorna" passa `refresh=1` e forza la rilettura. La risposta
+   porta `cachedAt`. Il 23/9 ogni cambio periodo costava 5,4 s.
+4. **Sessione con cookie** (`handler.js`, `app.js`, `oauthHandler.js`):
+   la chiave si digita una volta. `POST /giunos/api/login` la verifica con
+   lo stesso `authorize` dell'API e risponde con un cookie firmato (HMAC
+   della scadenza, segreto derivato dalla chiave), HttpOnly,
+   SameSite=Strict, Secure su https, Path=/giunos, 12 ore. L'API accetta
+   il cookie o l'header `x-admin-token` (invariato per chi lo usa).
+   `POST /giunos/api/logout` azzera il cookie. Nessuno stato lato server:
+   cambiare `GIUNOS_ACCESS_KEY` (o `OAUTH_ADMIN_TOKEN`) invalida tutte le
+   sessioni. Senza chiave configurata il login risponde 404 e il front-end
+   torna all'header, come prima.
+
+**Il duplicato su Railway** (§40). `delete-service` via API va in
+timeout e il redeploy riusa l'immagine con il comando di avvio del
+`railway.json` del repo, quindi cambiare il comando dal pannello non
+basta. L'interruttore sta nel codice: `src/spento.js` e `index.js`. Con la
+variabile `SERVIZIO_SPENTO` valorizzata il processo non carica `src/app.js`
+(niente Slack, cron, Supabase) e risponde 200 solo a `/healthz`, così il
+deploy riesce e sostituisce il container precedente (un deploy fallito lo
+lascerebbe vivo). La variabile è impostata sul servizio `giuno-bot` di
+`imaginative-manifestation`, con restart policy NEVER; nel progetto
+principale non esiste. Verifica dopo il merge: nei log di quel servizio
+deve comparire "[SPENTO] Servizio spento" e non più "Giuno Bolt app
+avviata in Socket Mode"; nei log del principale i cron non devono più
+dire "già in esecuzione (tenuto da …)". Quando Antonio vuole, il servizio
+si cancella dal pannello Railway.
+
+Test: `test/giunos.test.js` (segnali condizionati, copertura, cache con
+refresh e scadenza, sessione: cookie, manomissioni, scadenza, logout,
+fallback senza segreto) e `test/spento.test.js` (interruttore, healthcheck,
+`index.js` che non carica il bot). Niente migrazioni; sul progetto
+principale niente da configurare.
+
+## 42. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

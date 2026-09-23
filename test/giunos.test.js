@@ -92,8 +92,10 @@ test('revisione criteri: venduto sulla commessa mostrato anche come proposta (ma
  assert.equal(s.projects[0].sold.verified,true);assert.ok(s.alerts.some(a=>a.kind==='sold'&&/oltre il venduto/.test(a.title)));
  s=buildSnapshot(raw({time_logs:[log()],giunos_budgets:[sold(),sold({hours:20,source_url:'https://example.org/other'})]}),period,now);
  assert.equal(s.projects[0].sold,null);assert.equal(s.projects[0].soldConflict,true);
+ s=buildSnapshot(raw({time_logs:[log()],giunos_budgets:[sold({project_id:'altro'})]}),period,now);
+ assert.equal(s.projects[0].sold,null);assert.ok(s.alerts.some(a=>a.kind==='nosold'),'ore senza venduto è un segnale quando i budget ore sono in uso');
  s=buildSnapshot(raw({time_logs:[log()]}),period,now);
- assert.equal(s.projects[0].sold,null);assert.ok(s.alerts.some(a=>a.kind==='nosold'),'ore senza venduto è un segnale');
+ assert.ok(!s.alerts.some(a=>a.kind==='nosold'),'senza alcun budget ore nel DB il segnale è rumore');
 });
 test('revisione criteri: tipologie di attività da agenzia, distribuzione per progetto e per team',()=>{
  const {category}=require('../src/giunos/model');
@@ -130,7 +132,9 @@ test('revisione criteri: ciclo di vita, candidati separati dallo storico, blocch
  assert.equal(p.milestones.filter(m=>m.overdue).length,1);assert.equal(p.nextSteps[0].who,'Paolo');
  assert.deepEqual(p.deliveryCounts,{done:1,inProgress:1,todo:0,total:2});assert.equal(p.overdueActions,1);assert.equal(p.openActions,1);
  assert.deepEqual(p.dossierTeam,[{name:'Paolo',role:'PM'}]);
- assert.deepEqual(s.alerts.map(a=>a.kind),['block','overdue','milestone','nosold']);
+ assert.deepEqual(s.alerts.map(a=>a.kind),['block','overdue','milestone']);
+ const noClosed=buildSnapshot(raw({projects,project_dossiers:dossiers,project_actions:actions.filter(a=>a.status!=='done'),time_logs:[log({project_id:'attio_2'})]}),period,now);
+ assert.deepEqual(noClosed.alerts.map(a=>a.kind),['block','milestone'],'azioni scadute solo se qualcuno chiude le azioni');
  assert.deepEqual(s.coverage,{people:2,peopleWithHours:2,peopleOnlyEstimates:1});
  assert.match(s.warnings.join(' '),/1 progetti acquisiti attendono/);
 });
@@ -210,4 +214,54 @@ test('attività in dashboard: ore per attività solo se il daily torna con il co
   context.snapshot=snap;context.location.hash='#'+route;vm.runInContext("data=snapshot;period='month';render()",context);
   const html=elements.get('#app').innerHTML;assert(html.includes(expect),route+' → '+expect);assert(!html.includes('<script>')&&!html.includes('<img src=x')&&!html.includes('NaN'));
  }
+});
+
+test('copertura dei daily: giorni lavorativi fino a oggi, giorni con daily vero e mancanti per persona, stime a parte',()=>{
+ const {coverageOfDaily}=require('../src/giunos/model');
+ const entries=[
+  {id:'e1',slack_user_id:'u',date:'2026-09-07',source:'modal',oggi_tasks:[]},{id:'e2',slack_user_id:'u',date:'2026-09-08',source:'estimate',oggi_tasks:[]},
+  {id:'e3',slack_user_id:'u',date:'2026-09-09',source:'dm',oggi_tasks:[]},{id:'e4',slack_user_id:'v',date:'2026-09-12',source:'modal',oggi_tasks:[]},
+ ];
+ const r=raw({team_members:[{slack_user_id:'u',canonical_name:'Person'},{slack_user_id:'v',canonical_name:'Vale'},{slack_user_id:'w',canonical_name:'Ex',active:false}],standup_entries:entries});
+ const c=coverageOfDaily(r,{start:'2026-09-07',end:'2026-09-13'},'2026-09-10',[{id:'u',name:'Person'},{id:'v',name:'Vale'},{id:'w',name:'Ex'}]);
+ assert.equal(c.workdays,4);
+ assert.deepEqual(c.people,[{id:'v',name:'Vale',days:0,estimateDays:0,missing:4},{id:'u',name:'Person',days:2,estimateDays:1,missing:2}]);
+ assert.equal(c.missingTotal,6);assert.equal(c.estimateTotal,1);assert.equal(c.peopleWithoutDaily,1);
+ const s=buildSnapshot(r,{kind:'week',start:'2026-09-07',end:'2026-09-13'},now);
+ assert.equal(s.dailyCoverage.workdays,4);assert.equal(s.dailyCoverage.available,true);
+ assert.equal(buildSnapshot(raw({standup_entries:null}),period,now).dailyCoverage.available,false);
+});
+test('handler: i dati grezzi restano in cache tra le chiamate; refresh=1 forza la rilettura; scaduta la cache si rilegge',async()=>{
+ let loads=0,t=now.getTime();const handler=createHandler({getClient:()=>'c',authorize:()=>true,load:async()=>{loads++;return raw();},clock:()=>new Date(t),cacheMs:1000});
+ assert.equal((await request(handler,'/giunos/api/snapshot',{period:'month',date:'2026-09-10'})).status,200);assert.equal(loads,1);
+ const second=await request(handler,'/giunos/api/snapshot',{period:'week',date:'2026-09-10'});assert.equal(second.status,200);assert.equal(loads,1,'periodo diverso, stessi dati grezzi');
+ assert.equal(JSON.parse(second.body).cachedAt,now.toISOString());
+ await request(handler,'/giunos/api/snapshot',{period:'week',date:'2026-09-10',refresh:'1'});assert.equal(loads,2);
+ t+=1500;await request(handler,'/giunos/api/snapshot',{period:'week',date:'2026-09-10'});assert.equal(loads,3);
+});
+test('sessione con cookie: login con la chiave nel corpo, cookie firmato accettato dall\'API, logout e manomissioni respinte',async()=>{
+ const {signSession,verifySession}=require('../src/giunos/handler');
+ let t=now.getTime();
+ const handler=createHandler({getClient:()=>null,authorize:(req)=>req.headers['x-admin-token']==='secret',load:async()=>raw(),clock:()=>new Date(t),sessionSecret:'secret'});
+ const post=(path,body,headers={})=>request(handler,path,{},{...headers,'x-forwarded-proto':'https'},'POST');
+ assert.equal((await request(handler,'/giunos/api/login',{},{},'GET')).status,405);
+ assert.equal((await post('/giunos/api/login')).status,401,'senza chiave');
+ let res=await request(Object.assign(handler),'/giunos/api/login',{},{},'POST');assert.equal(res.status,401);
+ // login giusto: cookie HttpOnly, SameSite=Strict, Secure su https, Path=/giunos
+ res=await handler({method:'POST',headers:{'x-forwarded-proto':'https'},body:{key:'secret'}},{writeHead(s,h){res={status:s,headers:h};},end(){}},{pathname:'/giunos/api/login',query:{}}).then(()=>res);
+ assert.equal(res.status,200);const cookie=res.headers['Set-Cookie'];assert.match(cookie,/^giunos_session=[^;]+; Path=\/giunos; HttpOnly; SameSite=Strict; Max-Age=43200; Secure$/);
+ const value=decodeURIComponent(cookie.split(';')[0].split('=')[1]);
+ assert.equal(verifySession('secret',value,t),true);assert.equal(verifySession('altra',value,t),false);assert.equal(verifySession('secret',value+'x',t),false);
+ // l'API accetta il cookie, anche senza header
+ assert.equal((await request(handler,'/giunos/api/snapshot',{date:'2026-09-10'},{cookie:'giunos_session='+encodeURIComponent(value)})).status,200);
+ assert.equal((await request(handler,'/giunos/api/snapshot',{date:'2026-09-10'},{cookie:'giunos_session=manomesso.abc'})).status,401);
+ // scaduto dopo 12 ore
+ t+=12*3600000+1;assert.equal((await request(handler,'/giunos/api/snapshot',{date:'2026-09-10'},{cookie:'giunos_session='+encodeURIComponent(value)})).status,401);
+ // logout: cookie azzerato
+ const out=await request(handler,'/giunos/api/logout',{},{},'POST');assert.equal(out.status,200);assert.match(out.headers['Set-Cookie'],/^giunos_session=; Path=\/giunos; HttpOnly; SameSite=Strict; Max-Age=0$/);
+ // senza segreto configurato: login non disponibile, header ancora valido
+ const noSession=createHandler({getClient:()=>null,authorize:(req)=>req.headers['x-admin-token']==='secret',load:async()=>raw(),clock:()=>now});
+ assert.equal((await noSession({method:'POST',headers:{},body:{key:'secret'}},{writeHead(s){this.s=s;},end(){}},{pathname:'/giunos/api/login',query:{}})),true);
+ assert.equal((await request(noSession,'/giunos/api/snapshot',{date:'2026-09-10'},{'x-admin-token':'secret'})).status,200);
+ assert.equal(signSession('secret',123),signSession('secret',123));
 });
