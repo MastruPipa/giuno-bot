@@ -23,7 +23,7 @@ function cronExprFor(hhmm) {
 
 // Una frase per il prompt: così Giuno risponde giusto a "cosa succede se non approvo?".
 function describeFlow() {
-  return 'FLUSSO DAILY (lun-ven): alle ' + DAILY_TIMES.send + ' ogni persona riceve in DM la stima della giornata ricostruita da Giuno con i bottoni Approvo / Modifico nel modulo / Compilo da zero; ' +
+  return 'FLUSSO DAILY (lun-ven): alle ' + DAILY_TIMES.send + ' ogni persona riceve in DM la stima della giornata ricostruita da Giuno con i bottoni Approvo / Modifico nel modulo (già compilato: con la proposta, o con il daily di oggi già salvato) / Compilo da zero / Scrivo a testo libero (una sola area di testo, Giuno divide task, ore e progetti); ' +
     'può anche correggerla scrivendo in DM ("aggiungi 1h di call con X", "togli Y", "erano 3h") e Giuno rimanda la proposta aggiornata. ' +
     'Alle ' + DAILY_TIMES.push + ' promemoria a chi non ha risposto. Alle ' + DAILY_TIMES.recap + ' recap: chi non ha approvato né compilato riceve la stima SALVATA come daily marcato "stima di Giuno, non confermata", pubblicato in #daily, con le ore nel consuntivo segnate come stimate; ' +
     'chi non ha nemmeno una stima viene taggato tra i mancanti in #daily. Un daily compilato o approvato sostituisce sempre la stima. ' +

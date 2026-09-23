@@ -106,7 +106,7 @@ function dailyRequestMessage(utente, nome, quick) {
           text: { type: 'plain_text', text: '✏️ Compila daily', emoji: true },
           style: 'primary',
           action_id: 'open_daily_modal',
-        }],
+        }, FREE_TEXT_BUTTON],
       },
     ]),
   };
@@ -355,8 +355,8 @@ function estimateProposalMessage(utente, structured, opts, deps) {
       : opts.mode === 'reminder'
         ? 'Ehi *' + nome + '*, manca solo la conferma del daily di oggi. Se torna, un tap e siamo a posto:'
         : 'Ehi *' + nome + '*, manca il tuo daily. Da quello che vedo della tua giornata l\'ho ricostruito così:';
-  var howTo = 'Va bene così? *Approva* con il bottone, *modifica* nel modulo già compilato, oppure *scrivimi qui* cosa aggiungere o cambiare ' +
-    '("aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la revisione") e ti rimando la proposta aggiornata.';
+  var howTo = 'Va bene così? *Approva* con il bottone, *modifica* nel modulo già compilato, *scrivi* tutta la giornata a testo libero (ci penso io a dividere task e ore), ' +
+    'oppure *scrivimi qui* cosa aggiungere o cambiare ("aggiungi 1h di call con Elios", "la grafica erano 3h", "togli la revisione") e ti rimando la proposta aggiornata.';
   var plain = (opts.mode === 'daily' ? 'È il momento del daily: te l\'ho compilato io, approvi?' : opts.mode === 'amended' ? 'Daily aggiornato: approvi?' : 'Manca il tuo daily: ho provato a ricostruirlo io.');
   return {
     channel: utente.id,
@@ -370,9 +370,53 @@ function estimateProposalMessage(utente, structured, opts, deps) {
         { type: 'button', text: { type: 'plain_text', text: '✅ Approvo', emoji: true }, style: 'primary', action_id: 'daily_estimate_confirm', value: structured.estimate ? structured.estimate.generated_at : 'x' },
         { type: 'button', text: { type: 'plain_text', text: '✏️ Modifico nel modulo', emoji: true }, action_id: 'open_daily_modal' },
         { type: 'button', text: { type: 'plain_text', text: '📝 Compilo da zero', emoji: true }, action_id: 'open_daily_modal_blank' },
+        FREE_TEXT_BUTTON,
       ] },
     ],
   };
+}
+
+// Bottone "a testo libero": un modale con una sola area di testo dove la
+// persona scrive tutta la giornata di fila, anche in un blocco solo; il
+// parser AI (dailyParser) la divide in task e ore e il matcher aggancia i
+// progetti. Stesso bottone nella proposta stimata e nel modulo semplice.
+var FREE_TEXT_BUTTON = { type: 'button', text: { type: 'plain_text', text: '🖊️ Scrivo a testo libero', emoji: true }, action_id: 'open_daily_modal_text' };
+
+function dailyTextModal() {
+  return {
+    type: 'modal', callback_id: 'daily_text_submit',
+    title: { type: 'plain_text', text: 'Daily a testo libero' },
+    submit: { type: 'plain_text', text: '✅ Invia' },
+    close: { type: 'plain_text', text: 'Chiudi' },
+    blocks: [
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Scrivi tutto di fila, anche in un blocco solo e senza formato: ci penso io a dividere task, ore e progetti. Le ore contano come consuntivo.' }] },
+      {
+        type: 'input', block_id: 'daily_text',
+        label: { type: 'plain_text', text: 'La tua giornata' },
+        element: { type: 'plain_text_input', action_id: 'daily_text_input', multiline: true, min_length: 10, max_length: 3000,
+          placeholder: { type: 'plain_text', text: 'Es. Mattina call con Elios 1h e revisione grafiche 2h, poi 3h sul sito Aitho. Domani mockup e riunione team. Bloccato dal cliente sui testi.' } },
+      },
+    ],
+  };
+}
+
+// Daily scritto nel modale a testo libero: lo salva come daily VERO (source
+// modal_text: parser AI + aggancio progetti dentro handleDailyResponse) e
+// restituisce com'è stato letto, così la persona vede cosa ha capito Giuno e
+// può correggerlo nel modulo, che ora si apre già compilato dalla entry.
+async function saveFreeTextDaily(userId, text, deps) {
+  deps = deps || {};
+  text = String(text || '').trim();
+  if (!text) return { saved: false, structured: null };
+  var saved = await (deps.handleDailyResponse || handleDailyResponse)(userId, text, null, { source: 'modal_text' });
+  var structured = null;
+  if (saved) {
+    var entry = await (deps.getTodayEntry || getTodayEntry)(userId, oggi());
+    if (entry && ((entry.oggi_tasks && entry.oggi_tasks.length) || (entry.domani_tasks && entry.domani_tasks.length))) {
+      structured = { oggi: entry.oggi_tasks || [], domani: entry.domani_tasks || [], blocchi: entry.blocchi || null };
+    }
+  }
+  return { saved: saved, structured: structured };
 }
 
 async function sendEstimateProposal(utente, structured, opts, deps) {
@@ -408,7 +452,7 @@ function pendingProposalSection(userId, deps) {
   var structured = getPendingEstimate(userId, todayStr);
   if (!structured) return null;
   var estimator = (deps && deps.estimator) || require('../agents/dailyEstimator');
-  return 'PROPOSTA DI DAILY IN ATTESA (inviata all\'utente in DM con i bottoni Approvo / Modifico / Compilo da zero; data ' + todayStr + '):\n' +
+  return 'PROPOSTA DI DAILY IN ATTESA (inviata all\'utente in DM con i bottoni Approvo / Modifico nel modulo / Compilo da zero / Scrivo a testo libero; data ' + todayStr + '):\n' +
     estimator.formatEstimateBody(structured) + '\n' +
     'Se l\'utente chiede di cambiarla (togliere, aggiungere, correggere ore o nomi, anche con riferimenti impliciti come "quella cosa", "la seconda", "il meeting saltato") → daily_estimate_amend con un\'istruzione precisa che nomina la voce e le ore. ' +
     'Se la approva → daily_estimate_approve. Non riscrivere la proposta nel testo: il tool la rimanda già con i bottoni. Non fingere di aver modificato senza chiamare il tool.';
@@ -457,11 +501,45 @@ function prefillFromEstimate(structured) {
   function rows(list) {
     return (list || []).slice(0, 10).map(function(t) {
       var h = (Number(t.hours) || 0) + (Number(t.minutes) || 0) / 60;
-      return { task: String(t.task || '').substring(0, 150) + (t.project ? ' [' + t.project + ']' : ''), hours: Math.round(h * 4) / 4 };
+      // La stima appena generata ha `project`; dopo il matcher (e nelle
+      // entry salvate) il nome sta in `project_name`.
+      var project = t.project || t.project_name || null;
+      var task = String(t.task || '').substring(0, 150);
+      if (project && task.indexOf('[' + project + ']') === -1) task += ' [' + project + ']';
+      return { task: task, hours: Math.round(h * 4) / 4 };
     }).filter(function(r) { return r.task; });
   }
   var out = { oggi: rows(structured.oggi), domani: rows(structured.domani), blocchi: structured.blocchi || null };
   return (out.oggi.length || out.domani.length) ? out : null;
+}
+
+// La entry di oggi con tutto quello che serve a ricompilare il modulo.
+async function getTodayEntry(userId, dateStr) {
+  try {
+    var supabase = require('../services/db/client').getClient();
+    if (!supabase) return null;
+    var res = await supabase.from('standup_entries')
+      .select('oggi_tasks, domani_tasks, blocchi, source')
+      .eq('slack_user_id', userId).eq('date', dateStr).limit(1);
+    return (res.data && res.data[0]) || null;
+  } catch(e) { logger.debug('[DAILY-V2] entry di oggi non letta per il prefill:', e.message); return null; }
+}
+
+// Cosa mettere nel modulo di "Modifico nel modulo": la proposta in sospeso
+// se c'è, altrimenti il daily di oggi già salvato (stima approvata, stima
+// pubblicata al recap, daily compilato o scritto). Prima il modulo si
+// riempiva solo con la proposta in sospeso: dopo "Approvo" o dopo il recap
+// la proposta è consumata e il modulo si apriva vuoto (Antonio, 22/9).
+// Ritorna { prefill, from: 'estimate' | 'entry' | null }.
+async function prefillForModal(userId, dateStr, deps) {
+  deps = deps || {};
+  var pending = (deps.getPendingEstimate || getPendingEstimate)(userId, dateStr);
+  var fromEstimate = prefillFromEstimate(pending);
+  if (fromEstimate) return { prefill: fromEstimate, from: 'estimate' };
+  var entry = await (deps.getTodayEntry || getTodayEntry)(userId, dateStr);
+  if (!entry) return { prefill: null, from: null };
+  var fromEntry = prefillFromEstimate({ oggi: entry.oggi_tasks || [], domani: entry.domani_tasks || [], blocchi: entry.blocchi || null });
+  return fromEntry ? { prefill: fromEntry, from: 'entry' } : { prefill: null, from: null };
 }
 
 // Conferma dal bottone: la stima diventa il daily della persona a tutti gli
@@ -1061,6 +1139,11 @@ module.exports = {
   clearPendingEstimate: clearPendingEstimate,
   rememberPendingEstimate: rememberPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,
+  prefillForModal: prefillForModal,
+  getTodayEntry: getTodayEntry,
+  dailyTextModal: dailyTextModal,
+  saveFreeTextDaily: saveFreeTextDaily,
+  FREE_TEXT_BUTTON: FREE_TEXT_BUTTON,
   quickProjectButtons: quickProjectButtons,
   notifyMissingEstimates: notifyMissingEstimates,
   oggi: oggi,

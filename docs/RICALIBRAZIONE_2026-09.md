@@ -1214,7 +1214,60 @@ Tempi: turno del modello più la chiamata utility per la modifica, 15-30 s.
 Test: `test/reliability-flows.test.js` (archiviazione, parsing) e
 `test/daily-estimate-1730.test.js` (attività canale). Nessuna migrazione.
 
-## 38. Da fare
+## 38. "Modifico nel modulo" vuoto dopo l'approvazione; terzo bottone a testo libero
+
+Antonio (22/9): "quando uso il pre compilato di Giuno, il bottone Modifico
+nel modulo non ha le info già compilate; manca un terzo bottone dove
+scrivere tutto di fila e far sistemare a Giuno".
+
+**Perché il modulo arrivava vuoto.** Il modulo si riempiva solo dalla
+proposta *in sospeso* (`getPendingEstimate`). La proposta è consumata
+appena la persona la approva (Antonio la approva sempre: le sue entry sono
+`estimate_confirmed`) e al recap delle 18:30, quando viene pubblicata come
+stima e `stime` si svuota. Da lì in poi "Modifico nel modulo" apriva il
+modulo vuoto, proprio quando serve per correggere. Nella finestra
+17:30-18:30 senza approvare funzionava (verificato con la stima vera del
+22/9: 850 caratteri di `private_metadata`, sotto il limite di 3000).
+
+**Cosa cambia.**
+1. **Modulo sempre precompilato** (`prefillForModal` in
+   `dailyStandupV2.js`, usato da `open_daily_modal`): prima la proposta in
+   sospeso, altrimenti il daily di oggi già salvato in `standup_entries`
+   (stima approvata, stima pubblicata al recap, daily compilato o scritto).
+   Una lettura dal DB con tetto di 1,2 s: il `trigger_id` di Slack dura
+   tre secondi. Il log dice da dove viene il prefill ("precompilato da
+   estimate/entry").
+2. **Il progetto nel testo del task**: `prefillFromEstimate` leggeva solo
+   `project`, ma dopo il matcher (e nelle entry) il nome sta in
+   `project_name`. Ora il suffisso `[Progetto]` arriva in entrambi i casi e
+   non si duplica.
+3. **Terzo bottone "🖊️ Scrivo a testo libero"** (`open_daily_modal_text`),
+   nella proposta stimata e nel modulo semplice. Apre un modale con una sola
+   area di testo (`dailyTextModal`, callback `daily_text_submit`): la
+   persona scrive la giornata di fila, anche in un blocco solo. Al submit
+   `saveFreeTextDaily` salva un daily VERO (source `modal_text`) passando
+   da `handleDailyResponse`: parser AI (`dailyParser`) per task e ore,
+   `projectMatcher` per i progetti, ore nel consuntivo. Giuno risponde in DM
+   con com'è stato letto ("L'ho letto così: …") e il bottone "✏️ Modifico
+   nel modulo", che grazie al punto 1 si apre già compilato con quel daily.
+   Se il parser non ricava task, il testo si salva com'è e il DM lo dice.
+4. Prompt e descrizioni dei tool (`dailyTimes.describeFlow`,
+   `trigger_daily_request`) nominano i quattro bottoni.
+
+Non cambia: "Compilo da zero" resta il modulo vuoto; la correzione a
+parole in DM ("aggiungi 1h di call") resta com'era. Il daily scritto nel
+modale sostituisce la stima o il daily precedente (upsert su
+`slack_user_id,date`), come già faceva il modulo.
+
+Test: `test/daily-prefill.test.js` (prefill da proposta e da entry,
+progetto in `project_name`, modale a testo libero, salvataggio, bottoni
+nel DM). Niente migrazioni.
+
+Da fare dopo il merge: nessuna configurazione. Se la lettura del DB per il
+prefill supera 1,2 s Giuno apre il modulo vuoto e lo logga come "prefill
+non disponibile": guardare i log se capita.
+
+## 39. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono

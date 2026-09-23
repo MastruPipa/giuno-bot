@@ -1213,6 +1213,18 @@ app.action('open_daily_modal', async function(args) {
   var ackStart = Date.now();
   await args.ack();
   var triggerId = args.body.trigger_id;
+  // Il modale si apre già compilato: con la proposta di Giuno in sospeso, o
+  // — se la proposta è già stata approvata/pubblicata o il daily è già stato
+  // compilato — con il daily di oggi salvato. Una lettura sola dal DB, con
+  // un tetto stretto: il trigger_id di Slack vale ~3 secondi.
+  var prefill = null;
+  try {
+    var dsv2 = require('./dailyStandupV2');
+    var found = await withTimeout(function() { return dsv2.prefillForModal(args.body.user.id, dsv2.oggi()); }, 1200, 'prefill daily modal');
+    prefill = found && found.prefill;
+    if (found && found.from) logger.info('[DAILY-MODAL] modulo precompilato da', found.from, 'per', args.body.user.id);
+  } catch(e) { logger.warn('[DAILY-MODAL] prefill non disponibile:', e && e.message); }
+  var meta = { oggi: Math.max(2, prefill ? prefill.oggi.length : 0), domani: Math.max(2, prefill ? prefill.domani.length : 0), prefill: prefill || undefined };
   // Slack trigger_id is valid for ~3s after the click. Retry on transient
   // network errors but bail out immediately if Slack says the trigger expired.
   try {
@@ -1220,13 +1232,7 @@ app.action('open_daily_modal', async function(args) {
       return withRetry(function() {
         return app.client.views.open({
           trigger_id: triggerId,
-          view: (function() {
-            // Se c'è una proposta di Giuno in sospeso, il modale si apre già compilato.
-            var dsv2 = require('./dailyStandupV2');
-            var prefill = dsv2.prefillFromEstimate(dsv2.getPendingEstimate(args.body.user.id, dsv2.oggi()));
-            var meta = { oggi: Math.max(2, prefill ? prefill.oggi.length : 0), domani: Math.max(2, prefill ? prefill.domani.length : 0), prefill: prefill || undefined };
-            return rebuildDailyModal(meta);
-          })(),
+          view: rebuildDailyModal(meta),
         });
       }, {
         retries: 1,
@@ -1258,6 +1264,53 @@ app.action('open_daily_modal', async function(args) {
       });
     } catch(e2) { logger.debug('[DAILY-MODAL] fallback DM error:', e2 && e2.message); }
   }
+});
+
+// "Scrivo a testo libero": una sola area di testo, la giornata di fila;
+// il parser AI la divide in task e ore, il matcher aggancia i progetti.
+app.action('open_daily_modal_text', async function(args) {
+  await args.ack();
+  try {
+    await withTimeout(function() {
+      return app.client.views.open({ trigger_id: args.body.trigger_id, view: require('./dailyStandupV2').dailyTextModal() });
+    }, 2500, 'views.open daily text');
+  } catch(e) {
+    logger.error('[DAILY-MODAL] text views.open fallita:', e && e.message);
+    try { await app.client.chat.postMessage({ channel: args.body.user.id, text: 'Non riesco ad aprire il modulo. Scrivimi qui il daily in testo: *Oggi:* … (con le ore), *Domani:* …' }); } catch(_) {}
+  }
+});
+
+app.view('daily_text_submit', async function(args) {
+  await args.ack();
+  var userId = args.body.user.id;
+  var values = (args.view && args.view.state && args.view.state.values) || {};
+  var text = values.daily_text && values.daily_text.daily_text_input ? String(values.daily_text.daily_text_input.value || '').trim() : '';
+  if (!text) return;
+  var dsv2 = require('./dailyStandupV2');
+  var result = { saved: false, structured: null };
+  try { result = await dsv2.saveFreeTextDaily(userId, text); }
+  catch(e) { logger.error('[DAILY-MODAL] daily a testo libero fallito:', e && e.message); }
+  try {
+    if (!result.saved) {
+      await app.client.chat.postMessage({ channel: userId, text: 'Non sono riuscito a registrare il daily — riprova tra un attimo. Se il problema persiste avvisa Antonio.' });
+      logger.error('[DAILY-MODAL] Save testo libero fallito per', userId);
+      return;
+    }
+    var estimator = require('../agents/dailyEstimator');
+    var body = result.structured ? estimator.formatEstimateBody(result.structured) : null;
+    await app.client.chat.postMessage({
+      channel: userId,
+      text: 'Daily registrato! ✅' + (body ? '\n' + body : ''),
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: body
+          ? 'Daily registrato! ✅ L\'ho letto così:\n' + formatPerSlack(body)
+          : 'Daily registrato! ✅ Non sono riuscito a dividerlo in task e ore: l\'ho salvato com\'è. Se vuoi le ore nel consuntivo, sistemalo nel modulo.' } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: 'Se qualcosa non torna, il modulo si apre già compilato così e puoi correggerlo.' }] },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '✏️ Modifico nel modulo', emoji: true }, action_id: 'open_daily_modal' }] },
+      ],
+    });
+    logger.info('[DAILY-MODAL] Daily a testo libero da', userId, '|', result.structured ? (result.structured.oggi || []).length + ' task oggi' : 'non strutturato');
+  } catch(e) { logger.error('[DAILY-MODAL] conferma testo libero fallita:', e && e.message); }
 });
 
 // "Aggiungi task" buttons — update the modal with more rows
