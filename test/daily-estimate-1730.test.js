@@ -62,15 +62,15 @@ test('amendEstimate: il modello applica la modifica, la stima tiene fonti e stor
   assert.equal(await est.amendEstimate(current, 'togli tutto', { client: broken }), null);
 });
 
-test('proposta in DM: tre bottoni (approvo, modifico nel modulo, da zero), istruzioni per scrivere, orario del recap', function() {
+test('proposta in DM: quattro bottoni (approvo, modifico nel modulo, da zero, testo libero), istruzioni per scrivere, orario del recap', function() {
   var structured = { oggi: [{ task: 'Grafiche Elfo', hours: 2, minutes: 0 }], domani: [], blocchi: null, estimate: { sources: ['documenti Drive'], confidence: 'media', generated_at: 'g' } };
   var msg = dsv2.estimateProposalMessage({ id: 'U1', name: 'Paolo Spartano' }, structured, { mode: 'daily' });
   assert.equal(msg.channel, 'U1');
   assert.match(msg.blocks[0].text.text, /Ciao \*Paolo\*, è il momento del daily/);
-  assert.match(msg.blocks[2].text.text, /\*Approva\* con il bottone, \*modifica\* nel modulo già compilato, oppure \*scrivimi qui\* cosa aggiungere o cambiare/);
+  assert.match(msg.blocks[2].text.text, /\*Approva\* con il bottone, \*modifica\* nel modulo già compilato, \*scrivi\* tutta la giornata a testo libero .*, oppure \*scrivimi qui\* cosa aggiungere o cambiare/);
   assert.match(msg.blocks[3].elements[0].text, /Se alle 18:30 non ho tue notizie/);
   var buttons = msg.blocks[4].elements.map(function(b) { return b.action_id + ':' + b.text.text; });
-  assert.deepEqual(buttons, ['daily_estimate_confirm:✅ Approvo', 'open_daily_modal:✏️ Modifico nel modulo', 'open_daily_modal_blank:📝 Compilo da zero']);
+  assert.deepEqual(buttons, ['daily_estimate_confirm:✅ Approvo', 'open_daily_modal:✏️ Modifico nel modulo', 'open_daily_modal_blank:📝 Compilo da zero', 'open_daily_modal_text:🖊️ Scrivo a testo libero']);
   assert.match(dsv2.estimateProposalMessage({ id: 'U1', name: 'Paolo' }, structured, { mode: 'amended' }).blocks[0].text.text, /Ok \*Paolo\*, aggiornato così/);
 });
 

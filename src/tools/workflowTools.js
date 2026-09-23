@@ -98,7 +98,7 @@ var definitions = [
   {
     name: 'trigger_daily_request',
     description: 'Invia SUBITO il DM del daily a un utente, fuori dal cron pomeridiano e bypassando le esclusioni: ' +
-      'la STIMA ricostruita da Giuno con i bottoni Approvo / Modifico / Compilo da zero se ci sono tracce di giornata, ' +
+      'la STIMA ricostruita da Giuno con i bottoni Approvo / Modifico nel modulo / Compilo da zero / Scrivo a testo libero se ci sono tracce di giornata, ' +
       'altrimenti il modulo (bottone "✏️ Compila daily"). Usalo quando un admin chiede di testare il daily o non lo ha ' +
       'ricevuto: "mandami il daily di test", "mandami la stima del daily", "non mi è arrivato il daily", ' +
       '"manda la richiesta daily a X". Solo admin.',
@@ -184,7 +184,7 @@ async function execute(toolName, input, userId, userRole) {
         });
         return { success: true, sent_to: target.id, tipo: 'daily', in_background: true,
           nota: 'Sto ricostruendo la giornata: il DM arriva da solo entro un paio di minuti, con la stima e i bottoni ' +
-            'Approvo / Modifico nel modulo / Compilo da zero se ci sono tracce, altrimenti col bottone "✏️ Compila daily". ' +
+            'Approvo / Modifico nel modulo / Compilo da zero / Scrivo a testo libero se ci sono tracce, altrimenti coi bottoni "✏️ Compila daily" e "🖊️ Scrivo a testo libero". ' +
             'Rispondi alla persona che sta arrivando, senza promettere altro.' };
       }
 

@@ -72,6 +72,160 @@ function romeDayBounds(dateStr) {
 function emailKey(e) { return String(e || '').toLowerCase().trim(); }
 function nameKey(n) { return String(n || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]+/g, ' ').trim(); }
 
+// ─── Filtro sulle tracce ─────────────────────────────────────────────────────
+// Un blocco di calendario che dice solo DOVE o SE la persona è disponibile
+// ("Ufficio", "Smart working", "Focus", "Non disponibile", "Ferie") non è
+// lavoro fatto: prima entrava nel calendario e nelle sessioni e usciva come
+// "Presenza in ufficio 2h30" o "Tempo operativo 5h" (Antonio, 22/9). Vale
+// anche per i task che il modello scrive con quelle parole.
+var PRESENCE_RE = /^\s*(?:in\s+)?(?:ufficio|office|sede|in sede|smart\s*working|sw|home\s*office|(?:da|a)\s+casa|remoto|da remoto|presenza in (?:ufficio|sede)|presente in (?:ufficio|sede)|disponibile|non disponibile|indisponibile|fuori ufficio|out of office|ooo|ferie|permesso|malattia|riposo|festivo|focus(?:\s*time)?|deep work|tempo operativo|busy|occupato|occupata)\b[\s\-–:.!()]*(?:\w+\s*){0,2}$/i;
+var PRESENCE_TASK_RE = /\b(?:presenza(?:\s+in\s+(?:ufficio|sede))|(?:attivit[aà]|tempo|ore)\s+(?:in\s+)?(?:ufficio|in sede|operativ\w*|generic\w*)|ufficio\s+presenza|smart\s*working|tempo\s+operativo|attivit[aà]\s+non\s+attribuibil\w*|attivit[aà]\s+generic\w*|lavoro\s+generico|sessione\s+di\s+lavoro\s+(?:generic\w*|non\s+attribuibil\w*))\b/i;
+var MAX_EVENT_MINUTES = 4 * 60;
+
+function isPresenceTitle(title) { return PRESENCE_RE.test(String(title || '').replace(/[()\[\]"']/g, ' ').replace(/\s+/g, ' ').trim()); }
+function isPresenceTask(task) {
+  var t = String(task || '').replace(/[()\[\]"']/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return true;
+  return isPresenceTitle(t) || PRESENCE_TASK_RE.test(t);
+}
+
+// Eventi di calendario che valgono come lavoro: via i "tutto il giorno"
+// (start senza orario: "Ufficio 24h"), i blocchi di presenza, i blocchi
+// lunghi senza altri partecipanti; ogni riunione conta al massimo 4h.
+// Ritorna { kept, dropped } con il motivo per il log.
+function filterCalendarEvents(events) {
+  var kept = [], dropped = [];
+  (events || []).forEach(function(e) {
+    var start = String(e.start || '');
+    var others = Number(e.attendees) || 0;
+    if (!start || start.indexOf('T') === -1) return dropped.push({ title: e.title, why: 'tutto il giorno' });
+    if (isPresenceTitle(e.title)) return dropped.push({ title: e.title, why: 'blocco di presenza/disponibilità' });
+    if (Number(e.minutes) >= MAX_EVENT_MINUTES && others <= 1) return dropped.push({ title: e.title, why: 'blocco lungo senza partecipanti' });
+    if (Number(e.minutes) > MAX_EVENT_MINUTES) e = Object.assign({}, e, { minutes: MAX_EVENT_MINUTES, minutes_calendar: e.minutes });
+    kept.push(e);
+  });
+  return { kept: kept, dropped: dropped };
+}
+
+// ─── Appunti Gemini come verifica delle riunioni ────────────────────────────
+// Google Meet salva gli appunti come Doc ("<Titolo> - 2026/09/22 10:03 CEST -
+// Appunti di Gemini") appena la riunione finisce: il titolo dice quando è
+// iniziata, la creazione del file quando è finita, il testo chi ha parlato.
+// Per ogni riunione in calendario cerchiamo il recap: se c'è, la durata
+// effettiva sostituisce quella del calendario (la call che si allunga) e se
+// la persona non compare tra i partecipanti la riunione non le viene contata.
+var GEMINI_NOTE_RE = /appunti di gemini|note della riunione|notes by gemini|meeting notes|gemini notes|trascrizione|transcript/i;
+function isGeminiNoteName(name) { return GEMINI_NOTE_RE.test(String(name || '')); }
+
+function geminiCleanTitle(title) {
+  return String(title || '')
+    .replace(/\s*-\s*\d{4}\/\d{2}\/\d{2}[^-]*-\s*(appunti di gemini|note della riunione|notes by gemini|meeting notes|gemini notes|trascrizione|transcript).*$/i, '')
+    .replace(/\s*-\s*(appunti di gemini|note della riunione|notes by gemini|meeting notes|gemini notes|trascrizione|transcript).*$/i, '')
+    .replace(/\s*\((italiano|inglese|english|italian)\)\s*$/i, '')
+    .trim();
+}
+// Inizio riunione dal titolo Gemini, in ISO con l'offset di Roma del giorno.
+function geminiStartFromTitle(title, dateStr) {
+  var m = /(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/.exec(String(title || ''));
+  if (!m) return null;
+  var day = m[1] + '-' + m[2] + '-' + m[3];
+  return day + 'T' + m[4] + ':' + m[5] + ':00' + romeDayBounds(dateStr || day).offset;
+}
+function titleTokens(t) { return nameKey(t).split(' ').filter(function(w) { return w.length > 2 && ['con', 'per', 'del', 'della', 'dei', 'the', 'and', 'meeting', 'riunione', 'call', 'weekly', 'daily', 'sync'].indexOf(w) === -1; }); }
+function titleSimilar(a, b) {
+  var ta = titleTokens(a), tb = titleTokens(b);
+  if (!ta.length || !tb.length) return false;
+  var ka = nameKey(a), kb = nameKey(b);
+  if (ka === kb || ka.indexOf(kb) !== -1 || kb.indexOf(ka) !== -1) return true;
+  var common = ta.filter(function(w) { return tb.indexOf(w) !== -1; }).length;
+  return common / Math.min(ta.length, tb.length) >= 0.6;
+}
+// La persona compare nel testo (nome e cognome; il solo nome se in team è unico)?
+function personInText(text, user, allUsers) {
+  var k = nameKey(text);
+  if (!k || !user) return null;
+  var full = nameKey(user.name);
+  if (!full) return null;
+  if (k.indexOf(full) !== -1) return true;
+  var first = full.split(' ')[0];
+  if (first.length >= 3) {
+    var sameFirst = (allUsers || []).filter(function(u) { return nameKey(u.name).split(' ')[0] === first; }).length;
+    if (sameFirst <= 1 && new RegExp('(^| )' + first + '( |$)').test(k)) return true;
+  }
+  return false;
+}
+// Recap del giorno: dalla KB (scanner Gemini delle 9:45/11:45/13:45/15:45) e
+// dai Doc di oggi su Drive (anche quelli non ancora passati dallo scanner).
+// → [{ title, date, start, end, minutes, participants (testo), link }]
+async function collectMeetingRecaps(dateStr, ctx, scanners, deps) {
+  deps = deps || {};
+  var out = [], seen = {};
+  var kb = deps.kbCache || (function() { try { var d = deps.db || require('../../supabase'); return d.getKBCache ? d.getKBCache() : []; } catch(_) { return []; } })();
+  (kb || []).forEach(function(e) {
+    if (!e || !Array.isArray(e.tags) || e.tags.indexOf('tipo:meeting_recap') === -1) return;
+    var content = String(e.content || '');
+    var head = /^\[RECAP MEETING\]\s*(.+?)\s*\((\d{4}-\d{2}-\d{2})\)/m.exec(content);
+    if (!head || head[2] !== dateStr) return;
+    var part = /^Partecipanti:\s*(.+)$/m.exec(content);
+    var key = 'kb:' + nameKey(head[1]);
+    if (seen[key]) return; seen[key] = true;
+    out.push({ title: head[1], date: dateStr, start: null, end: null, minutes: null, participants: part ? part[1] : '', text: content.substring(0, 1500), source: 'kb' });
+  });
+  var files = (ctx && ctx.driveGemini) || [];
+  var gauth = deps.gauth || require('../services/googleAuthService');
+  var docsApi = null;
+  for (var i = 0; i < (scanners || []).length && !docsApi; i++) docsApi = deps.docs ? deps.docs[scanners[i]] : (gauth.getDocsPerUtente ? gauth.getDocsPerUtente(scanners[i]) : null);
+  for (var f = 0; f < files.length && f < 15; f++) {
+    var file = files[f];
+    var title = geminiCleanTitle(file.name);
+    var start = geminiStartFromTitle(file.name, dateStr);
+    if (start && start.slice(0, 10) !== dateStr) continue;
+    var end = file.createdTime || null;
+    var minutes = (start && end) ? Math.round((Date.parse(end) - Date.parse(start)) / 60000) : null;
+    if (!(minutes >= 5 && minutes <= MAX_EVENT_MINUTES * 1.5)) minutes = null;
+    var rec = { title: title, date: dateStr, start: start, end: end, minutes: minutes, participants: '', text: '', link: file.link || null, source: 'drive' };
+    if (docsApi) {
+      try {
+        var docRes = await withTimeout(function() { return docsApi.documents.get({ documentId: file.id }); }, REVISION_TIMEOUT_MS, 'estimate.gemini_doc');
+        var text = require('../tools/driveTools').extractDocText(docRes.data && docRes.data.body && docRes.data.body.content);
+        rec.text = String(text || '').substring(0, 6000);
+        var inv = /^(?:invitati|partecipanti|invited|attendees)\s*:?\s*(.+)$/im.exec(rec.text);
+        rec.participants = inv ? inv[1] : '';
+      } catch(e) { logger.debug('[DAILY-ESTIMATE] appunti Gemini "' + file.name + '" non letti:', e.message); }
+    }
+    var existing = out.find(function(r) { return titleSimilar(r.title, title); });
+    if (existing) { if (minutes && !existing.minutes) { existing.minutes = minutes; existing.start = start; existing.end = end; } if (rec.text && !existing.text) existing.text = rec.text; continue; }
+    out.push(rec);
+  }
+  return out;
+}
+// Recap che corrisponde a una riunione: titolo simile, altrimenti inizio
+// entro 20 minuti.
+function recapForEvent(recaps, e) {
+  var byTitle = (recaps || []).find(function(r) { return titleSimilar(r.title, e.title); });
+  if (byTitle) return byTitle;
+  var t = Date.parse(e.start);
+  if (!isFinite(t)) return null;
+  return (recaps || []).find(function(r) { return r.start && Math.abs(Date.parse(r.start) - t) <= 20 * 60000; }) || null;
+}
+// Applica i recap alle riunioni della persona: durata effettiva, presenza.
+// Ritorna { kept, dropped } (dropped = la persona non c'era secondo Gemini).
+function verifyCalendarWithRecaps(events, recaps, me, allUsers) {
+  var kept = [], dropped = [];
+  (events || []).forEach(function(e) {
+    var r = recapForEvent(recaps, e);
+    if (!r) return kept.push(e);
+    var ev = Object.assign({}, e, { recap: { title: r.title, minutes: r.minutes || null } });
+    var haystack = [r.participants, r.text].filter(Boolean).join('\n');
+    var present = haystack ? personInText(haystack, me, allUsers) : null;
+    if (present === false && (r.participants || r.text.length > 300)) return dropped.push({ title: e.title, why: 'non tra i partecipanti negli appunti Gemini' });
+    ev.recap.present = present === true;
+    if (r.minutes && Math.abs(r.minutes - (Number(e.minutes) || 0)) >= 15) { ev.minutes_calendar = e.minutes; ev.minutes = Math.min(r.minutes, MAX_EVENT_MINUTES); }
+    kept.push(ev);
+  });
+  return { kept: kept, dropped: dropped };
+}
+
 // ─── Contesto di giornata (condiviso tra le persone della stessa corsa) ──────
 var _day = { date: null, at: 0, ctx: null };
 var DAY_CACHE_MS = 15 * 60000;
@@ -89,7 +243,9 @@ async function dayContext(dateStr, deps) {
   });
   await safeCall('ESTIMATE.day.slack_channels', async function() { ctx.slackByUser = await collectSlackChannelActivity(app, dateStr); });
   var scanners = await pickScanners(deps);
-  await safeCall('ESTIMATE.day.drive', async function() { var r = await collectDriveActivity(dateStr, scanners, deps); ctx.driveByEmail = r.byEmail; ctx.driveByName = r.byName; ctx.driveEvents = r.events; });
+  await safeCall('ESTIMATE.day.drive', async function() { var r = await collectDriveActivity(dateStr, scanners, deps); ctx.driveByEmail = r.byEmail; ctx.driveByName = r.byName; ctx.driveEvents = r.events; ctx.driveGemini = r.geminiNotes || []; });
+  // Appunti Gemini del giorno: chi c'era davvero e quanto è durata ogni riunione.
+  await safeCall('ESTIMATE.day.recaps', async function() { ctx.recaps = await collectMeetingRecaps(dateStr, ctx, scanners, deps); });
   await safeCall('ESTIMATE.day.admin_calendar', async function() { ctx.adminEvents = await collectAdminCalendar(dateStr, scanners, deps); });
   // Le riunioni del giorno dopo alimentano il "domani" (Antonio, 17/9: "mancano gli eventi del giorno dopo").
   await safeCall('ESTIMATE.day.admin_calendar_tomorrow', async function() { ctx.adminEventsTomorrow = await collectAdminCalendar(nextWorkingDay(dateStr), scanners, deps); });
@@ -152,6 +308,7 @@ async function collectDriveActivity(dateStr, scanners, deps) {
   var b = romeDayBounds(dateStr);
   var seen = {}, byEmail = {}, byName = {}, events = { byEmail: {}, byName: {} };
   var filesForRevisions = [];
+  var geminiNotes = [];
   function pushEvent(u, ev) {
     if (u.emailAddress) (events.byEmail[emailKey(u.emailAddress)] = events.byEmail[emailKey(u.emailAddress)] || []).push(ev);
     if (u.displayName) (events.byName[nameKey(u.displayName)] = events.byName[nameKey(u.displayName)] || []).push(ev);
@@ -170,6 +327,9 @@ async function collectDriveActivity(dateStr, scanners, deps) {
       ((res.data && res.data.files) || []).forEach(function(f) {
         if (seen[f.id]) return;
         seen[f.id] = true;
+        // Gli appunti Gemini non sono output di chi li ha "modificati":
+        // servono come verifica delle riunioni, non come documenti prodotti.
+        if (isGeminiNoteName(f.name)) { geminiNotes.push({ id: f.id, name: f.name, createdTime: f.createdTime || null, modifiedTime: f.modifiedTime || null, link: f.webViewLink || null }); return; }
         var u = f.lastModifyingUser || {};
         var item = { name: f.name, type: String(f.mimeType || '').replace(/^application\/vnd\.google-apps\./, '').replace(/^application\//, ''), created_today: String(f.createdTime || '').slice(0, 10) === dateStr, modified_at: f.modifiedTime, link: f.webViewLink || null, folder: (f.parents || [])[0] || null };
         if (u.emailAddress) (byEmail[emailKey(u.emailAddress)] = byEmail[emailKey(u.emailAddress)] || []).push(item);
@@ -200,7 +360,7 @@ async function collectDriveActivity(dateStr, scanners, deps) {
   for (var q = 0; q < queue.length; q += 5) {
     await Promise.all(queue.slice(q, q + 5).map(scanOne));
   }
-  return { byEmail: byEmail, byName: byName, events: events };
+  return { byEmail: byEmail, byName: byName, events: events, geminiNotes: geminiNotes };
 }
 
 // Unione di due bucket (per email e per nome) senza doppioni.
@@ -302,6 +462,21 @@ async function collectEvidence(userId, dateStr, deps) {
     if (evidence.calendar.length) evidence.sources.push('calendario (inviti)');
   }
 
+  // 2b-ter. Filtro: via i blocchi di presenza/disponibilità e i "tutto il
+  // giorno"; poi la verifica con gli appunti Gemini (presenza, durata reale).
+  var calFilter = filterCalendarEvents(evidence.calendar);
+  evidence.calendar = calFilter.kept;
+  evidence.calendar_dropped = calFilter.dropped.slice();
+  var recaps = deps.recaps || ctx.recaps || [];
+  if (recaps.length && evidence.calendar.length) {
+    var verified = verifyCalendarWithRecaps(evidence.calendar, recaps, me, ctx.users);
+    evidence.calendar = verified.kept;
+    evidence.calendar_dropped = evidence.calendar_dropped.concat(verified.dropped);
+    if (verified.dropped.length || verified.kept.some(function(e) { return e.recap; })) evidence.sources.push('appunti Gemini');
+  }
+  if (evidence.calendar_dropped.length) logger.info('[DAILY-ESTIMATE] eventi esclusi per', userId, dateStr + ':', evidence.calendar_dropped.map(function(d) { return '"' + d.title + '" (' + d.why + ')'; }).join(', '));
+  if (!evidence.calendar.length) evidence.sources = evidence.sources.filter(function(x) { return x !== 'calendario' && x !== 'calendario (inviti)'; });
+
   // 2b-bis. Calendario di DOMANI → piano del giorno dopo (calendario proprio, altrimenti inviti negli admin)
   await safeCall('ESTIMATE.calendar_tomorrow', async function() {
     var calendarTools = require('../tools/calendarTools');
@@ -320,10 +495,11 @@ async function collectEvidence(userId, dateStr, deps) {
     evidence.calendar_tomorrow = ctx.adminEventsTomorrow.filter(function(e) { return e.attendees.indexOf(myEmail) !== -1; }).slice(0, 12)
       .map(function(e) { return { title: e.title, start: e.start, minutes: e.minutes, attendees: e.attendees.length }; });
   }
+  evidence.calendar_tomorrow = filterCalendarEvents(evidence.calendar_tomorrow).kept;
   if (evidence.calendar_tomorrow.length) evidence.sources.push('calendario di domani');
 
   // 2c. Documenti su Drive creati/modificati oggi dalla persona (output prodotti)
-  var mine = unionBy(myEmail && ctx.driveByEmail[myEmail], myName && ctx.driveByName[myName], itemKey);
+  var mine = unionBy(myEmail && ctx.driveByEmail[myEmail], myName && ctx.driveByName[myName], itemKey).filter(function(d) { return !isGeminiNoteName(d.name); });
   if (mine.length) {
     evidence.drive = mine.slice(0, 15);
     evidence.sources.push('documenti Drive');
@@ -375,7 +551,7 @@ async function collectEvidence(userId, dateStr, deps) {
   var sessions = require('./activitySessions');
   var events = [];
   var dEv = ctx.driveEvents || { byEmail: {}, byName: {} };
-  unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey).forEach(function(e) { events.push(Object.assign({}, e, { project: projectOf('drive_folder', e.folder) })); });
+  unionBy(myEmail && dEv.byEmail[myEmail], myName && dEv.byName[myName], eventKey).forEach(function(e) { if (isGeminiNoteName(e.name)) return; events.push(Object.assign({}, e, { project: projectOf('drive_folder', e.folder) })); });
   chan.forEach(function(m) { if (m.at) events.push({ at: m.at, kind: 'slack', channel: m.channel, name: null, project: m.project || null }); });
   evidence.calendar.forEach(function(e) { if (e.start && e.minutes) events.push({ at: e.start, kind: 'calendar', name: e.title, minutes: e.minutes, project: e.project || null }); });
   evidence.sessions = sessions.buildSessions(events);
@@ -470,7 +646,9 @@ var SYSTEM_PROMPT =
   '{"oggi":[{"task":"descrizione breve","hours":N,"minutes":N,"project":"nome del progetto o null","basis":"da dove viene"}],"domani":[{"task":"...","hours":0,"minutes":0,"project":null}],"blocchi":null,"confidence":"alta|media|bassa","note":"una frase su cosa manca"}\n' +
   'Regole:\n' +
   '- Ogni task in "oggi" deve avere una traccia concreta (riunione in calendario, documento creato o modificato su Drive, allegato o messaggio Slack, email inviata, piano scritto ieri). Niente task inventati.\n' +
-  '- Se ci sono SESSIONI DI LAVORO ricostruite dai timestamp, le ore vengono da lì: la somma delle durate dei task deve avvicinarsi al totale delle sessioni, e ogni sessione va attribuita al task che le sue tracce indicano (documento, canale, riunione). Le sessioni non coperte da alcuna traccia leggibile diventano un task generico sul progetto del canale o del file.\n' +
+  '- Se ci sono SESSIONI DI LAVORO ricostruite dai timestamp, le ore vengono da lì: la somma delle durate dei task deve avvicinarsi al totale delle sessioni, e ogni sessione va attribuita al task che le sue tracce indicano (documento, canale, riunione). Il tempo di sessione SENZA una traccia leggibile NON diventa un task: niente righe come "presenza in ufficio", "attività in ufficio", "tempo operativo", "gestione flussi interni", "attività generiche". Meglio un totale sotto le 8 ore che una riga inventata.\n' +
+  '- Blocchi di calendario che dicono solo dove o se la persona è disponibile (Ufficio, Smart working, Focus, Non disponibile, Ferie) non sono lavoro e sono già stati esclusi: non ricostruirli.\n' +
+  '- Riunioni: se una riga del calendario porta la durata "effettivi dagli appunti Gemini", usa QUELLA (la call si è allungata o accorciata); se una riunione non è nel calendario ma gli appunti Gemini o i messaggi mostrano che la persona c\'era, contala con la durata indicata.\n' +
   '- Ore: OGNI task in "oggi" ha una durata stimata, mai 0. Riunioni: la durata del calendario. Documento creato oggi: 2h (presentazioni, fogli, video) o 1h (doc brevi); documento solo modificato: 1h. Email inviata o scambio Slack su un tema: 30 min; supporto/troubleshooting: 1h. Task dal piano di ieri: le ore pianificate. Raggruppa le tracce dello stesso tema in un solo task.\n' +
   '- Totale "oggi" mai sopra 8 ore: se lo superi, riduci in proporzione. Preferisci poche righe solide a molte righe deboli.\n' +
   '- Il numero dei messaggi non misura il lavoro: conta il tema e l\'output, non il volume.\n' +
@@ -495,8 +673,14 @@ function buildPrompt(evidence) {
   }
   if (evidence.calendar.length) {
     parts.push('CALENDARIO DI OGGI:\n' + evidence.calendar.map(function(e) {
-      return '- ' + (e.title || '(senza titolo)') + (e.minutes ? ' — ' + e.minutes + ' min' : '') + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '') + (e.project ? ' [progetto: ' + e.project + ']' : '');
+      var dur = e.minutes ? ' — ' + e.minutes + ' min' : '';
+      if (e.recap && e.minutes_calendar) dur += ' effettivi dagli appunti Gemini (calendario: ' + e.minutes_calendar + ' min)';
+      else if (e.recap) dur += ' (riunione confermata dagli appunti Gemini)';
+      return '- ' + (e.title || '(senza titolo)') + dur + (e.attendees ? ', ' + e.attendees + ' partecipanti' : '') + (e.project ? ' [progetto: ' + e.project + ']' : '');
     }).join('\n'));
+  }
+  if (evidence.calendar_dropped && evidence.calendar_dropped.length) {
+    parts.push('EVENTI DI CALENDARIO ESCLUSI (NON sono lavoro, non ricostruirli come task):\n' + evidence.calendar_dropped.map(function(d) { return '- ' + d.title + ' (' + d.why + ')'; }).join('\n'));
   }
   if (evidence.calendar_tomorrow && evidence.calendar_tomorrow.length) {
     parts.push('CALENDARIO DI DOMANI (' + (evidence.tomorrow || 'prossimo giorno lavorativo') + ', per la sezione "domani"):\n' + evidence.calendar_tomorrow.map(function(e) {
@@ -566,6 +750,16 @@ async function estimateDaily(userId, dateStr, deps) {
   var { normalizeParsed } = require('../services/dailyParser');
   var structured = normalizeParsed(parsed);
   if (!structured) return null;
+  // Filtro finale: le righe di sola presenza ("Presenza in ufficio",
+  // "Tempo operativo") non entrano nel daily né nel consuntivo, anche se il
+  // modello le ha scritte lo stesso.
+  var dropped = (structured.oggi || []).filter(function(t) { return isPresenceTask(t.task); });
+  if (dropped.length) {
+    logger.info('[DAILY-ESTIMATE] righe di presenza scartate per', userId, dateStr + ':', dropped.map(function(t) { return '"' + t.task + '"'; }).join(', '));
+    structured.oggi = structured.oggi.filter(function(t) { return !isPresenceTask(t.task); });
+    structured.totalOggi = Math.round(structured.oggi.reduce(function(a, t) { return a + (Number(t.hours) || 0) * 60 + (Number(t.minutes) || 0); }, 0) / 60 * 100) / 100;
+    if (!structured.oggi.length && !(structured.domani || []).length) return null;
+  }
   // Nessun task del fatto resta a 0: un'attività con una traccia vale almeno
   // 30 minuti (stima), altrimenti il consuntivo la perde.
   var floored = 0;
@@ -689,6 +883,15 @@ module.exports = {
   collectSlackChannelActivity: collectSlackChannelActivity,
   collectDriveActivity: collectDriveActivity,
   collectAdminCalendar: collectAdminCalendar,
+  collectMeetingRecaps: collectMeetingRecaps,
+  filterCalendarEvents: filterCalendarEvents,
+  verifyCalendarWithRecaps: verifyCalendarWithRecaps,
+  isPresenceTitle: isPresenceTitle,
+  isPresenceTask: isPresenceTask,
+  isGeminiNoteName: isGeminiNoteName,
+  geminiStartFromTitle: geminiStartFromTitle,
+  titleSimilar: titleSimilar,
+  personInText: personInText,
   nextWorkingDay: nextWorkingDay,
   collectEvidence: collectEvidence,
   hasUsableEvidence: hasUsableEvidence,
