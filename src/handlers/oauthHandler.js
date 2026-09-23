@@ -77,7 +77,9 @@ async function handleRequest(req, res) {
       getClient: function() { return require('../services/db/client').getClient(); },
       authorize: function(req, parsed) {
         return require('../giunos/auth').authorize(req, parsed, process.env.GIUNOS_ACCESS_KEY, isAuthorizedAdminRequest);
-      }
+      },
+      // Sessione con cookie firmato: il segreto deriva dalla chiave in uso.
+      sessionSecret: process.env.GIUNOS_ACCESS_KEY || OAUTH_ADMIN_TOKEN || null,
     });
     if (await giunos(req, res, parsed)) return;
   }
