@@ -235,6 +235,18 @@ function getPendingEstimate(userId, dateStr) {
   if (q && q.date === dateStr && q.structured) { _pendingEstimates[userId] = q; return q.structured; }
   return null;
 }
+// Come getPendingEstimate, ma se la memoria non ce l'ha rilegge lo stato dal
+// DB: il bottone può arrivare a un'istanza diversa da quella che ha mandato
+// la proposta (23/9: due bot in produzione), o dopo un riavvio.
+async function getPendingEstimateFresh(userId, dateStr, deps) {
+  var inMemory = getPendingEstimate(userId, dateStr);
+  if (inMemory) return inMemory;
+  var d = (deps && deps.db) || db;
+  if (typeof d.loadPendingEstimateFor !== 'function') return null;
+  var q = await d.loadPendingEstimateFor(userId);
+  if (q && q.date === dateStr && q.structured) { _pendingEstimates[userId] = q; return q.structured; }
+  return null;
+}
 function clearPendingEstimate(userId) {
   delete _pendingEstimates[userId];
   var sd = db.getStandupCache();
@@ -533,7 +545,7 @@ async function getTodayEntry(userId, dateStr) {
 // Ritorna { prefill, from: 'estimate' | 'entry' | null }.
 async function prefillForModal(userId, dateStr, deps) {
   deps = deps || {};
-  var pending = (deps.getPendingEstimate || getPendingEstimate)(userId, dateStr);
+  var pending = deps.getPendingEstimate ? deps.getPendingEstimate(userId, dateStr) : await getPendingEstimateFresh(userId, dateStr, deps);
   var fromEstimate = prefillFromEstimate(pending);
   if (fromEstimate) return { prefill: fromEstimate, from: 'estimate' };
   var entry = await (deps.getTodayEntry || getTodayEntry)(userId, dateStr);
@@ -546,7 +558,7 @@ async function prefillForModal(userId, dateStr, deps) {
 // effetti (source estimate_confirmed → alimenta anche il consuntivo).
 async function confirmEstimate(userId) {
   var todayStr = oggi();
-  var structured = getPendingEstimate(userId, todayStr);
+  var structured = await getPendingEstimateFresh(userId, todayStr);
   if (!structured) return false;
   var estimator = require('../agents/dailyEstimator');
   var text = estimator.formatEstimateBody(structured);
@@ -1136,6 +1148,8 @@ module.exports = {
   recordEstimateCorrection: recordEstimateCorrection,
   confirmEstimate: confirmEstimate,
   getPendingEstimate: getPendingEstimate,
+  getPendingEstimateFresh: getPendingEstimateFresh,
+  syncTimeLogsFromDaily: syncTimeLogsFromDaily,
   clearPendingEstimate: clearPendingEstimate,
   rememberPendingEstimate: rememberPendingEstimate,
   prefillFromEstimate: prefillFromEstimate,

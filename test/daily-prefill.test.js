@@ -109,3 +109,22 @@ test('i DM del daily portano il bottone "Scrivo a testo libero" (proposta e modu
   var actions = msg.blocks.filter(function(b) { return b.type === 'actions'; })[0].elements.map(function(e) { return e.action_id; });
   assert.deepEqual(actions, ['daily_estimate_confirm', 'open_daily_modal', 'open_daily_modal_blank', 'open_daily_modal_text']);
 });
+
+test('getPendingEstimateFresh / prefillForModal: senza proposta in memoria la rilegge dal DB (istanza diversa o riavvio)', async function() {
+  var today = dsv2.oggi();
+  dsv2.clearPendingEstimate('U_FRESH');
+  var reads = 0;
+  var fakeDb = { loadPendingEstimateFor: async function(uid) { reads++; return uid === 'U_FRESH' ? { date: today, structured: { oggi: [{ task: 'Call Aitho', hours: 1, minutes: 0 }], domani: [] } } : null; } };
+  var s = await dsv2.getPendingEstimateFresh('U_FRESH', today, { db: fakeDb });
+  assert.equal(s.oggi[0].task, 'Call Aitho'); assert.equal(reads, 1);
+  // ora è in memoria: niente seconda lettura
+  await dsv2.getPendingEstimateFresh('U_FRESH', today, { db: fakeDb });
+  assert.equal(reads, 1);
+  dsv2.clearPendingEstimate('U_FRESH');
+  var r = await dsv2.prefillForModal('U_FRESH', today, { db: fakeDb, getTodayEntry: async function() { throw new Error('non serve: c\'è la proposta'); } });
+  assert.equal(r.from, 'estimate'); assert.deepEqual(r.prefill.oggi, [{ task: 'Call Aitho', hours: 1 }]);
+  dsv2.clearPendingEstimate('U_FRESH');
+  // proposta di un altro giorno nel DB: ignorata
+  var old = { loadPendingEstimateFor: async function() { return { date: '2020-01-01', structured: { oggi: [{ task: 'x', hours: 1 }] } }; } };
+  assert.equal(await dsv2.getPendingEstimateFresh('U_FRESH', today, { db: old }), null);
+});

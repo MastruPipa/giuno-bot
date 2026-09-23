@@ -55,6 +55,18 @@ async function saveStandup(data) {
   }
 }
 
+// La proposta in sospeso di UNA persona letta dal DB, senza toccare la cache:
+// con più istanze (o dopo un riavvio) la cache in memoria di chi non ha
+// generato la stima è vecchia. Ritorna { date, structured } o null.
+async function loadPendingEstimateFor(userId) {
+  if (!c.useSupabase) { var local = c.readJSON('standup_data.json', emptyCache()); return stimeOf(local.stime)[userId] || null; }
+  try {
+    var res = await c.getClient().from('standup_data').select('stime').eq('id', 'current').single();
+    var stime = stimeOf(res && res.data && res.data.stime);
+    return stime[userId] || null;
+  } catch(e) { c.logErr('loadPendingEstimateFor', e); return null; }
+}
+
 function getStandupCache() {
   if (!_standupCache) _standupCache = emptyCache();
   if (!Array.isArray(_standupCache.inattesa)) _standupCache.inattesa = [];
@@ -62,4 +74,4 @@ function getStandupCache() {
   return _standupCache;
 }
 
-module.exports = { loadStandup: loadStandup, saveStandup: saveStandup, getStandupCache: getStandupCache };
+module.exports = { loadStandup: loadStandup, saveStandup: saveStandup, getStandupCache: getStandupCache, loadPendingEstimateFor: loadPendingEstimateFor };

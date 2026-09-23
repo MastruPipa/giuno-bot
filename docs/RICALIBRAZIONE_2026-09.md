@@ -1327,7 +1327,66 @@ fuori dagli output, stima end-to-end con "Ufficio" escluso e riga di
 presenza scartata). Niente migrazioni. Niente da configurare: i Doc
 Gemini si leggono con il Google degli admin già collegati.
 
-## 40. Da fare
+## 40. Il registro ore al 40% dei daily: sincronizzazione mai esportata, e due bot in produzione
+
+Revisione di giun.os con Antonio (23/9): "Nel registro" copriva circa il
+40% delle ore dichiarate nei daily (17/9: 54,5h dichiarate, 22,3h nel
+registro; una persona con 8h tutte agganciate ne aveva 2). Le viste della
+dashboard che leggono `time_logs` sottostimavano tutto.
+
+**Le cause, verificate su DB e log.**
+1. All'invio del daily, se anche un solo task non ha progetto, il consuntivo
+   viene scritto in modalità "conserva" (`saveTimeLogs`), quindi solo i
+   task già agganciati in quel momento.
+2. Il job notturno `hours_attribution` (23:30) aggancia gli orfani al
+   progetto e aggiorna `standup_entries`, poi chiama la sincronizzazione
+   del registro: `require('../handlers/dailyStandupV2').syncTimeLogsFromDaily`
+   che **non era esportata**. Da giorni ogni corsa loggava "sync is not a
+   function" e chiudeva con "0 attribuiti": i daily ricevevano i
+   `project_id`, il registro no. `time_log_write_history` conferma: una sola
+   scrittura per persona e giorno, quella dell'invio.
+3. **Due bot in produzione.** I log di Railway del progetto `giuno-bot`
+   mostravano solo "hours_attribution già in esecuzione (tenuto da …)":
+   il lock lo vinceva un'altra istanza. È il servizio `giuno-bot` del
+   progetto Railway **`imaginative-manifestation`** (creato lo stesso giorno,
+   24/3), collegato allo stesso repo e ramo `main`, con le stesse variabili
+   (Supabase, Slack, Anthropic, Google), senza dominio pubblico, in
+   us-west2. Fa il deploy a ogni merge, dieci secondi dopo il primo, ed è
+   connesso a Slack in Socket Mode: Slack distribuisce gli eventi tra le due
+   connessioni, quindi metà dei click e dei modali finiscono in un processo
+   con memoria diversa (proposte in sospeso, `standupInAttesa`, cache di
+   `standup_data`). Spiega anche parte del "Modifico nel modulo" vuoto (§38).
+   I cron girano in entrambi: il lock ne fa correre uno, ma i suoi log
+   stanno nell'altro progetto.
+
+**Cosa cambia in questa PR** (`hoursAttribution.js`, `dailyStandupV2.js`,
+`db/standup.js`, `cronHandlers.js`).
+1. `syncTimeLogsFromDaily` esportata; test che pretende che la dipendenza di
+   default del job esista.
+2. `reconcileLedger`: ogni notte, dopo l'attribuzione, ogni daily degli
+   ultimi 30 giorni viene confrontato con le sue righe di registro
+   (`deriveTimeLogRows` contro `time_logs`, stima contro stima, reale
+   contro reale) e risincronizzato se non torna. La prima corsa riallinea
+   lo storico; poi tiene il registro uguale ai daily. Log "[LEDGER] N daily
+   confrontati, M riallineati (+Xh)". Con `apply: false` fa solo l'anteprima.
+3. `getPendingEstimateFresh` + `db.loadPendingEstimateFor`: il bottone
+   "Approvo" e il prefill del modulo, se la memoria non ha la proposta, la
+   rileggono dal DB senza sostituire la cache. Regge a più istanze e ai
+   riavvii.
+
+**Da fare, decisione di Antonio:** spegnere il servizio duplicato
+(`imaginative-manifestation` → `giuno-bot`) o togliergli il deploy
+automatico e le variabili Slack. Finché resta acceso, ogni evento Slack ha
+il 50% di probabilità di arrivare a un processo con stato diverso e i log
+di metà dei cron vanno cercati nell'altro progetto. Dopo lo spegnimento,
+controllare per un giorno che daily, promemoria e recap arrivino una volta
+sola.
+
+Test: `test/hours-attribution.test.js` (dipendenza esportata, confronto
+registro, riallineamento con flag stima, anteprima), `test/daily-prefill.test.js`
+(lettura fresca dal DB). Niente migrazioni.
+
+## 41. Da fare
 1. **Conversazioni legacy in DB**: le chiavi `userId:threadTs` restano come
    fallback in lettura; si possono cancellare dopo qualche settimana.
 2. **Casi eval reali**: i sei seed coprono i comportamenti base; servono
