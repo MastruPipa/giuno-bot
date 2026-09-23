@@ -1307,9 +1307,11 @@ function scheduleCrons() {
     return rebuild({ apply: true });
   }, { timezone: 'Europe/Rome', name: 'project_locations_sync', lockTtl: 15 });
   // Ore orfane del daily (task senza progetto) riprovate col catalogo aggiornato
-  cron.schedule('30 23 * * 1-5', function() {
-    var { attributeOrphans } = require('../agents/hoursAttribution');
-    return attributeOrphans({ days: 14, apply: true });
+  // Poi il registro ore viene confrontato con i daily e riallineato dove manca.
+  cron.schedule('30 23 * * 1-5', async function() {
+    var ha = require('../agents/hoursAttribution');
+    await ha.attributeOrphans({ days: 14, apply: true });
+    return ha.reconcileLedger({ days: 30, apply: true });
   }, { timezone: 'Europe/Rome', name: 'hours_attribution', lockTtl: 15 });
   // Budget ore per progetto: proposte da preventivi/kick-off/deal → giunos_budgets, admin avvisati
   cron.schedule('40 6 * * 1', function() {

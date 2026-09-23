@@ -100,6 +100,7 @@ module.exports = {
   // Standup
   saveStandup:     standup.saveStandup,
   getStandupCache: standup.getStandupCache,
+  loadPendingEstimateFor: standup.loadPendingEstimateFor,
 
   // Drive
   saveDriveFiles: drive.saveDriveFiles,
